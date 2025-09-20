@@ -1,0 +1,23 @@
+# Markdownlint configuration for docs
+# See https://github.com/DavidAnson/markdownlint
+
+# Require blank lines around headings
+MD022:
+  lines_above: 1
+  lines_below: 1
+
+# Require a blank line before lists
+MD032: true
+
+# Unordered list indentation (use 4 spaces)
+MD007:
+  indent: 4
+
+# Trailing spaces (disallow)
+MD009: true
+
+# Code fences preferred
+MD046: true
+
+# Disable line length rule
+MD013: false

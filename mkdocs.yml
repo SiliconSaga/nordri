@@ -1,0 +1,36 @@
+site_name: Refr-k8s
+site_description: Logistics repo
+repo_url: https://example.com/your-repo
+theme:
+  name: material
+  features:
+    - navigation.instant
+    - navigation.sections
+    - content.code.copy
+    - toc.integrate
+nav:
+  - Home: index.md
+  - Architecture:
+      - Overview: architecture/overview.md
+  - Workflow:
+      - BDD: workflow/bdd.md
+      - AI Assist: workflow/ai-assist.md
+      - Conventions: conventions.md
+  - Testing:
+      - Strategy: testing/strategy.md
+  - Roadmap: roadmap.md
+  - Components:
+      - How to document a component: components/index.md
+      # Add entries like:
+      # - Example Component: ../apps/example/docs/index.md
+
+markdown_extensions:
+  - admonition
+  - toc:
+      permalink: true
+  - footnotes
+  - def_list
+  - attr_list
+  - codehilite
+
+plugins: []
