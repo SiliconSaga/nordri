@@ -92,6 +92,24 @@ kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.pas
 kubectl port-forward svc/argocd-server -n argocd 8080:443
 ```
 
+### 1.6 Install Gitea (For GitOps Testing)
+```bash
+# Add Gitea Helm repository
+helm repo add gitea-charts https://dl.gitea.io/charts/
+
+# Update repositories
+helm repo update
+
+# Create namespace
+kubectl create namespace gitea
+
+# Install Gitea
+helm install gitea gitea-charts/gitea --namespace gitea
+
+# Port forward to access Gitea UI
+kubectl port-forward svc/gitea-http -n gitea 3000:3000
+```
+
 ## Component Versions
 
 - **K3s**: v1.31.5+k3s1
@@ -99,15 +117,24 @@ kubectl port-forward svc/argocd-server -n argocd 8080:443
 - **Crossplane**: 2.0.2
 - **Velero**: 1.17.0
 - **Argo CD**: Latest stable (via Helm)
+- **Gitea**: Latest stable (via Helm)
 
 ## Environment Setup
 
 ### Create Environment File
 
-Create a .env file with sensitive data manually and don't let Cursor store the command it used to put all the secrets in there ...
+Create a `.env` file manually with sensitive data (never commit this file):
 
-Source the environment variables
-`source .env`
+```bash
+# Create .env file with sensitive data
+# DO NOT include actual secrets in documentation
+# Manually create .env with your actual values
+
+# Source the environment variables
+source .env
+```
+
+**Important**: The `.env` file contains sensitive information and should never be committed to version control. The `.gitignore` file already excludes `.env` files.
 
 
 ### Create .gitignore
@@ -201,25 +228,48 @@ echo "Username: admin"
 echo "Password: $(kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d)"
 ```
 
-### 6. Helm Releases Verification
+### 6. Gitea Verification
+```bash
+# Check Gitea and dependencies are running
+kubectl get pods -n gitea
+
+# Expected output: Multiple pods including:
+# - gitea-* (main Gitea pod)
+# - gitea-postgresql-ha-* (PostgreSQL for Gitea)
+# - gitea-valkey-cluster-* (Redis for Gitea)
+
+# Test Gitea UI access
+kubectl port-forward svc/gitea-http -n gitea 3000:3000 &
+sleep 5
+curl -s -o /dev/null -w "%{http_code}" http://localhost:3000
+
+# Expected output: 200
+
+# Access Gitea UI
+echo "Gitea UI: http://localhost:3000"
+echo "First-time setup will be required"
+```
+
+### 7. Helm Releases Verification
 ```bash
 # Check all Helm releases
 helm list -A
 
-# Expected output: 4 releases:
+# Expected output: 5 releases:
 # - percona-operator in percona-system
 # - crossplane in crossplane-system  
 # - argocd in argocd
+# - gitea in gitea
 ```
 
-### 7. Complete System Health Check
+### 8. Complete System Health Check
 ```bash
 # Run comprehensive health check
 echo "=== Cluster Status ==="
 kubectl get nodes
 
 echo -e "\n=== All Pods Status ==="
-kubectl get pods -A | grep -E "(percona|crossplane|argocd)"
+kubectl get pods -A | grep -E "(percona|crossplane|argocd|gitea)"
 
 echo -e "\n=== Helm Releases ==="
 helm list -A
@@ -228,6 +278,10 @@ echo -e "\n=== Argo CD Access ==="
 echo "UI: https://localhost:8080 (after port-forward)"
 echo "Username: admin"
 echo "Password: $(kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d)"
+
+echo -e "\n=== Gitea Access ==="
+echo "UI: http://localhost:3000 (after port-forward)"
+echo "First-time setup required"
 
 echo -e "\n=== Environment Variables ==="
 echo "Source .env file: source .env"

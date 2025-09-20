@@ -6,38 +6,47 @@
 
 **Desired Outcome**: A functioning PostgreSQL database provisioned by Crossplane and Percona, with a successful backup taken by Velero.
 
-**Infrastructure**: Local K3s cluster managed by k3d (cluster needs to be created)
+**Infrastructure**: Local K3s cluster managed by k3d with Gitea for GitOps testing
+
+**Current Status**: Phase 1 Complete ✅ - All tools installed and tested
 
 ## Phase 1: Tool Installation
 
 ### 1.1 Create K3s Cluster
-- [ ] Create local K3s cluster using k3d
-- [ ] Verify cluster is accessible via `kubectl`
-- [ ] Confirm cluster is ready for component installation
+- [x] Create local K3s cluster using k3d
+- [x] Verify cluster is accessible via `kubectl`
+- [x] Confirm cluster is ready for component installation
 
 ### 1.2 Install Percona Operator
-- [ ] Use Helm to install Percona Operator for PostgreSQL
-- [ ] Deploy to `percona-system` namespace
-- [ ] Verify operator pod is running
-- [ ] Check operator logs for any issues
+- [x] Use Helm to install Percona Operator for PostgreSQL
+- [x] Deploy to `percona-system` namespace
+- [x] Verify operator pod is running
+- [x] Check operator logs for any issues
 
 ### 1.3 Install Crossplane
-- [ ] Use Helm to install Crossplane (v2.0 or newer)
-- [ ] Deploy to `crossplane-system` namespace
-- [ ] Verify Crossplane pods are running
-- [ ] Confirm Crossplane is ready to accept providers
+- [x] Use Helm to install Crossplane (v2.0 or newer)
+- [x] Deploy to `crossplane-system` namespace
+- [x] Verify Crossplane pods are running
+- [x] Confirm Crossplane is ready to accept providers
 
 ### 1.4 Install Velero
-- [ ] Install Velero CLI
+- [x] Install Velero CLI
 - [ ] Configure Velero to point to local MinIO or S3-compatible service
 - [ ] Set up backup storage location
-- [ ] Verify Velero installation and connectivity
+- [x] Verify Velero installation and connectivity
 
 ### 1.5 Install Argo CD (Optional but Recommended)
-- [ ] Use Helm to install Argo CD
-- [ ] Configure Argo CD for GitOps workflow simulation
-- [ ] Set up initial Argo CD configuration
-- [ ] Verify Argo CD UI is accessible
+- [x] Use Helm to install Argo CD
+- [x] Configure Argo CD for GitOps workflow simulation
+- [x] Set up initial Argo CD configuration
+- [x] Verify Argo CD UI is accessible
+
+### 1.6 Install Gitea (For GitOps Testing)
+- [x] Use Helm to install Gitea
+- [x] Deploy to `gitea` namespace
+- [x] Configure Gitea with SQLite (bootstrap setup)
+- [x] Verify Gitea UI is accessible
+- [x] Set up repository for GitOps testing
 
 ## Phase 2: Platform Configuration
 
@@ -59,9 +68,9 @@
   - Set up proper resource relationships
 
 ### 2.3 Apply Abstraction
-- [ ] Commit `XPostgreSQL.yaml` to Git repository
-- [ ] Commit `Composition.yaml` to Git repository
-- [ ] Push changes to remote repository
+- [ ] Commit `XPostgreSQL.yaml` to Gitea repository
+- [ ] Commit `Composition.yaml` to Gitea repository
+- [ ] Push changes to Gitea repository
 - [ ] Apply XRD to cluster: `kubectl apply -f XPostgreSQL.yaml`
 - [ ] Apply Composition to cluster: `kubectl apply -f Composition.yaml`
 - [ ] Verify XRD and Composition are accepted by Crossplane
@@ -69,15 +78,15 @@
 ## Phase 3: End-to-End Test
 
 ### 3.1 Create Test Application
-- [ ] Create new Git repository for test application
+- [ ] Create new repository in Gitea for test application
 - [ ] Create application manifest with:
   - `kind: XPostgreSQL` resource definition
   - Simple Deployment that uses the database
   - Proper resource dependencies
-- [ ] Commit and push test application to repository
+- [ ] Commit and push test application to Gitea repository
 
 ### 3.2 Deploy with GitOps
-- [ ] Configure Argo CD to monitor test application repository
+- [ ] Configure Argo CD to monitor Gitea test application repository
 - [ ] Set up Argo CD application for automatic deployment
 - [ ] Watch Argo CD automatically provision the database
 - [ ] Monitor deployment progress in Argo CD UI
@@ -119,10 +128,10 @@
 ## Prerequisites
 
 - [x] k3d installed and ready
-- [ ] Local K3s cluster (to be created)
-- [ ] Git repository for source of truth
-- [ ] Helm installed
-- [ ] kubectl configured for cluster access
+- [x] Local K3s cluster (created)
+- [x] Git repository for source of truth (Gitea instance)
+- [x] Helm installed
+- [x] kubectl configured for cluster access
 
 ## Notes
 
@@ -131,6 +140,14 @@
 - Document any issues or deviations from the plan
 - Keep track of timing for each phase
 - Note any configuration challenges or solutions
+
+### Gitea Configuration Decision
+- **Current Setup**: Gitea with SQLite database (bootstrap configuration)
+- **Rationale**: Simplified setup for initial testing, avoids PostgreSQL dependency issues
+- **Future Upgrade Path**: Once Percona operator is proven, consider upgrading Gitea to use PostgreSQL:
+  - Option 1: Upgrade existing Gitea instance to use PostgreSQL
+  - Option 2: Deploy new "production" Gitea instance with PostgreSQL
+  - Option 3: Use Crossplane to provision PostgreSQL for Gitea (meta-experiment)
 
 ## Troubleshooting
 
