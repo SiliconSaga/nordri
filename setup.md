@@ -100,20 +100,138 @@ kubectl port-forward svc/argocd-server -n argocd 8080:443
 - **Velero**: 1.17.0
 - **Argo CD**: Latest stable (via Helm)
 
+## Environment Setup
+
+### Create Environment File
+
+Create a .env file with sensitive data manually and don't let Cursor store the command it used to put all the secrets in there ...
+
+Source the environment variables
+`source .env`
+
+
+### Create .gitignore
+
+Don't need to embed that here either, the file is right there! :-)
+
 ## Verification Commands
 
+### 1. Cluster Verification
 ```bash
-# Check all components are running
-kubectl get pods -n percona-system
+# Verify cluster is accessible
+kubectl cluster-info
+kubectl get nodes
+
+# Expected output: 3 nodes (1 control-plane, 2 agents) all Ready
+```
+
+### 2. Percona Operator Verification
+```bash
+# Check operator pod is running
+kubectl get pods -l app.kubernetes.io/name=pg-operator --namespace percona-system
+
+# Expected output: 1/1 Running
+
+# Check operator logs for successful startup
+kubectl logs -l app.kubernetes.io/name=pg-operator --namespace percona-system --tail=10
+
+# Expected output: Controller startup messages, no errors
+
+# Verify operator can see CRDs
+kubectl get crd | grep percona
+```
+
+### 3. Crossplane Verification
+```bash
+# Check Crossplane pods are running
 kubectl get pods -n crossplane-system
+
+# Expected output: 2 pods (crossplane and crossplane-rbac-manager) both 1/1 Running
+
+# Verify Crossplane CRDs are installed
+kubectl get crd | grep crossplane
+
+# Expected output: Multiple Crossplane CRDs including:
+# - compositeresourcedefinitions.apiextensions.crossplane.io
+# - compositions.apiextensions.crossplane.io
+# - providers.pkg.crossplane.io
+
+# Check Crossplane logs
+kubectl logs -n crossplane-system -l app=crossplane --tail=10
+```
+
+### 4. Velero CLI Verification
+```bash
+# Check Velero CLI version
+velero version
+
+# Expected output: Client version v1.17.0 (server error is expected until server is installed)
+
+# Test Velero help
+velero --help
+```
+
+### 5. Argo CD Verification
+```bash
+# Check all Argo CD components are running
 kubectl get pods -n argocd
 
-# Check Helm releases
+# Expected output: 7 pods all 1/1 Running:
+# - argocd-application-controller-0
+# - argocd-applicationset-controller-*
+# - argocd-dex-server-*
+# - argocd-notifications-controller-*
+# - argocd-redis-*
+# - argocd-repo-server-*
+# - argocd-server-*
+
+# Get Argo CD admin password
+kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d
+
+# Test Argo CD UI access
+kubectl port-forward svc/argocd-server -n argocd 8080:443 &
+sleep 3
+curl -k -s -o /dev/null -w "%{http_code}" https://localhost:8080
+
+# Expected output: 200
+
+# Access Argo CD UI
+echo "Argo CD UI: https://localhost:8080"
+echo "Username: admin"
+echo "Password: $(kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d)"
+```
+
+### 6. Helm Releases Verification
+```bash
+# Check all Helm releases
 helm list -A
 
-# Verify cluster status
+# Expected output: 4 releases:
+# - percona-operator in percona-system
+# - crossplane in crossplane-system  
+# - argocd in argocd
+```
+
+### 7. Complete System Health Check
+```bash
+# Run comprehensive health check
+echo "=== Cluster Status ==="
 kubectl get nodes
-kubectl cluster-info
+
+echo -e "\n=== All Pods Status ==="
+kubectl get pods -A | grep -E "(percona|crossplane|argocd)"
+
+echo -e "\n=== Helm Releases ==="
+helm list -A
+
+echo -e "\n=== Argo CD Access ==="
+echo "UI: https://localhost:8080 (after port-forward)"
+echo "Username: admin"
+echo "Password: $(kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d)"
+
+echo -e "\n=== Environment Variables ==="
+echo "Source .env file: source .env"
+echo "Available variables: ARGOCD_ADMIN_PASSWORD, ARGOCD_SERVER_URL, etc."
 ```
 
 ## Troubleshooting
