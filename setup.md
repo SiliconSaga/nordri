@@ -93,6 +93,9 @@ kubectl port-forward svc/argocd-server -n argocd 8080:443
 ```
 
 ### 1.6 Install Gitea (For GitOps Testing)
+
+First, create a values file for a clean SQLite-based installation - see `gitea-values.yaml`
+
 ```bash
 # Add Gitea Helm repository
 helm repo add gitea-charts https://dl.gitea.io/charts/
@@ -103,11 +106,93 @@ helm repo update
 # Create namespace
 kubectl create namespace gitea
 
-# Install Gitea
-helm install gitea gitea-charts/gitea --namespace gitea
+# Install Gitea with custom configuration
+helm install gitea gitea-charts/gitea --namespace gitea -f gitea-values.yaml
+```
 
-# Port forward to access Gitea UI
-kubectl port-forward svc/gitea-http -n gitea 3000:3000
+## Gitea Setup and Access
+
+### 1. Create Admin and Personal Users
+```bash
+# Create admin user
+kubectl exec -n gitea deployment/gitea -- gitea admin user create \
+  --username admin \
+  --password $GITEA_ADMIN_PASSWORD \
+  --email admin@localhost \
+  --admin \
+  --must-change-password=false
+
+# Create personal user account  
+kubectl exec -n gitea deployment/gitea -- gitea admin user create \
+  --username Cervator \
+  --password $GITEA_PERSONAL_PASSWORD \
+  --email cervator@gmail.com \
+  --must-change-password=false
+```
+
+### 2. Access Gitea Services
+```bash
+# Port forward for HTTP access (web UI)
+kubectl port-forward svc/gitea-http -n gitea 3000:3000 &
+
+# Port forward for SSH access (Git operations)
+kubectl port-forward svc/gitea-ssh -n gitea 2222:2222 &
+
+# Open web UI in browser
+open http://localhost:3000
+```
+
+### 3. Login Credentials
+- **Web UI**: http://localhost:3000
+- **SSH**: localhost:2222
+- Set / find usernames and passwords in .env
+
+### 4. Test SSH Connection
+```bash
+# Test SSH connectivity (should show connection established)
+ssh -T git@localhost -p 2222
+
+# Expected: Connection established, then "Permission denied" (normal without SSH keys)
+```
+
+### 5. Create Test Repository
+After logging in as `Cervator`, create a test repository:
+
+1. Navigate to http://localhost:3000 and login with Cervator
+2. Click the "+" button in the top navigation
+3. Select "New Repository"
+4. Fill in the details:
+   - **Repository Name**: `refr-k8s-test`
+   - **Description**: `Test repository for Crossplane-Percona-Velero experiment`
+   - **Visibility**: Private (recommended for testing)
+5. Click "Create Repository"
+
+### 6. Configure Git Access
+```bash
+# Configure Git with your personal credentials (if not already done)
+git config --global user.name "Cervator"
+git config --global user.email "cervator@gmail.com"
+
+# Add Gitea as a remote (after creating the repository)
+git remote add gitea http://localhost:3000/Cervator/refr-k8s-test.git
+
+# For SSH access, first add your SSH key to Gitea:
+# 1. If needed then generate SSH key: ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519_gitea.pub
+# 2. Copy public key: cat ~/.ssh/id_ed25519_gitea.pub
+# 3. Add to Gitea: Settings → SSH/GPG Keys → Add Key
+# 4. Then use SSH remote via CLI, Git Kraken, or other tool
+```
+
+### 7. Test Repository Access
+```bash
+# Test pushing to Gitea repository (HTTPS)
+echo "# Test Repository for refr-k8s" > README.md
+git add README.md
+git commit -m "Initial commit"
+git push gitea main
+
+# Or test with SSH (after setting up SSH keys)
+git push gitea-ssh main
 ```
 
 ## Component Versions
@@ -230,24 +315,39 @@ echo "Password: $(kubectl -n argocd get secret argocd-initial-admin-secret -o js
 
 ### 6. Gitea Verification
 ```bash
-# Check Gitea and dependencies are running
+# Check Gitea pods are running
 kubectl get pods -n gitea
 
-# Expected output: Multiple pods including:
-# - gitea-* (main Gitea pod)
-# - gitea-postgresql-ha-* (PostgreSQL for Gitea)
-# - gitea-valkey-cluster-* (Redis for Gitea)
+# Expected output: Gitea pod and Valkey cluster pods running
+# - gitea-* (main Gitea pod) - 1/1 Running
+# - gitea-valkey-cluster-* (Redis cache) - 1/1 Running
 
-# Test Gitea UI access
+# Check services are properly configured
+kubectl get svc -n gitea
+
+# Expected output: Services with correct ports
+# - gitea-http: 3000/TCP
+# - gitea-ssh: 2222/TCP
+
+# Test HTTP access
 kubectl port-forward svc/gitea-http -n gitea 3000:3000 &
-sleep 5
+sleep 3
 curl -s -o /dev/null -w "%{http_code}" http://localhost:3000
 
 # Expected output: 200
 
-# Access Gitea UI
-echo "Gitea UI: http://localhost:3000"
-echo "First-time setup will be required"
+# Test SSH connectivity
+kubectl port-forward svc/gitea-ssh -n gitea 2222:2222 &
+sleep 3
+ssh -T -p 2222 -o ConnectTimeout=5 git@localhost 2>&1 | head -1
+
+# Expected output: Connection established (then permission denied is normal)
+
+# Display access information
+echo "=== Gitea Access Information ==="
+echo "Web UI: http://localhost:3000"
+echo "SSH: localhost:2222"
+echo "Set / find credentials in .env"
 ```
 
 ### 7. Helm Releases Verification
@@ -281,11 +381,12 @@ echo "Password: $(kubectl -n argocd get secret argocd-initial-admin-secret -o js
 
 echo -e "\n=== Gitea Access ==="
 echo "UI: http://localhost:3000 (after port-forward)"
-echo "First-time setup required"
+echo "SSH: localhost:2222 (after port-forward)"
+echo "Set / find credentials in .env"
 
 echo -e "\n=== Environment Variables ==="
 echo "Source .env file: source .env"
-echo "Available variables: ARGOCD_ADMIN_PASSWORD, ARGOCD_SERVER_URL, etc."
+echo "Available variables: ARGOCD_ADMIN_PASSWORD, ARGOCD_SERVER_URL, GITEA_URL, etc."
 ```
 
 ## Troubleshooting
