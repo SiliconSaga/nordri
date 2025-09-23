@@ -31,8 +31,9 @@
 
 ### 1.4 Install Velero
 - [x] Install Velero CLI
-- [ ] Configure Velero to point to local MinIO or S3-compatible service
-- [ ] Set up backup storage location
+- [x] Deploy MinIO (S3-compatible storage) using official Docker image
+- [x] Configure Velero to use MinIO backend
+- [x] Set up backup storage location (velero-backups bucket)
 - [x] Verify Velero installation and connectivity
 
 ### 1.5 Install Argo CD (Optional but Recommended)

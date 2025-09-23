@@ -71,7 +71,84 @@ velero version
 
 **Note**: Velero version installed: v1.17.0 (latest as of setup date)
 
-### 1.5 Install Argo CD (Optional but Recommended)
+### 1.5 Install MinIO (S3-Compatible Storage)
+```bash
+# Create namespace for MinIO
+kubectl create namespace minio
+
+# Deploy MinIO using official Docker image
+kubectl apply -f minio-deployment.yaml
+
+# Verify MinIO deployment
+kubectl get pods -n minio
+kubectl get svc -n minio
+```
+
+**MinIO Configuration:**
+- **Image**: `minio/minio:latest` (official image, avoiding Bitnami licensing issues)
+- **Storage**: 20Gi using local-path storage class
+- **Credentials**: `minioadmin` / `minioadmin123`
+- **API Endpoint**: `http://localhost:9000` (for Velero/S3 operations)
+- **Web Console**: `http://localhost:9001` (for management)
+
+**Port Forwarding (run in separate terminals):**
+```bash
+# Terminal 1: MinIO API (for Velero)
+kubectl port-forward svc/minio -n minio 9000:9000
+
+# Terminal 2: MinIO Console (for web management)
+kubectl port-forward svc/minio-console -n minio 9001:9001
+```
+
+**Create Velero Backup Bucket:**
+1. Open browser to `http://localhost:9001`
+2. Login with `minioadmin` / `minioadmin123`
+3. Click "Create Bucket"
+4. Bucket name: `velero-backups`
+5. Click "Create Bucket"
+
+### 1.6 Install Velero Server (Hybrid MinIO + GCP)
+```bash
+# Create Velero credentials file for MinIO
+cat > credentials-velero << 'EOF'
+[default]
+aws_access_key_id = minioadmin
+aws_secret_access_key = minioadmin123
+EOF
+
+# Set proper permissions
+chmod 600 credentials-velero
+
+# Install Velero server with MinIO backend (AWS provider for S3-compatibility)
+velero install \
+  --provider aws \
+  --plugins velero/velero-plugin-for-aws:v1.8.0 \
+  --bucket velero-backups \
+  --secret-file ./credentials-velero \
+  --use-volume-snapshots=false \
+  --backup-location-config region=us-east-1,s3ForcePathStyle=true,s3Url=http://minio.minio.svc.cluster.local:9000
+
+# Fix backup location to use cluster-internal service (if needed)
+kubectl patch backupstoragelocation default -n velero --type='merge' -p='{"spec":{"config":{"s3Url":"http://minio.minio.svc.cluster.local:9000"}}}'
+
+# Verify Velero installation
+kubectl get pods -n velero
+velero version
+```
+
+**Velero Configuration:**
+- **Provider**: AWS (for S3-compatibility with MinIO - don't need to actually use AWS)
+- **Backend**: MinIO (local S3-compatible storage)
+- **Bucket**: `velero-backups`
+- **Region**: `us-east-1` (default for S3-compatible)
+- **Endpoint**: `http://localhost:9000` (MinIO API)
+
+**Future GCP Integration:**
+- MinIO will replicate to GCP bucket for long-term storage
+- Cross-cluster restore capability via GCP
+- Hybrid approach: Fast local + Cloud redundancy
+
+### 1.7 Install Argo CD (Optional but Recommended)
 ```bash
 # Add Argo CD Helm repository
 helm repo add argo https://argoproj.github.io/argo-helm
@@ -92,7 +169,7 @@ kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.pas
 kubectl port-forward svc/argocd-server -n argocd 8080:443
 ```
 
-### 1.6 Install Gitea (For GitOps Testing)
+### 1.8 Install Gitea (For GitOps Testing)
 
 First, create a values file for a clean SQLite-based installation - see `gitea-values.yaml`
 
@@ -272,18 +349,51 @@ kubectl get crd | grep crossplane
 kubectl logs -n crossplane-system -l app=crossplane --tail=10
 ```
 
-### 4. Velero CLI Verification
+### 4. MinIO Verification
 ```bash
-# Check Velero CLI version
+# Check MinIO pods are running
+kubectl get pods -n minio
+
+# Expected output: MinIO pod 1/1 Running
+
+# Check MinIO services
+kubectl get svc -n minio
+
+# Expected output: Services with correct ports
+# - minio: 9000/TCP (API)
+# - minio-console: 9001/TCP (Web UI)
+
+# Test MinIO API connectivity (after port-forward)
+curl -I http://localhost:9000/minio/health/live
+
+# Expected output: HTTP/1.1 200 OK
+
+# Check MinIO logs
+kubectl logs -n minio deployment/minio --tail=10
+```
+
+### 5. Velero Server Verification
+```bash
+# Check Velero pods are running
+kubectl get pods -n velero
+
+# Expected output: Velero pods 1/1 Running
+
+# Check Velero CLI and server connectivity
 velero version
 
-# Expected output: Client version v1.17.0 (server error is expected until server is installed)
+# Expected output: Both client and server versions
+
+# Test Velero backup location
+velero backup-location get
+
+# Expected output: MinIO backup location configured
 
 # Test Velero help
 velero --help
 ```
 
-### 5. Argo CD Verification
+### 6. Argo CD Verification
 ```bash
 # Check all Argo CD components are running
 kubectl get pods -n argocd
@@ -313,7 +423,7 @@ echo "Username: admin"
 echo "Password: $(kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d)"
 ```
 
-### 6. Gitea Verification
+### 7. Gitea Verification
 ```bash
 # Check Gitea pods are running
 kubectl get pods -n gitea
@@ -350,7 +460,7 @@ echo "SSH: localhost:2222"
 echo "Set / find credentials in .env"
 ```
 
-### 7. Helm Releases Verification
+### 8. Helm Releases Verification
 ```bash
 # Check all Helm releases
 helm list -A
@@ -362,7 +472,7 @@ helm list -A
 # - gitea in gitea
 ```
 
-### 8. Complete System Health Check
+### 9. Complete System Health Check
 ```bash
 # Run comprehensive health check
 echo "=== Cluster Status ==="
@@ -418,6 +528,39 @@ kubectl get pods -n velero
 kubectl logs -n velero -l app.kubernetes.io/name=velero
 ```
 
+## Velero Testing
+
+### Prerequisites
+- MinIO port-forward running: `kubectl port-forward svc/minio -n minio 9000:9000`
+- Velero server installed and running
+
+### Basic Backup/Restore Test
+```bash
+# Create a test backup
+velero backup create test-backup --include-namespaces gitea
+
+# Check backup status
+velero backup get
+
+# Test restore
+velero restore create test-restore --from-backup test-backup
+
+# Clean up
+velero backup delete test-backup
+velero restore delete test-restore
+```
+
+### Verify Backup Storage
+```bash
+# Check backup location status
+velero backup-location get
+
+# List all backups
+velero backup get
+
+# Check MinIO bucket contents (via web console at localhost:9001)
+```
+
 ## Next Steps
 
 After successful installation of all components:
@@ -425,7 +568,7 @@ After successful installation of all components:
 1. Configure Crossplane providers (provider-kubernetes, provider-helm)
 2. Create XPostgreSQL CompositeResourceDefinition
 3. Create Composition for Percona PostgreSQL
-4. Set up Velero backup storage (MinIO or S3)
+4. Set up GCP replication for MinIO (long-term storage)
 5. Configure Argo CD for GitOps workflow
 6. Test end-to-end database provisioning and backup
 
