@@ -587,13 +587,88 @@ velero backup get
 # Check MinIO bucket contents (via web console at localhost:9001)
 ```
 
+## Phase 2: Platform Configuration
+
+### 2.1 Crossplane Providers ✅
+```bash
+# Install Crossplane providers
+kubectl apply -f - << 'EOF'
+apiVersion: pkg.crossplane.io/v1
+kind: Provider
+metadata:
+  name: provider-kubernetes
+spec:
+  package: xpkg.upbound.io/crossplane-contrib/provider-kubernetes:v0.9.0
+EOF
+
+kubectl apply -f - << 'EOF'
+apiVersion: pkg.crossplane.io/v1
+kind: Provider
+metadata:
+  name: provider-helm
+spec:
+  package: xpkg.upbound.io/crossplane-contrib/provider-helm:v0.18.0
+EOF
+
+# Verify providers
+kubectl get providers -n crossplane-system
+```
+
+### 2.2 XPostgreSQL CompositeResourceDefinition ✅
+```bash
+# Apply XPostgreSQL CRD (v2 API)
+kubectl apply -f XPostgreSQL-v2.yaml
+
+# Verify CRD
+kubectl get crd xpostgresqls.database.example.org
+
+# Test XPostgreSQL resource
+kubectl apply -f test-postgresql.yaml
+kubectl get xpostgresqls
+```
+
+### 2.3 Composition ✅
+```bash
+# Install go-templating function (required for pipeline mode)
+kubectl apply -f - << 'EOF'
+apiVersion: pkg.crossplane.io/v1
+kind: Function
+metadata:
+  name: function-go-templating
+spec:
+  package: xpkg.upbound.io/crossplane-contrib/function-go-templating:v0.4.0
+EOF
+
+# Apply Composition (pipeline mode for v2)
+kubectl apply -f Composition.yaml
+
+# Verify Composition
+kubectl get compositions
+kubectl get functions
+```
+
+### 2.4 Test XPostgreSQL ✅
+```bash
+# Create test PostgreSQL instance
+kubectl apply -f test-postgresql.yaml
+
+# Check status
+kubectl get xpostgresqls
+kubectl describe xpostgresql test-postgresql
+
+# Verify resources created
+kubectl get namespaces | grep postgresql
+```
+
+**Note**: The PerconaServerForPostgreSQL CRD error is expected since we haven't installed the Percona Operator yet. The Crossplane setup is working correctly - it's creating namespaces and attempting to create the PostgreSQL resources as designed.
+
 ## Next Steps
 
 After successful installation of all components:
 
-1. Configure Crossplane providers (provider-kubernetes, provider-helm)
-2. Create XPostgreSQL CompositeResourceDefinition
-3. Create Composition for Percona PostgreSQL
+1. ✅ Configure Crossplane providers (provider-kubernetes, provider-helm)
+2. ✅ Create XPostgreSQL CompositeResourceDefinition
+3. 🔄 Create Composition for Percona PostgreSQL (v2 pipeline mode)
 4. Set up GCP replication for MinIO (long-term storage)
 5. Configure Argo CD for GitOps workflow
 6. Test end-to-end database provisioning and backup

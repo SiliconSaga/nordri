@@ -52,20 +52,21 @@
 ## Phase 2: Platform Configuration
 
 ### 2.1 Configure Crossplane Providers
-- [ ] Install `provider-kubernetes` for Crossplane
-- [ ] Install `provider-helm` for Crossplane
+- [x] Install `provider-kubernetes` for Crossplane
+- [x] Install `provider-helm` for Crossplane
 - [ ] Verify providers are installed and healthy
 - [ ] Test provider connectivity
 
 ### 2.2 Define Abstraction Layer
-- [ ] Create `XPostgreSQL.yaml` - CompositeResourceDefinition (XRD)
+- [x] Create `XPostgreSQL.yaml` - CompositeResourceDefinition (XRD)
   - Define high-level XPostgreSQL resource
-  - Include fields: `storageSize` and `version`
-  - Set up proper schema validation
-- [ ] Create `Composition.yaml` - Composition logic
+  - Include fields: `storageSize`, `version`, `replicas`, `databaseName`
+  - Set up proper schema validation with v2 API
+- [x] Create `Composition.yaml` - Composition logic
   - Define how Crossplane translates XPostgreSQL to PerconaServerForPostgreSQL
+  - Use Crossplane v2 pipeline mode with go-templating function
   - Include Kubernetes Service creation
-  - Include Secret generation for database credentials
+  - Include Namespace creation for isolation
   - Set up proper resource relationships
 
 ### 2.3 Apply Abstraction

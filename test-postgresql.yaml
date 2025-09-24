@@ -1,0 +1,10 @@
+apiVersion: database.example.org/v1alpha1
+kind: XPostgreSQL
+metadata:
+  name: test-postgresql
+spec:
+  parameters:
+    storageSize: "5Gi"
+    version: "15"
+    replicas: 1
+    databaseName: "testdb"

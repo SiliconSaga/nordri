@@ -1,0 +1,98 @@
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: xpostgresql-percona
+  labels:
+    provider: percona
+    service: postgresql
+spec:
+  mode: Pipeline
+  writeConnectionSecretsToNamespace: crossplane-system
+  compositeTypeRef:
+    apiVersion: database.example.org/v1alpha1
+    kind: XPostgreSQL
+  pipeline:
+  - step: create-namespace
+    functionRef:
+      name: function-go-templating
+    input:
+      apiVersion: gotemplating.fn.crossplane.io/v1beta1
+      kind: GoTemplate
+      source: Inline
+      inline:
+        template: |
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: postgresql-{{ .observed.composite.resource.metadata.name }}
+            annotations:
+              crossplane.io/external-name: postgresql-{{ .observed.composite.resource.metadata.name }}
+              gotemplating.fn.crossplane.io/composition-resource-name: postgresql-namespace
+  
+  - step: create-percona-postgresql
+    functionRef:
+      name: function-go-templating
+    input:
+      apiVersion: gotemplating.fn.crossplane.io/v1beta1
+      kind: GoTemplate
+      source: Inline
+      inline:
+        template: |
+          apiVersion: postgresql.percona.com/v2
+          kind: PerconaServerForPostgreSQL
+          metadata:
+            name: {{ .observed.composite.resource.metadata.name }}
+            namespace: postgresql-{{ .observed.composite.resource.metadata.name }}
+            annotations:
+              crossplane.io/external-name: {{ .observed.composite.resource.metadata.name }}
+              gotemplating.fn.crossplane.io/composition-resource-name: percona-postgresql
+          spec:
+            postgresql:
+              version: "{{ .observed.composite.resource.spec.parameters.version }}"
+              replicas: {{ .observed.composite.resource.spec.parameters.replicas }}
+              resources:
+                requests:
+                  memory: "256Mi"
+                  cpu: "100m"
+                limits:
+                  memory: "1Gi"
+                  cpu: "500m"
+              volumeSpec:
+                persistentVolumeClaim:
+                  resources:
+                    requests:
+                      storage: {{ .observed.composite.resource.spec.parameters.storageSize }}
+            pmm:
+              enabled: false
+            backup:
+              enabled: true
+              schedule: "0 2 * * *"
+              retention: "7d"
+  
+  - step: create-service
+    functionRef:
+      name: function-go-templating
+    input:
+      apiVersion: gotemplating.fn.crossplane.io/v1beta1
+      kind: GoTemplate
+      source: Inline
+      inline:
+        template: |
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: {{ .observed.composite.resource.metadata.name }}
+            namespace: postgresql-{{ .observed.composite.resource.metadata.name }}
+            annotations:
+              crossplane.io/external-name: {{ .observed.composite.resource.metadata.name }}
+              gotemplating.fn.crossplane.io/composition-resource-name: postgresql-service
+          spec:
+            type: ClusterIP
+            ports:
+            - name: postgresql
+              port: 5432
+              targetPort: 5432
+              protocol: TCP
+            selector:
+              app.kubernetes.io/name: percona-server-for-postgresql
+              app.kubernetes.io/instance: {{ .observed.composite.resource.metadata.name }}
