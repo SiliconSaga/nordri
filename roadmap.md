@@ -70,8 +70,12 @@
   - Set up proper resource relationships
 
 ### 2.3 Apply Abstraction
-- [ ] Commit `XPostgreSQL.yaml` to Gitea repository
-- [ ] Commit `Composition.yaml` to Gitea repository
+- [x] Create working `XPostgreSQL.yaml` CompositeResourceDefinition
+- [x] Create working `Composition.yaml` with pipeline mode
+- [x] Fix RBAC permissions for Crossplane
+- [x] Test complete integration with Percona PostgreSQL Operator
+- [x] Verify PostgreSQL-as-a-Service functionality
+- [ ] Commit all files to Gitea repository
 - [ ] Push changes to Gitea repository
 - [ ] Apply XRD to cluster: `kubectl apply -f XPostgreSQL.yaml`
 - [ ] Apply Composition to cluster: `kubectl apply -f Composition.yaml`

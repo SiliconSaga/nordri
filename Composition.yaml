@@ -38,8 +38,8 @@ spec:
       source: Inline
       inline:
         template: |
-          apiVersion: postgresql.percona.com/v2
-          kind: PerconaServerForPostgreSQL
+          apiVersion: pgv2.percona.com/v2
+          kind: PerconaPGCluster
           metadata:
             name: {{ .observed.composite.resource.metadata.name }}
             namespace: postgresql-{{ .observed.composite.resource.metadata.name }}
@@ -47,8 +47,12 @@ spec:
               crossplane.io/external-name: {{ .observed.composite.resource.metadata.name }}
               gotemplating.fn.crossplane.io/composition-resource-name: percona-postgresql
           spec:
-            postgresql:
-              version: "{{ .observed.composite.resource.spec.parameters.version }}"
+            crVersion: "2.7.0"
+            image: "docker.io/percona/percona-postgresql-operator:2.7.0-ppg{{ .observed.composite.resource.spec.parameters.version }}.5.2-postgres"
+            imagePullPolicy: Always
+            postgresVersion: {{ .observed.composite.resource.spec.parameters.version }}
+            instances:
+            - name: instance1
               replicas: {{ .observed.composite.resource.spec.parameters.replicas }}
               resources:
                 requests:
@@ -57,17 +61,32 @@ spec:
                 limits:
                   memory: "1Gi"
                   cpu: "500m"
-              volumeSpec:
-                persistentVolumeClaim:
-                  resources:
-                    requests:
-                      storage: {{ .observed.composite.resource.spec.parameters.storageSize }}
-            pmm:
-              enabled: false
-            backup:
+              dataVolumeClaimSpec:
+                accessModes:
+                - ReadWriteOnce
+                resources:
+                  requests:
+                    storage: {{ .observed.composite.resource.spec.parameters.storageSize }}
+                storageClassName: local-path
+            backups:
               enabled: true
-              schedule: "0 2 * * *"
-              retention: "7d"
+              pgbackrest:
+                image: "docker.io/percona/percona-postgresql-operator:2.7.0-ppg{{ .observed.composite.resource.spec.parameters.version }}.5.2-pgbackrest"
+                repos:
+                - name: repo1
+                  volume:
+                    volumeClaimSpec:
+                      accessModes:
+                      - ReadWriteOnce
+                      resources:
+                        requests:
+                          storage: "1Gi"
+                      storageClassName: local-path
+            users:
+            - name: {{ .observed.composite.resource.spec.parameters.databaseName }}
+              databases:
+              - {{ .observed.composite.resource.spec.parameters.databaseName }}
+              secretName: {{ .observed.composite.resource.metadata.name }}-user-secret
   
   - step: create-service
     functionRef:
@@ -94,5 +113,5 @@ spec:
               targetPort: 5432
               protocol: TCP
             selector:
-              app.kubernetes.io/name: percona-server-for-postgresql
-              app.kubernetes.io/instance: {{ .observed.composite.resource.metadata.name }}
+              postgres-operator.crunchydata.com/cluster: {{ .observed.composite.resource.metadata.name }}
+              postgres-operator.crunchydata.com/instance-set: instance1

@@ -1,0 +1,30 @@
+# PostgreSQL Database Connectivity Test Pod
+# This pod can be used to test connectivity to PostgreSQL instances
+
+apiVersion: v1
+kind: Pod
+metadata:
+  name: postgres-client
+  namespace: postgresql-test-postgresql
+spec:
+  containers:
+  - name: postgres-client
+    image: postgres:15
+    command: 
+    - sleep
+    - "3600"
+    env:
+    - name: PGHOST
+      value: "test-postgresql"
+    - name: PGPORT
+      value: "5432"
+    - name: PGDATABASE
+      value: "testdb"
+    - name: PGUSER
+      value: "testdb"
+    - name: PGPASSWORD
+      valueFrom:
+        secretKeyRef:
+          name: test-postgresql-user-secret
+          key: password
+  restartPolicy: Never

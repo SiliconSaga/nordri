@@ -660,7 +660,81 @@ kubectl describe xpostgresql test-postgresql
 kubectl get namespaces | grep postgresql
 ```
 
-**Note**: The PerconaServerForPostgreSQL CRD error is expected since we haven't installed the Percona Operator yet. The Crossplane setup is working correctly - it's creating namespaces and attempting to create the PostgreSQL resources as designed.
+### 2.5 Install Percona PostgreSQL Operator ✅
+```bash
+# Add Percona Helm repository
+helm repo add percona https://percona.github.io/percona-helm-charts/
+helm repo update
+
+# Install Percona PostgreSQL operator
+kubectl create namespace percona-postgresql
+helm install percona-postgresql-operator percona/pg-operator --namespace percona-postgresql
+
+# Verify operator installation
+kubectl get pods -l app.kubernetes.io/name=pg-operator --namespace percona-postgresql
+kubectl get crd | grep percona
+```
+
+**Percona PostgreSQL Operator Components:**
+- **CRDs**: `perconapgclusters.pgv2.percona.com`, `perconapgbackups.pgv2.percona.com`
+- **API Version**: `pgv2.percona.com/v2`
+- **Kind**: `PerconaPGCluster` (not `PerconaServerForPostgreSQL`)
+
+### 2.6 Test Complete Integration ✅
+```bash
+# Check XPostgreSQL status
+kubectl get xpostgresqls
+kubectl describe xpostgresql test-postgresql
+
+# Verify namespace creation
+kubectl get namespaces | grep postgresql
+
+# Check if PerconaPGCluster resources are created
+kubectl get perconapgclusters -A
+```
+
+### 2.7 Fix RBAC Permissions ✅
+```bash
+# Apply Crossplane RBAC configuration
+kubectl apply -f crossplane-rbac.yaml
+```
+
+### 2.8 Test Working PostgreSQL ✅
+```bash
+# Create fresh test instance
+kubectl apply -f test-postgresql.yaml
+
+# Verify complete integration
+kubectl get xpostgresqls
+kubectl get namespaces | grep postgresql
+kubectl get perconapgclusters -n postgresql-test-postgresql
+kubectl get svc -n postgresql-test-postgresql
+```
+
+### 2.9 Test Database Connectivity ✅
+```bash
+# Wait for PostgreSQL to be fully ready (may take 2-3 minutes)
+kubectl wait --for=condition=ready pod -l postgres-operator.crunchydata.com/cluster=test-postgresql -n postgresql-test-postgresql --timeout=300s
+
+# Deploy test client pod
+kubectl apply -f test-database-connectivity.yaml
+
+# Test database connection
+kubectl exec -it postgres-client -n postgresql-test-postgresql -- psql -c "SELECT version();"
+
+# Test database operations
+kubectl exec -it postgres-client -n postgresql-test-postgresql -- psql -c "CREATE TABLE test_table (id SERIAL PRIMARY KEY, name TEXT);"
+kubectl exec -it postgres-client -n postgresql-test-postgresql -- psql -c "INSERT INTO test_table (name) VALUES ('Crossplane PostgreSQL Test');"
+kubectl exec -it postgres-client -n postgresql-test-postgresql -- psql -c "SELECT * FROM test_table;"
+```
+
+**🎉 SUCCESS!** The Crossplane abstraction layer is **FULLY WORKING**! It successfully:
+- ✅ Creates dedicated namespaces for PostgreSQL instances  
+- ✅ Processes XPostgreSQL requests through the pipeline
+- ✅ Integrates with the Percona PostgreSQL operator
+- ✅ Creates working PerconaPGCluster resources
+- ✅ Provisions PostgreSQL services with ClusterIP endpoints
+- ✅ Provides complete PostgreSQL-as-a-Service functionality
 
 ## Next Steps
 
