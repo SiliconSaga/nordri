@@ -87,7 +87,7 @@ kubectl get svc -n minio
 **MinIO Configuration:**
 - **Image**: `minio/minio:latest` (official image, avoiding Bitnami licensing issues)
 - **Storage**: 20Gi using local-path storage class
-- **Credentials**: `minioadmin` / `minioadmin123`
+- **Credentials**: Set via environment variables (`$MINIO_ACCESS_KEY` / `$MINIO_SECRET_KEY`)
 - **API Endpoint**: `http://localhost:9000` (for Velero/S3 operations)
 - **Web Console**: `http://localhost:9001` (for management)
 
@@ -102,18 +102,18 @@ kubectl port-forward svc/minio-console -n minio 9001:9001
 
 **Create Velero Backup Bucket:**
 1. Open browser to `http://localhost:9001`
-2. Login with `minioadmin` / `minioadmin123`
+2. Login with your MinIO credentials (from .env file)
 3. Click "Create Bucket"
 4. Bucket name: `velero-backups`
 5. Click "Create Bucket"
 
 ### 1.6 Install Velero Server (Hybrid MinIO + GCP)
 ```bash
-# Create Velero credentials file for MinIO
-cat > credentials-velero << 'EOF'
+# Create Velero credentials file for MinIO (using environment variables)
+cat > credentials-velero << EOF
 [default]
-aws_access_key_id = minioadmin
-aws_secret_access_key = minioadmin123
+aws_access_key_id = $MINIO_ACCESS_KEY
+aws_secret_access_key = $MINIO_SECRET_KEY
 EOF
 
 # Set proper permissions
@@ -127,9 +127,6 @@ velero install \
   --secret-file ./credentials-velero \
   --use-volume-snapshots=false \
   --backup-location-config region=us-east-1,s3ForcePathStyle=true,s3Url=http://minio.minio.svc.cluster.local:9000
-
-# Fix backup location to use cluster-internal service (if needed)
-kubectl patch backupstoragelocation default -n velero --type='merge' -p='{"spec":{"config":{"s3Url":"http://minio.minio.svc.cluster.local:9000"}}}'
 
 # Verify Velero installation
 kubectl get pods -n velero
@@ -149,6 +146,9 @@ velero version
 - Hybrid approach: Fast local + Cloud redundancy
 
 ### 1.7 Install Argo CD (Optional but Recommended)
+
+First, create a values file for local development - see `argocd-values.yaml`
+
 ```bash
 # Add Argo CD Helm repository
 helm repo add argo https://argoproj.github.io/argo-helm
@@ -159,14 +159,19 @@ helm repo update
 # Create namespace
 kubectl create namespace argocd
 
-# Install Argo CD
-helm install argocd argo/argo-cd --namespace argocd
+# Install Argo CD with local development configuration
+helm install argocd argo/argo-cd --namespace argocd -f argocd-values.yaml
 
 # Get Argo CD admin password
 kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d
 
-# Port forward to access Argo CD UI
-kubectl port-forward svc/argocd-server -n argocd 8080:443
+# Port forward to access Argo CD UI (insecure mode for local development)
+kubectl port-forward svc/argocd-server -n argocd 8080:80
+
+# Access Argo CD
+# URL: http://localhost:8080 (HTTP for insecure mode)
+# Username: admin
+# Password: $(kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d)
 ```
 
 ### 1.8 Install Gitea (For GitOps Testing)
@@ -210,10 +215,10 @@ kubectl exec -n gitea deployment/gitea -- gitea admin user create \
 ### 2. Access Gitea Services
 ```bash
 # Port forward for HTTP access (web UI)
-kubectl port-forward svc/gitea-http -n gitea 3000:3000 &
+kubectl port-forward svc/gitea-http -n gitea 3000:3000
 
 # Port forward for SSH access (Git operations)
-kubectl port-forward svc/gitea-ssh -n gitea 2222:2222 &
+kubectl port-forward svc/gitea-ssh -n gitea 2222:2222
 
 # Open web UI in browser
 open http://localhost:3000
@@ -290,7 +295,21 @@ Create a `.env` file manually with sensitive data (never commit this file):
 ```bash
 # Create .env file with sensitive data
 # DO NOT include actual secrets in documentation
-# Manually create .env with your actual values
+# Example structure (use your actual values):
+
+# MinIO Configuration
+MINIO_ACCESS_KEY=your-minio-access-key
+MINIO_SECRET_KEY=your-minio-secret-key
+
+# Gitea Configuration  
+GITEA_ADMIN_PASSWORD=your-admin-password
+GITEA_PERSONAL_PASSWORD=your-personal-password
+GITEA_URL=http://localhost:3000
+GITEA_REPO_URL=http://localhost:3000/Cervator/refr-k8s-test.git
+
+# Argo CD Configuration
+ARGOCD_ADMIN_PASSWORD=your-argocd-password
+ARGOCD_SERVER_URL=http://localhost:8080
 
 # Source the environment variables
 source .env
@@ -407,20 +426,27 @@ kubectl get pods -n argocd
 # - argocd-repo-server-*
 # - argocd-server-*
 
+# Check Argo CD services
+kubectl get svc -n argocd
+
+# Expected output: Services with correct ports
+# - argocd-server: 80/TCP, 443/TCP
+
 # Get Argo CD admin password
 kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d
 
-# Test Argo CD UI access
-kubectl port-forward svc/argocd-server -n argocd 8080:443 &
-sleep 3
-curl -k -s -o /dev/null -w "%{http_code}" https://localhost:8080
+# Test Argo CD UI access (after port-forward is running)
+curl -s -o /dev/null -w "%{http_code}" http://localhost:8080
 
 # Expected output: 200
 
 # Access Argo CD UI
-echo "Argo CD UI: https://localhost:8080"
+echo "Argo CD UI: http://localhost:8080 (HTTP for insecure mode)"
 echo "Username: admin"
 echo "Password: $(kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d)"
+
+# Verify Argo CD CLI access (optional)
+kubectl get applications -n argocd
 ```
 
 ### 7. Gitea Verification
