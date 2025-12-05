@@ -35,6 +35,16 @@ service:
     type: ClusterIP
     port: 3000
   ssh:
-    type: ClusterIP  
+    type: LoadBalancer  
     port: 2222
     targetPort: 2222
+
+ingress:
+  enabled: true
+  className: traefik
+  hosts:
+    - host: gitea.local
+      paths:
+        - path: /
+          pathType: Prefix
+
