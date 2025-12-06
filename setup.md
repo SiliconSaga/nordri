@@ -194,6 +194,8 @@ helm install gitea gitea-charts/gitea --namespace gitea -f gitea-values.yaml
 
 ## Gitea Setup and Access
 
+> See [Gitea Documentation](docs/gitea.md) for detailed access instructions including `/etc/hosts` configuration.
+
 ### 1. Create Admin and Personal Users
 ```bash
 # Create admin user
@@ -668,7 +670,7 @@ helm repo update
 
 # Install Percona PostgreSQL operator
 kubectl create namespace percona-postgresql
-helm install percona-postgresql-operator percona/pg-operator --namespace percona-postgresql
+helm install percona-postgresql-operator percona/pg-operator --namespace percona-postgresql --version 2.7.0 --set watchAllNamespaces=true
 
 # Verify operator installation
 kubectl get pods -l app.kubernetes.io/name=pg-operator --namespace percona-postgresql

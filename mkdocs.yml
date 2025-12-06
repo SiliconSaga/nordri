@@ -21,6 +21,8 @@ nav:
   - Roadmap: roadmap.md
   - Components:
       - How to document a component: components/index.md
+      - Gitea: ../docs/gitea.md
+      - PostgreSQL: ../docs/postgresql.md
       # Add entries like:
       # - Example Component: ../apps/example/docs/index.md
 

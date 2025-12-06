@@ -12,23 +12,6 @@ spec:
     apiVersion: database.example.org/v1alpha1
     kind: XPostgreSQL
   pipeline:
-  - step: create-namespace
-    functionRef:
-      name: function-go-templating
-    input:
-      apiVersion: gotemplating.fn.crossplane.io/v1beta1
-      kind: GoTemplate
-      source: Inline
-      inline:
-        template: |
-          apiVersion: v1
-          kind: Namespace
-          metadata:
-            name: postgresql-{{ .observed.composite.resource.metadata.name }}
-            annotations:
-              crossplane.io/external-name: postgresql-{{ .observed.composite.resource.metadata.name }}
-              gotemplating.fn.crossplane.io/composition-resource-name: postgresql-namespace
-  
   - step: create-percona-postgresql
     functionRef:
       name: function-go-templating
@@ -41,14 +24,14 @@ spec:
           apiVersion: pgv2.percona.com/v2
           kind: PerconaPGCluster
           metadata:
-            name: {{ .observed.composite.resource.metadata.name }}
-            namespace: postgresql-{{ .observed.composite.resource.metadata.name }}
+            name: {{ index .observed.composite.resource.metadata.labels "crossplane.io/claim-name" | default .observed.composite.resource.metadata.name }}
+            namespace: {{ index .observed.composite.resource.metadata.labels "crossplane.io/claim-namespace" | default "default" }}
             annotations:
               crossplane.io/external-name: {{ .observed.composite.resource.metadata.name }}
               gotemplating.fn.crossplane.io/composition-resource-name: percona-postgresql
           spec:
             crVersion: "2.7.0"
-            image: "docker.io/percona/percona-postgresql-operator:2.7.0-ppg{{ .observed.composite.resource.spec.parameters.version }}.5.2-postgres"
+            image: "percona/percona-postgresql-operator:2.7.0-ppg15-postgres"
             imagePullPolicy: Always
             postgresVersion: {{ .observed.composite.resource.spec.parameters.version }}
             instances:
@@ -71,7 +54,7 @@ spec:
             backups:
               enabled: true
               pgbackrest:
-                image: "docker.io/percona/percona-postgresql-operator:2.7.0-ppg{{ .observed.composite.resource.spec.parameters.version }}.5.2-pgbackrest"
+                image: "percona/percona-postgresql-operator:2.7.0-ppg15-postgres"
                 repos:
                 - name: repo1
                   volume:
@@ -82,11 +65,14 @@ spec:
                         requests:
                           storage: "1Gi"
                       storageClassName: local-path
+            proxy:
+              pgBouncer:
+                image: "percona/percona-postgresql-operator:2.6.0-ppg15-pgbouncer"
             users:
             - name: {{ .observed.composite.resource.spec.parameters.databaseName }}
               databases:
               - {{ .observed.composite.resource.spec.parameters.databaseName }}
-              secretName: {{ .observed.composite.resource.metadata.name }}-user-secret
+              secretName: {{ index .observed.composite.resource.metadata.labels "crossplane.io/claim-name" | default .observed.composite.resource.metadata.name }}-user-secret
   
   - step: create-service
     functionRef:
@@ -100,8 +86,8 @@ spec:
           apiVersion: v1
           kind: Service
           metadata:
-            name: {{ .observed.composite.resource.metadata.name }}
-            namespace: postgresql-{{ .observed.composite.resource.metadata.name }}
+            name: {{ index .observed.composite.resource.metadata.labels "crossplane.io/claim-name" | default .observed.composite.resource.metadata.name }}
+            namespace: {{ index .observed.composite.resource.metadata.labels "crossplane.io/claim-namespace" | default "default" }}
             annotations:
               crossplane.io/external-name: {{ .observed.composite.resource.metadata.name }}
               gotemplating.fn.crossplane.io/composition-resource-name: postgresql-service
@@ -113,5 +99,5 @@ spec:
               targetPort: 5432
               protocol: TCP
             selector:
-              postgres-operator.crunchydata.com/cluster: {{ .observed.composite.resource.metadata.name }}
+              postgres-operator.crunchydata.com/cluster: {{ index .observed.composite.resource.metadata.labels "crossplane.io/claim-name" | default .observed.composite.resource.metadata.name }}
               postgres-operator.crunchydata.com/instance-set: instance1
