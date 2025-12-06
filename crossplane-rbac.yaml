@@ -26,29 +26,3 @@ subjects:
   name: crossplane
   namespace: crossplane-system
 
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  name: crossplane-percona-manager
-rules:
-- apiGroups: ["pgv2.percona.com"]
-  resources: ["perconapgclusters", "perconapgbackups", "perconapgrestores", "perconapgupgrades"]
-  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-- apiGroups: ["pgv2.percona.com"]
-  resources: ["perconapgclusters/status", "perconapgbackups/status", "perconapgrestores/status", "perconapgupgrades/status"]
-  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: crossplane-percona-manager
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
-  name: crossplane-percona-manager
-subjects:
-- kind: ServiceAccount
-  name: crossplane
-  namespace: crossplane-system
