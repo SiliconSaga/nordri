@@ -1,6 +1,8 @@
-# Nordri Bootstrapping Strategy: "Layer 0.5"
+# Nordri Bootstrapping Strategy: The 6-Layer Model
 
-This document details the bootstrapping process for Nordri clusters (GKE and Homelab). It solves the "Chicken and Egg" problem of GitOps (ArgoCD needing a repo to install itself) by introducing a **Layer 0.5: The Hydrated Seed**.
+This document details the bootstrapping process for Nordri clusters (GKE and Homelab). It solves the "Chicken and Egg" problem of GitOps (ArgoCD needing a repo to install itself) by introducing a **Layer 2: Seed Gitea**.
+
+Nordri consists of the first 4 layers.
 
 ## The Core Concept: "Seed Gitea"
 
@@ -8,13 +10,13 @@ Instead of relying on a central GitHub repository that manages all clusters (whi
 
 This Gitea acts as the independent "Brain" for that cluster.
 
-### The Layers
+### The Hierarchy
 
-1.  **Layer 0 (The Metal)**
+1.  **Layer 1: The Substrate (Kubernetes)**
     *   **Action**: Provision the raw Kubernetes API.
     *   **GKE**: `gcloud container clusters create...`
     *   **Homelab**: `k3s server`
-2.  **Layer 0.5 (The Hydration)**
+2.  **Layer 2: The Seed (Gitea)**
     *   **Action**: Run `./bootstrap.sh --target [gke|homelab]`
     *   **Step A**: Install **Gitea** (Helm) into the `gitea` namespace.
     *   **Step B**: Configure Gitea (Create Admin, Token).
@@ -22,44 +24,70 @@ This Gitea acts as the independent "Brain" for that cluster.
         *   The script takes the local `nordri` checkout.
         *   It selects the correct overlay (`envs/gke` or `envs/homelab`).
         *   It pushes the *Resolved Configuration* to the internal Gitea (`http://gitea-http/nordri.git`).
-3.  **Layer 1 (The Ignition)**
+3.  **Layer 3: The Engine (ArgoCD)**
     *   **Action**: Install **ArgoCD**.
     *   **Step A**: Argo is installed via Helm.
     *   **Step B**: Argo is configured with the internal Gitea as a "Repository".
     *   **Step C**: The "Root Application" is applied, pointing to `HEAD` of the internal Gitea.
-4.  **Layer 2+ (The Expansion)**
-    *   **Action**: ArgoCD takes over.
-    *   It sees the `Application` manifests in the internal Gitea.
-    *   It installs Crossplane, Traefik, Cert-Manager, etc.
+4.  **Layer 4: The Fundamentals (Cluster Fundamentals)**
+    *   **Action**: ArgoCD takes over and installs the "Base System".
+    *   **Traefik**: The Gateway (Ingress).
+    *   **Cert-Manager**: SSL Certificates (Depends on Traefik).
+    *   **Crossplane**: Infrastructure Provisioning.
+    *   **Longhorn/NFS**: Storage Classes (Homelab only).
+5.  **Layer 5: Platform Services (Nidavellir Base)**
+    *   **Action**: ArgoCD Deploys shared services.
+    *   **Heimdall**: Observability (Prometheus/Grafana).
+    *   **Mimir**: Data (DB flavors, Kafka, Valkey - depends on Crossplane).
+    *   **Vegvísir Operator**: Custom controller for dynamic routes.
+    *   Keycloak for identity, Nexus for registries, Jenkins for CI/CD, and so on.
+6.  **Layer 6: User Workloads (The Apps)**
+    *   **Action**: The actual business value.
+    *   **Tafl**: Game Orchestrator.
+    *   **Demicracy**: Backstage.
+    *   **Agones**: Game Servers (Spawned dynamically).
 
-## The Architecture
+## Diagram 1: The Bootstrap (L1 - L4)
 
 ```mermaid
 graph TD
-    Local[Local Machine] -->|1. Bootstrap Script| Cluster[Kubernetes Cluster]
+    Local[Local Machine] -->|1. Setup K8s| L1[L1: Cluster]
+    Local -->|2. Bootstrap Gitea| L2[L2: Seed Gitea]
+    Local -->|3. Install Argo| L3[L3: ArgoCD]
     
-    subgraph Cluster
-        subgraph Layer 0.5
-            SeedGit[Seed Gitea]
-        end
-        
-        subgraph Layer 1
-            Argo[ArgoCD Controller]
-        end
-        
-        subgraph Layer 2
-            Traefik[Vegvísir Gateway]
-            Crossplane[Crossplane]
-            Apps[Applications]
-        end
+    L3 -->|Syncs| L2
+    
+    L3 -->|Deploys| L4[L4: Fundamentals]
+    
+    subgraph L4
+        Traefik
+        CertMgr[Cert-Manager]
+        Crossplane
     end
+```
 
-    Local -->|2. Pushes Hydrated Config| SeedGit
-    Local -->|3. Installs| Argo
-    Argo -->|4. Syncs from| SeedGit
-    Argo -->|5. Deploys| Traefik
-    Argo -->|5. Deploys| Crossplane
-    Argo -->|5. Deploys| Apps
+## Diagram 2: The Platform (L5 - L6)
+
+```mermaid
+graph TD
+    L4_Argo[L3: ArgoCD] -->|Deploys| L5[L5: Platform Services]
+    L4_Argo -->|Deploys| L6[L6: User Workloads]
+    
+    subgraph L5_Services
+        Heimdall[Observability]
+        Keycloak[Identity]
+        Vegvisir[Vegvísir Operator]
+    end
+    
+    subgraph L6_Workloads
+        Tafl
+        Backstage
+        Games[Agones Fleets]
+    end
+    
+    Tafl -->|Uses| L5_Services
+    Backstage -->|Uses| L5_Services
+    Games -->|Routes via| Vegvisir
 ```
 
 ## Repository Structure
