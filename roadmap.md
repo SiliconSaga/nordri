@@ -4,7 +4,7 @@
 
 **Goal**: Perform a quick, end-to-end experiment to validate a GitOps-driven, self-service infrastructure model on a local K3s cluster.
 
-**Desired Outcome**: A functioning PostgreSQL database provisioned by Crossplane and Percona, with a successful backup taken by Velero.
+**Desired Outcome**: A functioning PostgreSQL database provisioned by Crossplane and Percona (via Mimir), with a successful backup taken by Velero stored in MinIO (which needs to be Garage soon instead)
 
 **Infrastructure**: Local K3s cluster managed by k3d with Gitea for GitOps testing
 
@@ -17,11 +17,6 @@
 - [x] Verify cluster is accessible via `kubectl`
 - [x] Confirm cluster is ready for component installation
 
-### 1.2 Install Percona Operator
-- [x] Use Helm to install Percona Operator for PostgreSQL
-- [x] Deploy to `percona-system` namespace
-- [x] Verify operator pod is running
-- [x] Check operator logs for any issues
 
 ### 1.3 Install Crossplane
 - [x] Use Helm to install Crossplane (v2.0 or newer)
@@ -57,79 +52,29 @@
 - [ ] Verify providers are installed and healthy
 - [ ] Test provider connectivity
 
-### 2.2 Define Abstraction Layer
-- [x] Create `XPostgreSQL.yaml` - CompositeResourceDefinition (XRD)
-  - Define high-level XPostgreSQL resource
-  - Include fields: `storageSize`, `version`, `replicas`, `databaseName`
-  - Set up proper schema validation with v2 API
-- [x] Create `Composition.yaml` - Composition logic
-  - Define how Crossplane translates XPostgreSQL to PerconaServerForPostgreSQL
-  - Use Crossplane v2 pipeline mode with go-templating function
-  - Include Kubernetes Service creation
-  - Include Namespace creation for isolation
-  - Set up proper resource relationships
+### 2.2 Define Platform Abstraction Layer
+- [ ] Create generic Composition for Gitea (future)
+- [ ] Create generic Composition for other platform tools
+- [ ] Verify Compositions are accepted by Crossplane
 
-### 2.3 Apply Abstraction
-- [x] Create working `XPostgreSQL.yaml` CompositeResourceDefinition
-- [x] Create working `Composition.yaml` with pipeline mode
-- [x] Fix RBAC permissions for Crossplane
-- [x] Test complete integration with Percona PostgreSQL Operator
-- [x] Verify PostgreSQL-as-a-Service functionality
-- [ ] Commit all files to Gitea repository
-- [ ] Push changes to Gitea repository
-- [ ] Apply XRD to cluster: `kubectl apply -f XPostgreSQL.yaml`
-- [ ] Apply Composition to cluster: `kubectl apply -f Composition.yaml`
-- [ ] Verify XRD and Composition are accepted by Crossplane
+## Phase 3: Platform End-to-End Test
 
-## Phase 3: End-to-End Test
+### 3.1 Gitea Integration
+- [x] Install Gitea
+- [x] Configure for GitOps
+- [ ] Automate repository creation via Crossplane (future)
 
-### 3.1 Create Test Application
-- [ ] Create new repository in Gitea for test application
-- [ ] Create application manifest with:
-  - `kind: XPostgreSQL` resource definition
-  - Simple Deployment that uses the database
-  - Proper resource dependencies
-- [ ] Commit and push test application to Gitea repository
-
-### 3.2 Deploy with GitOps
+### 3.2 GitOps Workflow
 - [ ] Configure Argo CD to monitor Gitea test application repository
 - [ ] Set up Argo CD application for automatic deployment
-- [ ] Watch Argo CD automatically provision the database
-- [ ] Monitor deployment progress in Argo CD UI
-
-### 3.3 Verify Database
-- [ ] Use `kubectl get all` to confirm Percona operator created resources
-- [ ] Verify primary and replica pods are running
-- [ ] Check database logs for successful startup
-- [ ] Extract credentials from generated secret
-- [ ] Test database connectivity using credentials
-- [ ] Verify database is accepting connections
-
-### 3.4 Test Backup
-- [ ] Use Velero CLI to trigger manual backup of test namespace
-- [ ] Monitor backup progress
-- [ ] Verify backup files appear in S3 storage
-- [ ] Check backup metadata and completeness
-- [ ] Validate backup contains all necessary resources
-
-### 3.5 Test Restore
-- [ ] Delete database pods to simulate failure
-- [ ] Use Velero to restore from backup
-- [ ] Monitor restore progress
-- [ ] Verify database pods are recreated
-- [ ] Confirm database is accessible after restore
-- [ ] Test data integrity and connectivity
-- [ ] Validate complete recovery
+- [ ] Verify automatic synchronization
 
 ## Success Criteria
 
-- [ ] XPostgreSQL resource can be created via GitOps
-- [ ] Percona operator successfully provisions PostgreSQL
-- [ ] Database is accessible and functional
-- [ ] Velero backup captures all necessary resources
-- [ ] Velero restore successfully recovers the database
-- [ ] Data integrity is maintained through backup/restore cycle
+- [ ] Crossplane providers successfully installed
+- [ ] Platform components (ArgoCD, Gitea, Velero) functioning
 - [ ] GitOps workflow is fully automated
+- [ ] Velero backup captures platform state
 
 ## Prerequisites
 
@@ -150,7 +95,7 @@
 ### Gitea Configuration Decision
 - **Current Setup**: Gitea with SQLite database (bootstrap configuration)
 - **Rationale**: Simplified setup for initial testing, avoids PostgreSQL dependency issues
-- **Future Upgrade Path**: Once Percona operator is proven, consider upgrading Gitea to use PostgreSQL:
+- **Future Upgrade Path**: Once Mimir database platform is proven, consider upgrading Gitea to use PostgreSQL:
   - Option 1: Upgrade existing Gitea instance to use PostgreSQL
   - Option 2: Deploy new "production" Gitea instance with PostgreSQL
   - Option 3: Use Crossplane to provision PostgreSQL for Gitea (meta-experiment)
@@ -161,5 +106,4 @@
 - Check resource quotas and limits
 - Verify network connectivity between components
 - Ensure proper RBAC permissions are set
-- Validate storage class availability for Percona
 - Check Velero backup storage accessibility

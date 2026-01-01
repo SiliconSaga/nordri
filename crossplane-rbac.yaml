@@ -1,6 +1,5 @@
 # Crossplane RBAC Configuration
-# This file contains the necessary RBAC permissions for Crossplane to manage
-# namespaces and Percona PostgreSQL resources
+# This file contains the necessary RBAC permissions for Crossplane to manage namespaces
 
 ---
 apiVersion: rbac.authorization.k8s.io/v1

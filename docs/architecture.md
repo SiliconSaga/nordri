@@ -27,7 +27,7 @@ This document outlines the architecture for a robust, hybrid, multi-cluster Kube
 │  │ ┌─────────────────┐ │    │ ┌─────────────────┐ │    │ ┌─────────────────┐ │  │
 │  │ │   Core Platform │ │    │ │   Core Platform │ │    │ │   Core Platform │ │  │
 │  │ │   - Argo CD     │ │    │ │   - Argo CD     │ │    │ │   - Argo CD     │ │  │
-│  │ │   - Percona     │ │    │ │   - Percona     │ │    │ │   - Percona     │ │  │
+│  │ │   - Mimir (Data)│ │    │ │   - Mimir (Data)│ │    │ │   - Mimir (Data)│ │  │
 │  │ │   - Crossplane  │ │    │ │   - Crossplane  │ │    │ │   - Crossplane  │ │  │
 │  │ │   - Velero      │ │    │ │   - Velero      │ │    │ │   - Velero      │ │  │
 │  │ └─────────────────┘ │    │ └─────────────────┘ │    │ └─────────────────┘ │  │
@@ -65,7 +65,7 @@ This document outlines the architecture for a robust, hybrid, multi-cluster Kube
 |-----------|---------|---------|-------|
 | **Kubernetes** | Container orchestration | v1.31+ | K3s for home lab, GKE for production |
 | **Argo CD** | GitOps continuous deployment | Latest stable | Application lifecycle management |
-| **Percona Operator** | PostgreSQL database management | 2.7.0+ | High-availability database clusters |
+| **Mimir** | Database Management Platform | - | Manages Percona, Kafka, Valkey (External Project) |
 | **Crossplane** | Infrastructure as Code | 2.0+ | Self-service infrastructure provisioning |
 | **Velero** | Backup and disaster recovery | 1.17.0+ | Cross-cluster backup/restore |
 | **Prometheus/Grafana** | Monitoring and observability | Latest | Metrics collection and visualization |
@@ -113,7 +113,7 @@ This document outlines the architecture for a robust, hybrid, multi-cluster Kube
 - **Frequency**: Daily automated backups
 - **Retention**: 30 days for daily, 12 months for weekly
 - **Scope**: Full cluster state (manifests + persistent volumes)
-- **Database Backups**: Native Percona backups + Velero snapshots
+- **Database Backups**: Managed via Mimir + Velero snapshots
 
 ### Home Lab Cluster A (Standby/DR)
 

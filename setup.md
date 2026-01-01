@@ -24,25 +24,8 @@ kubectl cluster-info
 kubectl get nodes
 ```
 
-### 1.2 Install Percona Operator
-```bash
-# Add Percona Helm repository
-helm repo add percona https://percona.github.io/percona-helm-charts/
 
-# Update repositories
-helm repo update
-
-# Create namespace
-kubectl create namespace percona-system
-
-# Install Percona Operator for PostgreSQL
-helm install percona-operator percona/pg-operator --namespace percona-system
-
-# Verify installation
-kubectl get pods -l app.kubernetes.io/name=pg-operator --namespace percona-system
-```
-
-### 1.3 Install Crossplane
+### 1.2 Install Crossplane
 ```bash
 # Create namespace
 kubectl create namespace crossplane-system
@@ -60,7 +43,7 @@ helm install crossplane crossplane-stable/crossplane --namespace crossplane-syst
 kubectl get pods -n crossplane-system
 ```
 
-### 1.4 Install Velero CLI
+### 1.3 Install Velero CLI
 ```bash
 # Install Velero CLI using Homebrew (recommended method for Mac)
 brew install velero
@@ -71,7 +54,7 @@ velero version
 
 **Note**: Velero version installed: v1.17.0 (latest as of setup date)
 
-### 1.5 Install MinIO (S3-Compatible Storage)
+### 1.4 Install MinIO (S3-Compatible Storage)
 ```bash
 # Create namespace for MinIO
 kubectl create namespace minio
@@ -107,7 +90,7 @@ kubectl port-forward svc/minio-console -n minio 9001:9001
 4. Bucket name: `velero-backups`
 5. Click "Create Bucket"
 
-### 1.6 Install Velero Server (Hybrid MinIO + GCP)
+### 1.5 Install Velero Server (Hybrid MinIO + GCP)
 ```bash
 # Create Velero credentials file for MinIO (using environment variables)
 cat > credentials-velero << EOF
@@ -145,7 +128,7 @@ velero version
 - Cross-cluster restore capability via GCP
 - Hybrid approach: Fast local + Cloud redundancy
 
-### 1.7 Install Argo CD (Optional but Recommended)
+### 1.6 Install Argo CD (Optional but Recommended)
 
 First, create a values file for local development - see `argocd-values.yaml`
 
@@ -174,7 +157,7 @@ kubectl port-forward svc/argocd-server -n argocd 8080:80
 # Password: $(kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d)
 ```
 
-### 1.8 Install Gitea (For GitOps Testing)
+### 1.7 Install Gitea (For GitOps Testing)
 
 First, create a values file for a clean SQLite-based installation - see `gitea-values.yaml`
 
@@ -229,7 +212,7 @@ open http://localhost:3000
 ### 3. Login Credentials
 - **Web UI**: http://localhost:3000
 - **SSH**: localhost:2222
-- Set / find usernames and passwords in .env
+- - Set / find usernames and passwords in .env
 
 ### 4. Test SSH Connection
 ```bash
@@ -282,7 +265,6 @@ git push gitea-ssh main
 ## Component Versions
 
 - **K3s**: v1.31.5+k3s1
-- **Percona Operator**: 2.7.0
 - **Crossplane**: 2.0.2
 - **Velero**: 1.17.0
 - **Argo CD**: Latest stable (via Helm)
@@ -335,23 +317,7 @@ kubectl get nodes
 # Expected output: 3 nodes (1 control-plane, 2 agents) all Ready
 ```
 
-### 2. Percona Operator Verification
-```bash
-# Check operator pod is running
-kubectl get pods -l app.kubernetes.io/name=pg-operator --namespace percona-system
-
-# Expected output: 1/1 Running
-
-# Check operator logs for successful startup
-kubectl logs -l app.kubernetes.io/name=pg-operator --namespace percona-system --tail=10
-
-# Expected output: Controller startup messages, no errors
-
-# Verify operator can see CRDs
-kubectl get crd | grep percona
-```
-
-### 3. Crossplane Verification
+### 2. Crossplane Verification
 ```bash
 # Check Crossplane pods are running
 kubectl get pods -n crossplane-system
@@ -370,7 +336,7 @@ kubectl get crd | grep crossplane
 kubectl logs -n crossplane-system -l app=crossplane --tail=10
 ```
 
-### 4. MinIO Verification
+### 3. MinIO Verification
 ```bash
 # Check MinIO pods are running
 kubectl get pods -n minio
@@ -393,7 +359,7 @@ curl -I http://localhost:9000/minio/health/live
 kubectl logs -n minio deployment/minio --tail=10
 ```
 
-### 5. Velero Server Verification
+### 4. Velero Server Verification
 ```bash
 # Check Velero pods are running
 kubectl get pods -n velero
@@ -414,7 +380,7 @@ velero backup-location get
 velero --help
 ```
 
-### 6. Argo CD Verification
+### 5. Argo CD Verification
 ```bash
 # Check all Argo CD components are running
 kubectl get pods -n argocd
@@ -451,7 +417,7 @@ echo "Password: $(kubectl -n argocd get secret argocd-initial-admin-secret -o js
 kubectl get applications -n argocd
 ```
 
-### 7. Gitea Verification
+### 6. Gitea Verification
 ```bash
 # Check Gitea pods are running
 kubectl get pods -n gitea
@@ -488,26 +454,25 @@ echo "SSH: localhost:2222"
 echo "Set / find credentials in .env"
 ```
 
-### 8. Helm Releases Verification
+### 7. Helm Releases Verification
 ```bash
 # Check all Helm releases
 helm list -A
 
-# Expected output: 5 releases:
-# - percona-operator in percona-system
+# Expected output: 4 releases:
 # - crossplane in crossplane-system  
 # - argocd in argocd
 # - gitea in gitea
 ```
 
-### 9. Complete System Health Check
+### 8. Complete System Health Check
 ```bash
 # Run comprehensive health check
 echo "=== Cluster Status ==="
 kubectl get nodes
 
 echo -e "\n=== All Pods Status ==="
-kubectl get pods -A | grep -E "(percona|crossplane|argocd|gitea)"
+kubectl get pods -A | grep -E "(crossplane|argocd|gitea)"
 
 echo -e "\n=== Helm Releases ==="
 helm list -A
@@ -528,15 +493,6 @@ echo "Available variables: ARGOCD_ADMIN_PASSWORD, ARGOCD_SERVER_URL, GITEA_URL, 
 ```
 
 ## Troubleshooting
-
-### Percona Operator Issues
-```bash
-# Check operator logs
-kubectl logs -l app.kubernetes.io/name=pg-operator --namespace percona-system
-
-# Describe pod for events
-kubectl describe pod -l app.kubernetes.io/name=pg-operator --namespace percona-system
-```
 
 ### Crossplane Issues
 ```bash
@@ -616,138 +572,17 @@ EOF
 kubectl get providers -n crossplane-system
 ```
 
-### 2.2 XPostgreSQL CompositeResourceDefinition ✅
-```bash
-# Apply XPostgreSQL CRD (v2 API)
-kubectl apply -f XPostgreSQL-v2.yaml
+### 2.2 Database Support (Moved)
 
-# Verify CRD
-kubectl get crd xpostgresqls.database.example.org
-
-# Test XPostgreSQL resource
-kubectl apply -f test-postgresql.yaml
-kubectl get xpostgresqls
-```
-
-### 2.3 Composition ✅
-```bash
-# Install go-templating function (required for pipeline mode)
-kubectl apply -f - << 'EOF'
-apiVersion: pkg.crossplane.io/v1
-kind: Function
-metadata:
-  name: function-go-templating
-spec:
-  package: xpkg.upbound.io/crossplane-contrib/function-go-templating:v0.4.0
-EOF
-
-# Apply Composition (pipeline mode for v2)
-kubectl apply -f Composition.yaml
-
-# Verify Composition
-kubectl get compositions
-kubectl get functions
-```
-
-### 2.4 Test XPostgreSQL ✅
-```bash
-# Create test PostgreSQL instance
-kubectl apply -f test-postgresql.yaml
-
-# Check status
-kubectl get xpostgresqls
-kubectl describe xpostgresql test-postgresql
-
-# Verify resources created
-kubectl get namespaces | grep postgresql
-```
-
-### 2.5 Install Percona PostgreSQL Operator ✅
-```bash
-# Add Percona Helm repository
-helm repo add percona https://percona.github.io/percona-helm-charts/
-helm repo update
-
-# Install Percona PostgreSQL operator
-kubectl create namespace percona-postgresql
-helm install percona-postgresql-operator percona/pg-operator --namespace percona-postgresql --version 2.7.0 --set watchAllNamespaces=true
-
-# Verify operator installation
-kubectl get pods -l app.kubernetes.io/name=pg-operator --namespace percona-postgresql
-kubectl get crd | grep percona
-```
-
-**Percona PostgreSQL Operator Components:**
-- **CRDs**: `perconapgclusters.pgv2.percona.com`, `perconapgbackups.pgv2.percona.com`
-- **API Version**: `pgv2.percona.com/v2`
-- **Kind**: `PerconaPGCluster` (not `PerconaServerForPostgreSQL`)
-
-### 2.6 Test Complete Integration ✅
-```bash
-# Check XPostgreSQL status
-kubectl get xpostgresqls
-kubectl describe xpostgresql test-postgresql
-
-# Verify namespace creation
-kubectl get namespaces | grep postgresql
-
-# Check if PerconaPGCluster resources are created
-kubectl get perconapgclusters -A
-```
-
-### 2.7 Fix RBAC Permissions ✅
-```bash
-# Apply Crossplane RBAC configuration
-kubectl apply -f crossplane-rbac.yaml
-```
-
-### 2.8 Test Working PostgreSQL ✅
-```bash
-# Create fresh test instance
-kubectl apply -f test-postgresql.yaml
-
-# Verify complete integration
-kubectl get xpostgresqls
-kubectl get namespaces | grep postgresql
-kubectl get perconapgclusters -n postgresql-test-postgresql
-kubectl get svc -n postgresql-test-postgresql
-```
-
-### 2.9 Test Database Connectivity ✅
-```bash
-# Wait for PostgreSQL to be fully ready (may take 2-3 minutes)
-kubectl wait --for=condition=ready pod -l postgres-operator.crunchydata.com/cluster=test-postgresql -n postgresql-test-postgresql --timeout=300s
-
-# Deploy test client pod
-kubectl apply -f test-database-connectivity.yaml
-
-# Test database connection
-kubectl exec -it postgres-client -n postgresql-test-postgresql -- psql -c "SELECT version();"
-
-# Test database operations
-kubectl exec -it postgres-client -n postgresql-test-postgresql -- psql -c "CREATE TABLE test_table (id SERIAL PRIMARY KEY, name TEXT);"
-kubectl exec -it postgres-client -n postgresql-test-postgresql -- psql -c "INSERT INTO test_table (name) VALUES ('Crossplane PostgreSQL Test');"
-kubectl exec -it postgres-client -n postgresql-test-postgresql -- psql -c "SELECT * FROM test_table;"
-```
-
-**🎉 SUCCESS!** The Crossplane abstraction layer is **FULLY WORKING**! It successfully:
-- ✅ Creates dedicated namespaces for PostgreSQL instances  
-- ✅ Processes XPostgreSQL requests through the pipeline
-- ✅ Integrates with the Percona PostgreSQL operator
-- ✅ Creates working PerconaPGCluster resources
-- ✅ Provisions PostgreSQL services with ClusterIP endpoints
-- ✅ Provides complete PostgreSQL-as-a-Service functionality
+> **Note**: Database support (PostgreSQL, MySQL, MongoDB, Redis/Valkey) has been moved to the **Mimir** project. Please refer to that project for database provisioning and management.
 
 ## Next Steps
 
 After successful installation of all components:
 
 1. ✅ Configure Crossplane providers (provider-kubernetes, provider-helm)
-2. ✅ Create XPostgreSQL CompositeResourceDefinition
-3. 🔄 Create Composition for Percona PostgreSQL (v2 pipeline mode)
-4. Set up GCP replication for MinIO (long-term storage)
-5. Configure Argo CD for GitOps workflow
-6. Test end-to-end database provisioning and backup
+2. Configure Argo CD for GitOps workflow
+3. Test end-to-end GitOps workflow with Gitea
 
 ## Notes
 
