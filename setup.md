@@ -301,11 +301,6 @@ source .env
 
 **Important**: The `.env` file contains sensitive information and should never be committed to version control. The `.gitignore` file already excludes `.env` files.
 
-
-### Create .gitignore
-
-Don't need to embed that here either, the file is right there! :-)
-
 ## Verification Commands
 
 ### 1. Cluster Verification

@@ -84,13 +84,6 @@
 - [x] Helm installed
 - [x] kubectl configured for cluster access
 
-## Notes
-
-- This experiment validates the self-service infrastructure model
-- Focus on end-to-end workflow rather than production hardening
-- Document any issues or deviations from the plan
-- Keep track of timing for each phase
-- Note any configuration challenges or solutions
 
 ### Gitea Configuration Decision
 - **Current Setup**: Gitea with SQLite database (bootstrap configuration)
@@ -99,11 +92,3 @@
   - Option 1: Upgrade existing Gitea instance to use PostgreSQL
   - Option 2: Deploy new "production" Gitea instance with PostgreSQL
   - Option 3: Use Crossplane to provision PostgreSQL for Gitea (meta-experiment)
-
-## Troubleshooting
-
-- Monitor pod logs for any component failures
-- Check resource quotas and limits
-- Verify network connectivity between components
-- Ensure proper RBAC permissions are set
-- Check Velero backup storage accessibility
