@@ -1,0 +1,23 @@
+
+# Homelab Environment Values
+
+global:
+  environment: homelab
+  domain: "homelab.local"
+
+# Layer 4: Fundamentals
+traefik:
+  serviceType: NodePort # Or rely on K3s default traefik
+  enableDashboard: true
+
+certManager:
+  enabled: false # We use self-signed or internal CA, or just HTTP for local dev
+  issuer: "self-signed"
+
+crossplane:
+  provider: "noop" # Or local helm provider
+  bucketStorageClass: "local-path"
+
+# Layer 5: Platform
+mimir:
+  dbStorageClass: "longhorn"

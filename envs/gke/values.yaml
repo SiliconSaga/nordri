@@ -1,0 +1,23 @@
+
+# GKE Environment Values
+
+global:
+  environment: gke
+  domain: "yggdrasil.cloud"
+
+# Layer 4: Fundamentals
+traefik:
+  serviceType: LoadBalancer # GKE gives us a real LB
+  enableDashboard: false
+
+certManager:
+  issuer: "letsencrypt-prod"
+  email: "admin@yggdrasil.cloud"
+
+crossplane:
+  provider: "gcp"
+  bucketStorageClass: "standard"
+
+# Layer 5: Platform
+mimir:
+  dbStorageClass: "premium-rwo"

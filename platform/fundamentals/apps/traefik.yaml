@@ -1,0 +1,33 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: traefik
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: 'https://traefik.github.io/charts'
+    chart: traefik
+    targetRevision: 26.0.0
+    helm:
+      # We just set generic values here. The App-of-Apps or Argo overrides
+      # will handle the environment specific values (LoadBalancer vs NodePort)
+      values: |
+        service:
+          enabled: true
+        ports:
+          web:
+            exposedPort: 80
+          websecure:
+            exposedPort: 443
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: kube-system
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

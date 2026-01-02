@@ -1,0 +1,49 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: velero
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: 'https://vmware-tanzu.github.io/helm-charts'
+    chart: velero
+    targetRevision: 5.2.0 # Corresponds to Velero v1.12.x
+    helm:
+      values: |
+        initContainers:
+          - name: velero-plugin-for-aws
+            image: velero/velero-plugin-for-aws:v1.9.0
+            volumeMounts:
+              - mountPath: /target
+                name: plugins
+        configuration:
+          provider: aws
+          backupStorageLocation:
+            bucket: velero-backups
+            config:
+              # We set region to "garage" just to satisfy SDK validation - may need to revisit later or use a real region?
+              region: garage
+              s3ForcePathStyle: true
+              # We use the internal service DNS for whichever storage provider we have (Garage)
+              # In GKE, this URL is overridden to https://storage.googleapis.com
+              s3Url: http://garage.garage.svc.cluster.local:3900  
+          volumeSnapshotLocation:
+            config:
+              region: garage
+        credentials:
+          useSecret: true
+          secretContents:
+            cloud: |
+               # This secret is populated manually/via bootstrap, NOT here.
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: velero
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

@@ -1,0 +1,18 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  # Shared Apps
+  - ../../apps/traefik.yaml
+  - ../../apps/crossplane.yaml
+  - ../../apps/velero.yaml
+
+  # Shared Manifests
+  - ../../manifests/crossplane-providers.yaml
+
+  # Homelab Specific Apps
+  - ../../apps/longhorn.yaml
+  - ../../apps/garage.yaml
+  
+  # Exclusions
+  # We do NOT include cert-manager.yaml here.
