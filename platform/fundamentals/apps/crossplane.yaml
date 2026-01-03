@@ -5,15 +5,17 @@ metadata:
   namespace: argocd
   finalizers:
     - resources-finalizer.argocd.argoproj.io
+  annotations:
+    argocd.argoproj.io/sync-wave: "-5"
 spec:
   project: default
   source:
     repoURL: 'https://charts.crossplane.io/stable'
     chart: crossplane
-    targetRevision: 1.15.0
+    targetRevision: 2.1.3
     helm:
       values: |
-        args: ["--enable-composition-revisions"]
+        args: []
   destination:
     server: https://kubernetes.default.svc
     namespace: crossplane-system

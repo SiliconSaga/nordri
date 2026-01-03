@@ -9,8 +9,7 @@ spec:
     repoURL: 'http://gitea-http.gitea.svc.cluster.local:3000/nordri-admin/nordri.git'
     targetRevision: HEAD
     path: platform/fundamentals
-    directory:
-      recurse: true
+
   destination:
     server: https://kubernetes.default.svc
     namespace: argocd

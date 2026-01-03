@@ -7,7 +7,7 @@ global:
 
 # Layer 4: Fundamentals
 traefik:
-  serviceType: NodePort # Or rely on K3s default traefik
+  serviceType: LoadBalancer
   enableDashboard: true
 
 certManager:

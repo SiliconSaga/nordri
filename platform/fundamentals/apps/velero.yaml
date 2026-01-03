@@ -10,7 +10,7 @@ spec:
   source:
     repoURL: 'https://vmware-tanzu.github.io/helm-charts'
     chart: velero
-    targetRevision: 5.2.0 # Corresponds to Velero v1.12.x
+    targetRevision: 11.3.1 # Corresponds to Velero v1.17.1
     helm:
       values: |
         initContainers:

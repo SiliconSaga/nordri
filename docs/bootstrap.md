@@ -24,16 +24,20 @@ This Gitea acts as the independent "Brain" for that cluster.
         *   The script takes the local `nordri` checkout.
         *   It selects the correct overlay (`envs/gke` or `envs/homelab`).
         *   It pushes the *Resolved Configuration* to the internal Gitea (`http://gitea-http/nordri.git`).
-3.  **Layer 3: The Engine (ArgoCD)**
+3.  **Layer 2.5: The Cluster Fundamentals**
+    *   **Action**: Install **Gateway API CRDs** and **Crossplane Core Controller**.
+    *   **Why**: Required before ArgoCD starts. Traefik depends on GatewayClass, and Provider configs depend on Crossplane CRDs being fully established.
+    *   **Why**: Required before ArgoCD starts. Traefik depends on GatewayClass, and Provider configs depend on Crossplane CRDs.
+4.  **Layer 3: The Engine (ArgoCD)**
     *   **Action**: Install **ArgoCD**.
     *   **Step A**: Argo is installed via Helm.
     *   **Step B**: Argo is configured with the internal Gitea as a "Repository".
     *   **Step C**: The "Root Application" is applied, pointing to `HEAD` of the internal Gitea.
-4.  **Layer 4: The Fundamentals (Cluster Fundamentals)**
+5.  **Layer 4: The Fundamentals (Cluster Fundamentals)**
     *   **Action**: ArgoCD takes over and installs the "Base System".
-    *   **Traefik**: The Gateway (Ingress).
+    *   **Traefik v3**: The Gateway (Ingress & Gateway API Provider).
     *   **Cert-Manager**: SSL Certificates (Depends on Traefik).
-    *   **Crossplane**: Infrastructure Provisioning.
+    *   **Crossplane**: Provider Configurations (Kubernetes, Helm).
     *   **Longhorn/NFS**: Storage Classes (Homelab only).
 5.  **Layer 5: Platform Services (Nidavellir Base)**
     *   **Action**: ArgoCD Deploys shared services.
@@ -53,7 +57,8 @@ This Gitea acts as the independent "Brain" for that cluster.
 graph TD
     Local[Local Machine] -->|1. Setup K8s| L1[L1: Cluster]
     Local -->|2. Bootstrap Gitea| L2[L2: Seed Gitea]
-    Local -->|3. Install Argo| L3[L3: ArgoCD]
+    Local -->|3. Install Fundamentals| L2.5[L2.5: Gateway API & Crossplane]
+    Local -->|4. Install Argo| L3[L3: ArgoCD]
     
     L3 -->|Syncs| L2
     

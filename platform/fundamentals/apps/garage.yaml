@@ -8,9 +8,9 @@ metadata:
 spec:
   project: default
   source:
-    repoURL: 'https://charts.k8s-at-home.com' # TODO: Or garage specific provider if available, this is placeholder
-    chart: garage
-    targetRevision: 0.8.0
+    repoURL: 'http://gitea-http.gitea.svc.cluster.local:3000/nordri-admin/nordri.git'
+    path: platform/charts/garage
+    targetRevision: HEAD
     helm:
       values: |
         persistence:

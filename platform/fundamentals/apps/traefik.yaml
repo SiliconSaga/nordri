@@ -10,13 +10,14 @@ spec:
   source:
     repoURL: 'https://traefik.github.io/charts'
     chart: traefik
-    targetRevision: 26.0.0
+    targetRevision: 38.0.1
     helm:
       # We just set generic values here. The App-of-Apps or Argo overrides
       # will handle the environment specific values (LoadBalancer vs NodePort)
       values: |
-        service:
-          enabled: true
+        providers:
+          kubernetesGateway:
+            enabled: true
         ports:
           web:
             exposedPort: 80

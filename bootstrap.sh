@@ -15,7 +15,7 @@ GITEA_REPO_NAME="nordri"
 INTERNAL_GITEA_URL="http://gitea-http.gitea.svc.cluster.local:3000"
 
 if [[ -z "$TARGET" ]]; then
-    echo "Usage: ./bootstrap.sh --target [gke|homelab]"
+    echo "Usage: ./bootstrap.sh [gke|homelab]"
     exit 1
 fi
 
@@ -28,9 +28,19 @@ echo "🚀 Bootstrapping Nordri for target: $TARGET"
 
 # --- Step 1: Install Seed Gitea (Layer 2) ---
 echo "📦 [Layer 2] Installing Seed Gitea..."
-helm repo add gitea-charts https://dl.gitea.io/charts/
+helm repo add gitea-charts https://dl.gitea.io/charts/ >/dev/null 2>&1
 helm repo update
 kubectl create namespace gitea --dry-run=client -o yaml | kubectl apply -f -
+
+# We use a simple configuration for the seed instance
+# Cleanup function to kill port forward on exit
+cleanup() {
+    if [[ -n "$PF_PID" ]]; then
+        echo "🧹 Stopping Port Forward (PID: $PF_PID)..."
+        kill $PF_PID 2>/dev/null || true
+    fi
+}
+trap cleanup EXIT
 
 # We use a simple configuration for the seed instance
 helm upgrade --install gitea gitea-charts/gitea \
@@ -38,9 +48,38 @@ helm upgrade --install gitea gitea-charts/gitea \
   --set gitea.admin.username=$GITEA_USER \
   --set gitea.admin.password=$GITEA_PASS \
   --set persistence.enabled=false \
-  --wait
+  --set containerSecurityContext.runAsUser=1000 \
+  --set containerSecurityContext.runAsGroup=1000 \
+  --set podSecurityContext.fsGroup=1000 \
+  --set rootless=true
 
-echo "✅ Gitea installed."
+echo "⏳ Waiting for Gitea to become ready..."
+TIMEOUT=300
+START_TIME=$(date +%s)
+while true; do
+    CURRENT_TIME=$(date +%s)
+    ELAPSED=$((CURRENT_TIME - START_TIME))
+    if [ $ELAPSED -gt $TIMEOUT ]; then
+        echo "❌ Timeout waiting for Gitea to start."
+        exit 1
+    fi
+
+    # Check if pod is Ready
+    STATUS=$(kubectl get pods -n gitea -l app.kubernetes.io/name=gitea -o jsonpath='{.items[0].status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
+    
+    if [[ "$STATUS" == "True" ]]; then
+        echo "✅ Gitea pod is Ready."
+        break
+    fi
+
+    echo "   ... waiting for Gitea pod to be Ready ($ELAPSED/${TIMEOUT}s)"
+    # Optional: Tail a bit of logs to show activity
+    kubectl logs -n gitea -l app.kubernetes.io/name=gitea --tail=1 2>/dev/null || true
+    
+    sleep 5
+done
+
+echo "✅ Gitea installed and running."
 
 # --- Step 2: Hydrate Configuration (Layer 2) ---
 echo "💧 [Layer 2] Hydrating Configuration..."
@@ -89,16 +128,88 @@ git remote add origin "http://$GITEA_USER:$GITEA_PASS@localhost:3000/$GITEA_USER
 git push -u origin main --force
 cd -
 
-# Kill port forward
-kill $PF_PID
-
 echo "✅ Configuration Hydrated to Seed Gitea."
+
+# --- Step 2.5: Install Gateway API (Layer 2.5) ---
+echo "🚪 [Layer 2.5] Installing Gateway API CRDs..."
+kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.2.0/standard-install.yaml
+
+echo "   Verifying Gateway API CRDs..."
+kubectl wait --for=condition=established --timeout=30s crd/gatewayclasses.gateway.networking.k8s.io || { echo "❌ Failed to install Gateway API CRDs"; exit 1; }
+echo "✅ Gateway API CRDs installed."
+
+echo "✈️ [Layer 2.5] Installing Crossplane Core..."
+helm repo add crossplane-stable https://charts.crossplane.io/stable >/dev/null 2>&1
+helm repo update
+
+# We install the full Crossplane Core here to ensure CRDs (Composition, Provider, etc.) are established.
+# ArgoCD will later adopt this release because we use the same release name and namespace.
+helm upgrade --install crossplane crossplane-stable/crossplane \
+  --namespace crossplane-system --create-namespace \
+  --version 2.1.3 \
+  --version 2.1.3
+
+echo "⏳ Waiting for Crossplane to become ready..."
+TIMEOUT=300
+START_TIME=$(date +%s)
+while true; do
+    CURRENT_TIME=$(date +%s)
+    ELAPSED=$((CURRENT_TIME - START_TIME))
+    if [ $ELAPSED -gt $TIMEOUT ]; then
+        echo "❌ Timeout waiting for Crossplane to start."
+        exit 1
+    fi
+
+    # Check if pod is Ready
+    STATUS=$(kubectl get pods -n crossplane-system -l app.kubernetes.io/name=crossplane -o jsonpath='{.items[0].status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
+    
+    if [[ "$STATUS" == "True" ]]; then
+        echo "✅ Crossplane pod is Ready."
+        break
+    fi
+
+    echo "   ... waiting for Crossplane pod to be Ready ($ELAPSED/${TIMEOUT}s)"
+    kubectl logs -n crossplane-system -l app.kubernetes.io/name=crossplane --tail=1 2>/dev/null || true
+    
+    sleep 5
+done
+
+echo "✅ Crossplane Installed."
 
 # --- Step 3: Install ArgoCD (Layer 3) ---
 echo "🔥 [Layer 3] Installing ArgoCD..."
-helm repo add argo https://argoproj.github.io/argo-helm
+helm repo add argo https://argoproj.github.io/argo-helm >/dev/null 2>&1
 kubectl create namespace argocd --dry-run=client -o yaml | kubectl apply -f -
-helm upgrade --install argocd argo/argo-cd --namespace argocd --wait
+
+helm upgrade --install argocd argo/argo-cd --namespace argocd \
+  --set dex.enabled=false \
+  --set server.insecure=true \
+  --set configs.cm."kustomize\.buildOptions"="--load-restrictor LoadRestrictionsNone"
+
+echo "⏳ Waiting for ArgoCD to become ready..."
+TIMEOUT=300
+START_TIME=$(date +%s)
+while true; do
+    CURRENT_TIME=$(date +%s)
+    ELAPSED=$((CURRENT_TIME - START_TIME))
+    if [ $ELAPSED -gt $TIMEOUT ]; then
+        echo "❌ Timeout waiting for ArgoCD to start."
+        exit 1
+    fi
+
+    # Check if argocd-server is Ready
+    STATUS=$(kubectl get pods -n argocd -l app.kubernetes.io/name=argocd-server -o jsonpath='{.items[0].status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
+    
+    if [[ "$STATUS" == "True" ]]; then
+        echo "✅ ArgoCD Server is Ready."
+        break
+    fi
+
+    echo "   ... waiting for ArgoCD Server ($ELAPSED/${TIMEOUT}s)"
+    kubectl logs -n argocd -l app.kubernetes.io/name=argocd-server --tail=1 2>/dev/null || true
+    
+    sleep 5
+done
 
 echo "✅ ArgoCD installed."
 
