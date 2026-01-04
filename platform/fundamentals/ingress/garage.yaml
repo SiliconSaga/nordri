@@ -1,0 +1,29 @@
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: garage-ui
+  namespace: garage
+spec:
+  entryPoints:
+    - web
+  routes:
+    - match: Host(`garage.localhost`)
+      kind: Rule
+      services:
+        - name: garage
+          port: 3902
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: garage-s3
+  namespace: garage
+spec:
+  entryPoints:
+    - web
+  routes:
+    - match: Host(`s3.localhost`)
+      kind: Rule
+      services:
+        - name: garage
+          port: 3900

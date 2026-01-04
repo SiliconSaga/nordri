@@ -20,3 +20,5 @@ resources:
   # Ingress Routes
   - ../../ingress/argocd.yaml
   - ../../ingress/gitea.yaml
+  - ../../ingress/longhorn.yaml
+  - ../../ingress/garage.yaml
