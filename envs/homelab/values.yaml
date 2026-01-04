@@ -10,14 +10,8 @@ traefik:
   serviceType: LoadBalancer
   enableDashboard: true
 
-certManager:
-  enabled: false # We use self-signed or internal CA, or just HTTP for local dev
-  issuer: "self-signed"
+# No cert-manager in homelab, at least not yet
 
 crossplane:
-  provider: "noop" # Or local helm provider
+  provider: "noop" # Or local helm provider - installed via Argo
   bucketStorageClass: "local-path"
-
-# Layer 5: Platform
-mimir:
-  dbStorageClass: "longhorn"

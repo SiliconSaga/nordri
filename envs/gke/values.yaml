@@ -7,7 +7,7 @@ global:
 
 # Layer 4: Fundamentals
 traefik:
-  serviceType: LoadBalancer # GKE gives us a real LB
+  serviceType: LoadBalancer
   enableDashboard: false
 
 certManager:
@@ -17,7 +17,3 @@ certManager:
 crossplane:
   provider: "gcp"
   bucketStorageClass: "standard"
-
-# Layer 5: Platform
-mimir:
-  dbStorageClass: "premium-rwo"

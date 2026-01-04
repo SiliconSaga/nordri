@@ -7,6 +7,7 @@ This directory contains the core infrastructure definitions (Layer 4 & 5) manage
 After bootstrapping, you can access the services:
 
 #### Credentials
+
 *   **Gitea**: `nordri-admin` / `nordri-password-change-me` (Defined in `bootstrap.sh`)
 *   **ArgoCD**:
     *   User: `admin`
@@ -16,6 +17,7 @@ After bootstrapping, you can access the services:
     ```
 
 #### Connectivity
+
 If you have deployed the IngressRoutes (Layer 4), you can access them at:
 *   **ArgoCD**: `http://argocd.localhost` (or loadbalancer IP)
 *   **Gitea**: `http://gitea.localhost`
@@ -24,6 +26,7 @@ If you have deployed the IngressRoutes (Layer 4), you can access them at:
 *   **Garage Web**: `http://garage.localhost` (Static Site Hosting - **Returns 404 by default** until a bucket is configured for website hosting)
 
 If Ingress is not yet up (or you are debugging Layer 4), use Port Forwarding:
+
 ```bash
 # ArgoCD
 kubectl port-forward svc/argocd-server -n argocd 8080:443
@@ -59,7 +62,7 @@ We use a **Kustomize-based App-of-Apps** pattern to handle environment differenc
 
 ## How it Works
 
-1.  **Bootstrap**: The `bootstrap.sh` script hydrates the repo and points the Root App to the correct overlay (e.g., `platform/fundamentals/overlays/homelab`).
+1.  **Bootstrap**: The `bootstrap.sh` script hydrates the Git repo from the user's workspace into the cluster, then points the Root App to the correct overlay (e.g., `platform/fundamentals/overlays/homelab`).
 2.  **Argo Sync**: ArgoCD syncs the `kustomization.yaml` in that overlay.
 3.  **Application Creation**: The overlay includes the specific `Application` manifests from `apps/`.
 4.  **Resource Creation**: The overlay includes raw manifests from `manifests/`.
@@ -89,6 +92,7 @@ python validate.py
 ```
 
 ### 3. Garage Initialization (One-Time)
+
 Garage requires an initial layout assignment to function. This is NOT handled by Helm/ArgoCD automatically.
 If you reset the cluster, run:
 ```bash
@@ -98,13 +102,14 @@ kubectl exec -n garage garage-0 -- /garage layout assign -z dc1 -c 1G <NODE_ID_1
 # Apply changes
 kubectl exec -n garage garage-0 -- /garage layout apply --version 1
 ```
+
 *(You can get Node IDs via `/garage status`)*.
 
 ### 4. Testing Crossplane
+
 For testing Crossplane Compositions (Infrastructure Logic), we recommend **KUTTL** (Kubernetes Test Tool).
 *   It allows declarative testing (YAML) of infrastructure claims.
 *   See [jonashackt/crossplane-kuttl](https://github.com/jonashackt/crossplane-kuttl) for examples.
-*   This is preferred over `uptest` for our use case.
 
 ## TODOs
 
