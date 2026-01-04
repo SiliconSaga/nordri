@@ -26,6 +26,19 @@ fi
 
 echo "🚀 Bootstrapping Nordri for target: $TARGET"
 
+# --- Step 0: Pre-flight Checks (Rancher Desktop Specifics) ---
+if command -v rdctl &> /dev/null; then
+    echo "🔍 Detected Rancher Desktop (rdctl). Checking for required VM dependencies..."
+    # Check for iscsiadm (required for Longhorn)
+    if ! rdctl shell which iscsiadm >/dev/null 2>&1; then
+        echo "⚠️  'iscsiadm' missing in Rancher Desktop VM. Installing open-iscsi..."
+        rdctl shell "sudo apk update && sudo apk add open-iscsi && sudo rc-service iscsid start"
+        echo "✅ Installed open-iscsi."
+    else
+         echo "✅ 'iscsiadm' found in VM."
+    fi
+fi
+
 # --- Step 1: Install Seed Gitea (Layer 2) ---
 echo "📦 [Layer 2] Installing Seed Gitea..."
 helm repo add gitea-charts https://dl.gitea.io/charts/ >/dev/null 2>&1
@@ -184,6 +197,7 @@ kubectl create namespace argocd --dry-run=client -o yaml | kubectl apply -f -
 helm upgrade --install argocd argo/argo-cd --namespace argocd \
   --set dex.enabled=false \
   --set server.insecure=true \
+  --set server.extraArgs={--insecure} \
   --set configs.cm."kustomize\.buildOptions"="--load-restrictor LoadRestrictionsNone"
 
 echo "⏳ Waiting for ArgoCD to become ready..."

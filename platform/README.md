@@ -2,6 +2,35 @@
 
 This directory contains the core infrastructure definitions (Layer 4 & 5) managed by ArgoCD.
 
+### Accessing the Cluster
+
+After bootstrapping, you can access the services:
+
+#### Credentials
+*   **Gitea**: `nordri-admin` / `nordri-password-change-me` (Defined in `bootstrap.sh`)
+*   **ArgoCD**:
+    *   User: `admin`
+    *   Password: Run the command below to retrieve it.
+    ```bash
+    kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d
+    ```
+
+#### Connectivity
+If you have deployed the IngressRoutes (Layer 4), you can access them at:
+*   **ArgoCD**: `http://argocd.localhost` (or loadbalancer IP)
+*   **Gitea**: `http://gitea.localhost`
+
+If Ingress is not yet up (or you are debugging Layer 4), use Port Forwarding:
+```bash
+# ArgoCD
+kubectl port-forward svc/argocd-server -n argocd 8080:443
+# Access at https://localhost:8080
+
+# Gitea
+kubectl port-forward svc/gitea-http -n gitea 3000:3000
+# Access at http://localhost:3000
+```
+
 ## Structure
 
 We use a **Kustomize-based App-of-Apps** pattern to handle environment differences.
@@ -33,5 +62,4 @@ We use a **Kustomize-based App-of-Apps** pattern to handle environment differenc
 ## TODOs
 
 * The Issuer uses a hardcoded email admin@yggdrasil.cloud and Gateway name traefik-gateway. You may want to templated these using Kustomize overlays in envs/ later if they vary significantly.
-* We need to find a valid chart for Garage or write our own. We must deal with that before starting to test.
 * Need to compare Crossplane versions with what worked in Mimir.

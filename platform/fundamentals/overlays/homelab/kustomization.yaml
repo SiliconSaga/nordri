@@ -16,3 +16,7 @@ resources:
   
   # Exclusions
   # We do NOT include cert-manager.yaml here.
+
+  # Ingress Routes
+  - ../../ingress/argocd.yaml
+  - ../../ingress/gitea.yaml
