@@ -127,7 +127,7 @@ cp envs/$TARGET/values.yaml $HYDRATE_DIR/envs/values.yaml
 sed -i "s|path: platform/fundamentals|path: platform/fundamentals/overlays/$TARGET|g" $HYDRATE_DIR/platform/argocd/app-of-apps.yaml
 
 # Copy the root application
-cp root-app.yaml $HYDRATE_DIR/
+cp platform/root-app.yaml $HYDRATE_DIR/
 
 # Push to Gitea
 cd $HYDRATE_DIR
