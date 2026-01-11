@@ -24,10 +24,9 @@ This Gitea acts as the independent "Brain" for that cluster.
         *   The script takes the local `nordri` checkout.
         *   It selects the correct overlay (`envs/gke` or `envs/homelab`).
         *   It pushes the *Resolved Configuration* to the internal Gitea (`http://gitea-http/nordri.git`).
-3.  **Layer 2.5: The Cluster Fundamentals**
+3.  **Layer 2.5: Custom Resource Definitions (CRDs)**
     *   **Action**: Install **Gateway API CRDs** and **Crossplane Core Controller**.
     *   **Why**: Required before ArgoCD starts. Traefik depends on GatewayClass, and Provider configs depend on Crossplane CRDs being fully established.
-    *   **Why**: Required before ArgoCD starts. Traefik depends on GatewayClass, and Provider configs depend on Crossplane CRDs.
 4.  **Layer 3: The Engine (ArgoCD)**
     *   **Action**: Install **ArgoCD**.
     *   **Step A**: Argo is installed via Helm.
@@ -57,7 +56,7 @@ This Gitea acts as the independent "Brain" for that cluster.
 graph TD
     Local[Local Machine] -->|1. Setup K8s| L1[L1: Cluster]
     Local -->|2. Bootstrap Gitea| L2[L2: Seed Gitea]
-    Local -->|3. Install Fundamentals| L2.5[L2.5: Gateway API & Crossplane]
+    Local -->|3. Install CRDs| L2.5[L2.5: Gateway API & Crossplane]
     Local -->|4. Install Argo| L3[L3: ArgoCD]
     
     L3 -->|Syncs| L2

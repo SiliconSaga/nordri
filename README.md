@@ -2,6 +2,15 @@
 
 This directory contains the core infrastructure definitions (Layer 4 & 5) managed by ArgoCD.
 
+Note that this relies on the user having prepared their environment (see `dev_setup.md` in the Yggdrasil project) and having run the bootstrap.sh script from within a compatible bash shell.
+
+* Mac/Linux bash: `./bootstrap.sh`
+* Windows: 
+  * `cd "C:\Program Files\Git\bin"` or wherever Git Bash is installed
+  * Run `bash` or `./bash.exe` if using a PowerShell terminal
+  * `cd /d/Dev/GitWS/nordri` or wherever you cloned the repo
+  * Run `./bootstrap.sh`
+
 ### Accessing the Cluster
 
 After bootstrapping, you can access the services:
@@ -115,3 +124,4 @@ For testing Crossplane Compositions (Infrastructure Logic), we recommend **KUTTL
 
 * The Issuer uses a hardcoded email admin@yggdrasil.cloud and Gateway name traefik-gateway. You may want to templated these using Kustomize overlays in envs/ later if they vary significantly.
 * Need to compare Crossplane versions with what worked in Mimir.
+* Need to cover Velery in a later Day 2 step. Can fetch original details from outdated/setup.md
