@@ -286,6 +286,9 @@ echo "✅ Root Application applied. ArgoCD is now syncing from the internal Seed
 # Wait for ArgoCD to deploy Garage, then set up layout, API key, bucket, and Velero secret.
 # Only runs for homelab target (Garage is homelab-specific).
 if [[ "$TARGET" == "homelab" ]]; then
+    # Prevent Git Bash (MSYS2) from converting /garage to C:/Program Files/Git/garage
+    export MSYS_NO_PATHCONV=1
+
     echo "🗄️  [Layer 5] Initializing Garage S3 storage..."
 
     echo "⏳ Waiting for Garage pod to be Ready (ArgoCD must sync the Garage Application first)..."
