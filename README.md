@@ -90,6 +90,12 @@ We use a **Kustomize-based App-of-Apps** pattern to handle environment differenc
 
 ## Important Notes
 
+*   **Storage Strategy**: The default `local-path` provisioner (built-in to k3d/k3s) is used for development. It is node-local and does **not replicate** across nodes.
+    *   **k3d (Docker)**: Longhorn is non-functional — k3d containers lack `iscsid`. Use `local-path` for development.
+    *   **Rancher Desktop**: The bootstrap script auto-installs `open-iscsi` in the VM, so Longhorn works here.
+    *   **Multi-node homelab / production**: Longhorn (or another distributed storage like Rook-Ceph) is essential since `local-path` doesn't survive node loss. This is a future migration target.
+    *   **GKE**: Uses its own CSI driver (Persistent Disk). Longhorn is not needed.
+
 *   **Argonception**: Most YAML files in `apps/` are `kind: Application`. They tell Argo to sync *another* Helm chart (e.g., the official Traefik chart).
 *   **Namespaces**: Any "loose" manifest (like `ClusterIssuer`) applied by the App-of-Apps will default to the `argocd` namespace unless explicitly namespaced in the file.
 *   **Values**: Environment-specific values (e.g., LoadBalancer vs NodePort) are injected via the `envs/` directory, which the App-of-Apps or individual Applications reference.

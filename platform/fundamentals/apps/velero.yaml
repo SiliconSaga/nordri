@@ -35,9 +35,7 @@ spec:
               region: garage
         credentials:
           useSecret: true
-          secretContents:
-            cloud: |
-               # This secret is populated manually/via bootstrap, NOT here.
+          existingSecret: velero-credentials
   destination:
     server: https://kubernetes.default.svc
     namespace: velero
