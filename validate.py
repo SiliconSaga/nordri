@@ -116,7 +116,7 @@ def main():
     namespaces = {
         "Gitea": "gitea",
         "ArgoCD": "argocd",
-        "Longhorn": "longhorn-system",
+        "Longhorn": "longhorn",
         "Garage": "garage",
         "Crossplane": "crossplane-system",
         "Traefik": "kube-system"

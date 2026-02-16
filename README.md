@@ -2,9 +2,21 @@
 
 This directory contains the core infrastructure definitions (Layer 4 & 5) managed by ArgoCD.
 
-Note that this relies on the user having prepared their environment (see `dev_setup.md` in the Yggdrasil project) and having run the bootstrap.sh script from within a compatible bash shell.
+Note that this relies on the user having prepared their environment (see `dev_setup.md` in the Yggdrasil project), created a k3d cluster, and run the bootstrap script.
 
-* Mac/Linux bash: `./bootstrap.sh`
+**Create the k3d cluster** (disable built-in Traefik since Nordri installs its own):
+
+```bash
+k3d cluster create refr-k8s \
+  --port "8080:80@loadbalancer" --port "8443:443@loadbalancer" \
+  --agents 2 --k3s-arg "--disable=traefik@server:*"
+```
+
+> For Rancher Desktop: disable Traefik via the GUI instead.
+
+**Run the bootstrap** from within a compatible bash shell:
+
+* Mac/Linux bash: `./bootstrap.sh homelab`
 * Windows: 
   * `cd "C:\Program Files\Git\bin"` or wherever Git Bash is installed
   * Run `bash` or `./bash.exe` if using a PowerShell terminal
@@ -46,7 +58,7 @@ kubectl port-forward svc/gitea-http -n gitea 3000:3000
 # Access at http://localhost:3000
 
 # Longhorn
-kubectl port-forward svc/longhorn-frontend -n longhorn-system 8000:80
+kubectl port-forward svc/longhorn-frontend -n longhorn 8000:80
 # Access at http://localhost:8000
 
 # Garage S3
@@ -124,4 +136,4 @@ For testing Crossplane Compositions (Infrastructure Logic), we recommend **KUTTL
 
 * The Issuer uses a hardcoded email admin@yggdrasil.cloud and Gateway name traefik-gateway. You may want to templated these using Kustomize overlays in envs/ later if they vary significantly.
 * Need to compare Crossplane versions with what worked in Mimir.
-* Need to cover Velery in a later Day 2 step. Can fetch original details from outdated/setup.md
+* Need to cover Velero in a later Day 2 step. Can fetch original details from outdated/setup.md

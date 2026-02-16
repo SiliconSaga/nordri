@@ -6,6 +6,7 @@ set -e
 # Purpose: Re-hydrates and pushes the configuration to the internal Seed Gitea
 #          without reinstalling Gitea, ArgoCD, or other components.
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 TARGET=$1
 GITEA_USER="nordri-admin"
 GITEA_PASS="nordri-password-change-me"
@@ -51,17 +52,21 @@ fi
 
 # Prepare the content
 # Copy platform shared files
-cp -r platform $HYDRATE_DIR/
+cp -r "$SCRIPT_DIR/platform" "$HYDRATE_DIR/"
 # Copy environment specific values as the 'default' values for this cluster
-mkdir -p $HYDRATE_DIR/envs
-cp envs/$TARGET/values.yaml $HYDRATE_DIR/envs/values.yaml
+mkdir -p "$HYDRATE_DIR/envs"
+cp "$SCRIPT_DIR/envs/$TARGET/values.yaml" "$HYDRATE_DIR/envs/values.yaml"
 
 # Dynamic Patching: Point the App-of-Apps to the correct Kustomize Overlay
 # We rely on sed to replace the generic path with the overlay path
-sed -i "s|path: platform/fundamentals|path: platform/fundamentals/overlays/$TARGET|g" $HYDRATE_DIR/platform/argocd/app-of-apps.yaml
+if [[ "$OSTYPE" == "darwin"* ]]; then
+    sed -i '' "s|path: platform/fundamentals|path: platform/fundamentals/overlays/$TARGET|g" $HYDRATE_DIR/platform/argocd/app-of-apps.yaml
+else
+    sed -i "s|path: platform/fundamentals|path: platform/fundamentals/overlays/$TARGET|g" $HYDRATE_DIR/platform/argocd/app-of-apps.yaml
+fi
 
 # Copy the root application (optional, but good for completeness)
-cp root-app.yaml $HYDRATE_DIR/
+cp "$SCRIPT_DIR/platform/root-app.yaml" "$HYDRATE_DIR/"
 
 # Push to Gitea
 cd $HYDRATE_DIR

@@ -123,8 +123,12 @@ mkdir -p $HYDRATE_DIR/envs
 cp envs/$TARGET/values.yaml $HYDRATE_DIR/envs/values.yaml
 
 # Dynamic Patching: Point the App-of-Apps to the correct Kustomize Overlay
-# We rely on sed to replace the generic path with the overlay path
-sed -i "s|path: platform/fundamentals|path: platform/fundamentals/overlays/$TARGET|g" $HYDRATE_DIR/platform/argocd/app-of-apps.yaml
+# Use portable sed -i (macOS requires '' as backup extension, GNU sed does not)
+if [[ "$OSTYPE" == "darwin"* ]]; then
+  sed -i '' "s|path: platform/fundamentals|path: platform/fundamentals/overlays/$TARGET|g" "$HYDRATE_DIR/platform/argocd/app-of-apps.yaml"
+else
+  sed -i "s|path: platform/fundamentals|path: platform/fundamentals/overlays/$TARGET|g" "$HYDRATE_DIR/platform/argocd/app-of-apps.yaml"
+fi
 
 # Copy the root application
 cp platform/root-app.yaml $HYDRATE_DIR/
@@ -159,8 +163,7 @@ helm repo update
 # ArgoCD will later adopt this release because we use the same release name and namespace.
 helm upgrade --install crossplane crossplane-stable/crossplane \
   --namespace crossplane-system --create-namespace \
-  --version 2.1.3 \
-  --version 2.1.3
+  --version 2.1.4
 
 echo "⏳ Waiting for Crossplane to become ready..."
 TIMEOUT=300
@@ -235,6 +238,6 @@ echo "🔗 [Layer 3] Connecting Argo to Seed Gitea..."
 
 # Apply the Root App
 echo "🌱 [Layer 4] Applying Root Application..."
-kubectl apply -f root-app.yaml -n argocd
+kubectl apply -f "$(dirname "$0")/platform/root-app.yaml" -n argocd
 
 echo "🎉 Bootstrap Complete! ArgoCD is now syncing from the internal Seed Gitea."

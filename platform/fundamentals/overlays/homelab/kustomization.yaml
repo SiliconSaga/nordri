@@ -9,6 +9,7 @@ resources:
 
   # Shared Manifests
   - ../../manifests/crossplane-providers.yaml
+  - ../../manifests/crossplane-configs.yaml
 
   # Homelab Specific Apps
   - ../../apps/longhorn.yaml
