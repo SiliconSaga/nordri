@@ -168,7 +168,7 @@ helm repo update
 # We install the full Crossplane Core here to ensure CRDs (Composition, Provider, etc.) are established.
 # ArgoCD will later adopt this release because we use the same release name and namespace.
 helm upgrade --install crossplane crossplane-stable/crossplane \
-  --namespace crossplane-system --create-namespace \
+  --namespace crossplane --create-namespace \
   --version 2.1.4
 
 echo "⏳ Waiting for Crossplane to become ready..."
@@ -183,7 +183,7 @@ while true; do
     fi
 
     # Check if pod is Ready
-    STATUS=$(kubectl get pods -n crossplane-system -l app.kubernetes.io/name=crossplane -o jsonpath='{.items[0].status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
+    STATUS=$(kubectl get pods -n crossplane -l app.kubernetes.io/name=crossplane -o jsonpath='{.items[0].status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
     
     if [[ "$STATUS" == "True" ]]; then
         echo "✅ Crossplane pod is Ready."
@@ -191,7 +191,7 @@ while true; do
     fi
 
     echo "   ... waiting for Crossplane pod to be Ready ($ELAPSED/${TIMEOUT}s)"
-    kubectl logs -n crossplane-system -l app.kubernetes.io/name=crossplane --tail=1 2>/dev/null || true
+    kubectl logs -n crossplane -l app.kubernetes.io/name=crossplane --tail=1 2>/dev/null || true
     
     sleep 5
 done

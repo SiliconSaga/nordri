@@ -18,7 +18,7 @@ spec:
         args: []
   destination:
     server: https://kubernetes.default.svc
-    namespace: crossplane-system
+    namespace: crossplane
   syncPolicy:
     automated:
       prune: true

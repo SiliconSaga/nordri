@@ -118,7 +118,7 @@ def main():
         "ArgoCD": "argocd",
         "Longhorn": "longhorn",
         "Garage": "garage",
-        "Crossplane": "crossplane-system",
+        "Crossplane": "crossplane",
         "Traefik": "kube-system"
     }
     
