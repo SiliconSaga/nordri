@@ -10,6 +10,11 @@
 # Sync-wave 5: after layer4-fundamentals (wave 0) starts, so the Traefik
 # GatewayClass has time to register before the Gateway resource is applied.
 # If Traefik is not yet ready, ArgoCD will self-heal on the next sync cycle.
+#
+# Source: during bootstrap, ArgoCD pulls from the internal Gitea mirror.
+# After the cluster is stable, swap repoURL to the GitHub URL and add an
+# ArgoCD repository credential Secret. See "Transitioning to GitHub" in
+# nidavellir/vegvisir/README.md for the procedure.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
@@ -22,7 +27,7 @@ metadata:
 spec:
   project: default
   source:
-    repoURL: 'https://github.com/SiliconSaga/nidavellir.git'
+    repoURL: 'http://gitea-http.gitea.svc.cluster.local:3000/nordri-admin/nidavellir.git'
     targetRevision: HEAD
     path: vegvisir/manifests
   destination:

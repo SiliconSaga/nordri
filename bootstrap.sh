@@ -4,7 +4,7 @@ set -e
 # Nordri Bootstrap Script
 # Implements a layered infra build strategy:
 # 1.   Assume existing Kubernetes cluster available via kubectl
-# 2.   Install Seed Gitea + hydrate configuration for the target environment
+# 2.   Install Seed Gitea + hydrate Nordri AND Nidavellir repos into it
 # 2.5  Install Gateway API CRDs + Crossplane Core
 # 2.6  Install Traefik (registers IngressRoute CRDs needed by ArgoCD)
 # 2.7  Install Crossplane Providers + Functions, wait Healthy
@@ -12,12 +12,18 @@ set -e
 # 3.   Install ArgoCD
 # 4.   Apply Root Application (ArgoCD adopts all pre-installed components)
 # 5.   Initialize Garage S3 + Velero credentials (waits for ArgoCD to deploy Garage)
+#
+# After bootstrap, ArgoCD pulls both Nordri and Nidavellir from internal Gitea.
+# See nidavellir/vegvisir/README.md for the procedure to switch to GitHub.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 TARGET=$1
 GITEA_USER="nordri-admin"
 GITEA_PASS="nordri-password-change-me"
 GITEA_REPO_NAME="nordri"
+NIDAVELLIR_GITEA_REPO="nidavellir"
+# Nidavellir is expected as a sibling directory of this repo. Override with NIDAVELLIR_DIR.
+NIDAVELLIR_DIR="${NIDAVELLIR_DIR:-$(dirname "$SCRIPT_DIR")/nidavellir}"
 INTERNAL_GITEA_URL="http://gitea-http.gitea.svc.cluster.local:3000"
 
 if [[ -z "$TARGET" ]]; then
@@ -139,7 +145,7 @@ fi
 # Copy the root application
 cp "$SCRIPT_DIR/platform/root-app.yaml" "$HYDRATE_DIR/"
 
-# Push to Gitea
+# Push Nordri to Gitea
 cd $HYDRATE_DIR
 git init
 git config user.email "bootstrap@nordri.local"
@@ -151,7 +157,40 @@ git remote add origin "http://$GITEA_USER:$GITEA_PASS@localhost:3000/$GITEA_USER
 git push -u origin main --force
 cd -
 
-echo "✅ Configuration Hydrated to Seed Gitea."
+echo "✅ Nordri configuration hydrated to Seed Gitea."
+
+# Also push Nidavellir to Gitea so ArgoCD can manage Vegvísir (Gateway + TLS).
+# ArgoCD pulls from internal Gitea during bootstrap; can be swapped to GitHub later.
+# See nidavellir/vegvisir/README.md for the transition procedure.
+if [[ -d "$NIDAVELLIR_DIR" ]]; then
+    echo "💧 [Layer 2] Hydrating Nidavellir to Seed Gitea..."
+
+    curl -X POST "http://$GITEA_USER:$GITEA_PASS@localhost:3000/api/v1/user/repos" \
+      -H "Content-Type: application/json" \
+      -d "{\"name\": \"$NIDAVELLIR_GITEA_REPO\", \"private\": false}" || echo "   Nidavellir repo may already exist."
+
+    NIDAVELLIR_HYDRATE=$(mktemp -d)
+    cp -r "$NIDAVELLIR_DIR/." "$NIDAVELLIR_HYDRATE/"
+    rm -rf "$NIDAVELLIR_HYDRATE/.git"  # Don't push source .git dir
+
+    cd "$NIDAVELLIR_HYDRATE"
+    git init
+    git config user.email "bootstrap@nordri.local"
+    git config user.name "Nordri Bootstrap"
+    git checkout -b main
+    git add .
+    git commit -m "Hydration for $TARGET"
+    git remote add origin "http://$GITEA_USER:$GITEA_PASS@localhost:3000/$GITEA_USER/$NIDAVELLIR_GITEA_REPO.git"
+    git push -u origin main --force
+    cd -
+    rm -rf "$NIDAVELLIR_HYDRATE"
+
+    echo "✅ Nidavellir hydrated to Seed Gitea."
+else
+    echo "⚠️  Nidavellir directory not found at: $NIDAVELLIR_DIR"
+    echo "   Set NIDAVELLIR_DIR env var or clone nidavellir as a sibling of this repo."
+    echo "   Vegvísir (Gateway + TLS) will not be deployed until Nidavellir is available."
+fi
 
 # --- Step 2.5: Install Gateway API (Layer 2.5) ---
 echo "🚪 [Layer 2.5] Installing Gateway API CRDs..."
