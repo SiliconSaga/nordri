@@ -3,7 +3,7 @@
 
 global:
   environment: gke
-  domain: "yggdrasil.cloud"
+  domain: "siliconsaga.org"
 
 # Layer 4: Fundamentals
 traefik:
@@ -12,7 +12,7 @@ traefik:
 
 certManager:
   issuer: "letsencrypt-prod"
-  email: "admin@yggdrasil.cloud"
+  email: "siliconsaga@gmail.com"
 
 crossplane:
   provider: "gcp"

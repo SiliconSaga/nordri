@@ -10,9 +10,6 @@ resources:
   # Shared Manifests
   - ../../manifests/crossplane-providers.yaml
   - ../../manifests/crossplane-configs.yaml
-  # Note: cert-manager-issuers depends on cert-manager app being installed. 
-  # Argo handles sync waves, so including it here is fine.
-  - ../../manifests/cert-manager-issuers.yaml
-
-  # GKE Specific Apps
-  - ../../apps/cert-manager.yaml
+  # Note: Gateway API CRDs, Traefik Gateway resource, and ClusterIssuers are
+  # managed by the Nidavellir platform component, not Nordri. cert-manager
+  # itself is pre-installed on this cluster and also excluded.

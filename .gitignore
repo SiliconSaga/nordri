@@ -4,6 +4,7 @@
 .env.*.local
 
 # Kubernetes secrets and sensitive files
+kubeconfig
 *-secret.yaml
 *-secret.yml
 secrets/

@@ -1,0 +1,29 @@
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: traefik-gateway
+  namespace: kube-system
+  annotations:
+    # After Traefik installs (wave 1), before ClusterIssuer (wave 10)
+    argocd.argoproj.io/sync-wave: "5"
+spec:
+  gatewayClassName: traefik
+  listeners:
+  - name: web
+    port: 80
+    protocol: HTTP
+    allowedRoutes:
+      namespaces:
+        from: All
+  - name: websecure
+    port: 443
+    protocol: HTTPS
+    allowedRoutes:
+      namespaces:
+        from: All
+    tls:
+      mode: Terminate
+      certificateRefs:
+      - kind: Secret
+        name: traefik-gateway-default-cert
+        namespace: kube-system
