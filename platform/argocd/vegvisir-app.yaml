@@ -1,0 +1,38 @@
+# ArgoCD Application for Vegvísir (Nidavellir platform layer).
+#
+# Deploys the Traefik Gateway resource and letsencrypt-gateway ClusterIssuer
+# from the Nidavellir repository. These are the platform routing and TLS
+# primitives that sit on top of Traefik (deployed by layer4-fundamentals).
+#
+# cert-manager is NOT deployed here — it is either pre-installed on the cluster
+# (existing GKE) or installed separately via manifests/cert-manager-app.yaml.
+#
+# Sync-wave 5: after layer4-fundamentals (wave 0) starts, so the Traefik
+# GatewayClass has time to register before the Gateway resource is applied.
+# If Traefik is not yet ready, ArgoCD will self-heal on the next sync cycle.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: vegvisir
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "5"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: 'https://github.com/SiliconSaga/nidavellir.git'
+    targetRevision: HEAD
+    path: vegvisir/manifests
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: kube-system
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - SkipDryRunOnMissingResource=true
+      - ServerSideApply=true
