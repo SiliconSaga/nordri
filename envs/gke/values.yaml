@@ -3,7 +3,7 @@
 
 global:
   environment: gke
-  domain: "siliconsaga.org"
+  domain: "cmdbee.org"
 
 # Layer 4: Fundamentals
 traefik:
