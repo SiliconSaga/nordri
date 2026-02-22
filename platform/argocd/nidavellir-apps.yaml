@@ -1,0 +1,37 @@
+# ArgoCD Application-of-Applications for Nidavellir (Layer 5: Platform).
+#
+# Points ArgoCD at nidavellir/apps/ in the Nidavellir repo. That directory
+# contains one Application manifest per platform component (Vegvísir, Mimir,
+# Keycloak, etc.), making Nidavellir self-describing as an app-of-apps.
+#
+# To add a new platform component: add its Application manifest to
+# nidavellir/apps/ and reference it in nidavellir/apps/kustomization.yaml.
+#
+# Source: internal Gitea during bootstrap. See nidavellir/vegvisir/README.md
+# for the GitHub transition procedure (applies to this Application too).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: nidavellir
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: 'http://gitea-http.gitea.svc.cluster.local:3000/nordri-admin/nidavellir.git'
+    targetRevision: HEAD
+    path: apps
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - SkipDryRunOnMissingResource=true
+      - ServerSideApply=true
