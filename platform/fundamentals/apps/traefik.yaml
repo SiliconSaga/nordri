@@ -18,6 +18,11 @@ spec:
         providers:
           kubernetesGateway:
             enabled: true
+        gateway:
+          # Disable the chart's auto-created Gateway resource.
+          # The Gateway is owned by Vegvísir (Nidavellir) so that TLS config
+          # and cert-manager integration are co-located with the ClusterIssuers.
+          enabled: false
         ports:
           web:
             exposedPort: 80

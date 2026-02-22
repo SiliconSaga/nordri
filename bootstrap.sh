@@ -247,6 +247,7 @@ helm upgrade --install traefik traefik/traefik \
   --namespace kube-system \
   --version 38.0.1 \
   --set providers.kubernetesGateway.enabled=true \
+  --set gateway.enabled=false \
   --set ports.web.exposedPort=80 \
   --set ports.websecure.exposedPort=443
 
