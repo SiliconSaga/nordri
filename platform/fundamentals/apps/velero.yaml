@@ -20,19 +20,22 @@ spec:
               - mountPath: /target
                 name: plugins
         configuration:
-          provider: aws
           backupStorageLocation:
-            bucket: velero-backups
-            config:
-              # We set region to "garage" just to satisfy SDK validation - may need to revisit later or use a real region?
-              region: garage
-              s3ForcePathStyle: true
-              # We use the internal service DNS for whichever storage provider we have (Garage)
-              # In GKE, this URL is overridden to https://storage.googleapis.com
-              s3Url: http://garage.garage.svc.cluster.local:3900  
+            - name: default
+              provider: aws
+              bucket: velero-backups
+              config:
+                # We set region to "garage" just to satisfy SDK validation - may need to revisit later or use a real region?
+                region: garage
+                s3ForcePathStyle: true
+                # We use the internal service DNS for whichever storage provider we have (Garage)
+                # In GKE, this URL is overridden to https://storage.googleapis.com
+                s3Url: http://garage.garage.svc.cluster.local:3900  
           volumeSnapshotLocation:
-            config:
-              region: garage
+            - name: default
+              provider: aws
+              config:
+                region: garage
         credentials:
           useSecret: true
           existingSecret: velero-credentials
