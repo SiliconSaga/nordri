@@ -21,9 +21,11 @@ set -e
 
 CLUSTER_NAME="${GKE_CLUSTER_NAME:-nordri-test}"
 GCP_PROJECT="${GCP_PROJECT:-$(gcloud config get-value project 2>/dev/null)}"
-GCP_ZONE="${GCP_ZONE:-europe-west1-b}"
+GCP_ZONE="${GCP_ZONE:-$(gcloud config get-value compute/zone 2>/dev/null)}"
 NODE_COUNT="${GKE_NODE_COUNT:-3}"
-MACHINE_TYPE="${GKE_MACHINE_TYPE:-e2-standard-4}"
+MACHINE_TYPE="${GKE_MACHINE_TYPE:-e2-standard-2}"
+DISK_TYPE="${GKE_DISK_TYPE:-pd-standard}"
+DISK_SIZE="${GKE_DISK_SIZE:-50}"
 K8S_VERSION="${GKE_K8S_VERSION:-latest}"
 
 if [[ -z "$GCP_PROJECT" ]]; then
@@ -38,7 +40,7 @@ ACTION="${1:-create}"
 echo "🔧 GKE cluster: $CLUSTER_NAME"
 echo "   Project: $GCP_PROJECT"
 echo "   Zone:    $GCP_ZONE"
-echo "   Nodes:   $NODE_COUNT x $MACHINE_TYPE"
+echo "   Nodes:   $NODE_COUNT x $MACHINE_TYPE ($DISK_SIZE GB $DISK_TYPE)"
 
 case "$ACTION" in
 
@@ -50,6 +52,8 @@ create)
         --zone="$GCP_ZONE" \
         --num-nodes="$NODE_COUNT" \
         --machine-type="$MACHINE_TYPE" \
+        --disk-type="$DISK_TYPE" \
+        --disk-size="$DISK_SIZE" \
         --cluster-version="$K8S_VERSION" \
         --release-channel=None \
         --no-enable-autoupgrade \
