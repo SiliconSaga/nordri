@@ -419,4 +419,59 @@ else
     echo "ℹ️  Skipping Garage init (not homelab target)."
 fi
 
+# --- Step 6: Post-Bootstrap Instructions (GKE) ---
+if [[ "$TARGET" == "gke" ]]; then
+    echo ""
+    echo "⏳ [Post-Bootstrap] Waiting for Traefik LoadBalancer IP..."
+    TIMEOUT=180
+    START_TIME=$(date +%s)
+    TRAEFIK_IP=""
+    while true; do
+        CURRENT_TIME=$(date +%s)
+        ELAPSED=$((CURRENT_TIME - START_TIME))
+        if [ $ELAPSED -gt $TIMEOUT ]; then
+            echo "⚠️  Timeout waiting for Traefik LoadBalancer IP."
+            TRAEFIK_IP="<pending — run: kubectl get svc traefik -n kube-system>"
+            break
+        fi
+
+        TRAEFIK_IP=$(kubectl get svc traefik -n kube-system \
+            -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)
+
+        if [[ -n "$TRAEFIK_IP" ]]; then
+            echo "✅ Traefik LoadBalancer IP: $TRAEFIK_IP"
+            break
+        fi
+
+        echo "   ... waiting for GKE to assign LoadBalancer IP ($ELAPSED/${TIMEOUT}s)"
+        sleep 10
+    done
+
+    echo ""
+    echo "╔══════════════════════════════════════════════════════════════════╗"
+    echo "║              📋 MANUAL STEPS REQUIRED                          ║"
+    echo "╠══════════════════════════════════════════════════════════════════╣"
+    echo "║  ArgoCD is now syncing. Two manual steps remain:               ║"
+    echo "║                                                                 ║"
+    echo "║  1. Point your domain(s) at the Traefik LoadBalancer:           ║"
+    echo "║                                                                 ║"
+    echo "║     <your-domain>  →  A record  →  $TRAEFIK_IP"
+    echo "║                                                                 ║"
+    echo "║     Add A records (and wildcards) at your DNS registrar.       ║"
+    echo "║     cert-manager will issue certs once DNS propagates.         ║"
+    echo "║                                                                 ║"
+    echo "║  2. cert-manager + issuers deploy automatically via ArgoCD:    ║"
+    echo "║     • wave 10 — cert-manager itself                            ║"
+    echo "║     • wave 15 — letsencrypt-gateway-staging (test first)       ║"
+    echo "║     • wave 15 — letsencrypt-gateway (production)               ║"
+    echo "║     Monitor: kubectl get applications -n argocd                ║"
+    echo "║                                                                 ║"
+    echo "║  3. Use letsencrypt-gateway-staging to validate the pipeline   ║"
+    echo "║     before requesting production certs. Staging certs are      ║"
+    echo "║     untrusted by browsers but confirm the full ACME flow.      ║"
+    echo "║                                                                 ║"
+    echo "╚══════════════════════════════════════════════════════════════════╝"
+    echo ""
+fi
+
 echo "🎉 Bootstrap Complete!"
