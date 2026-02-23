@@ -1,120 +1,122 @@
-# Nordri Bootstrapping Strategy: The 6-Layer Model
+# Nordri Bootstrapping Strategy
 
-This document details the bootstrapping process for Nordri clusters (GKE and Homelab). It solves the "Chicken and Egg" problem of GitOps (ArgoCD needing a repo to install itself) by introducing a **Layer 2: Seed Gitea**.
+This document details the bootstrapping process for Nordri clusters (GKE and Homelab).
+It solves the "Chicken and Egg" problem of GitOps (ArgoCD needing a repo to install
+itself) by injecting a **Seed Gitea** as the very first step.
 
-Nordri consists of the first 4 layers.
+**Nordri covers Layers 2–4.** Layers 5+ (platform services, user workloads) belong to
+Nidavellir and Demicracy — separate repos deployed by ArgoCD once Nordri is stable.
 
-## The Core Concept: "Seed Gitea"
+## Bootstrap Layers
 
-Instead of relying on a central GitHub repository that manages all clusters (which creates single-point-of-failure and complexity for disconnected homelabs), we inject a **Local Gitea Instance** into every new cluster as the *very first step*.
+### Layer 1 — The Substrate (Kubernetes)
+Provision the raw cluster before running any scripts.
 
-This Gitea acts as the independent "Brain" for that cluster.
+- **GKE**: `./gke-provision.sh create`
+- **Homelab**: k3s/Rancher Desktop, pre-existing
 
-### The Hierarchy
+### Layer 2 — The Seed (Gitea + Nidavellir hydration)
+`./bootstrap.sh [gke|homelab]`
 
-1.  **Layer 1: The Substrate (Kubernetes)**
-    *   **Action**: Provision the raw Kubernetes API.
-    *   **GKE**: `gcloud container clusters create...`
-    *   **Homelab**: `k3s server`
-2.  **Layer 2: The Seed (Gitea)**
-    *   **Action**: Run `./bootstrap.sh --target [gke|homelab]`
-    *   **Step A**: Install **Gitea** (Helm) into the `gitea` namespace.
-    *   **Step B**: Configure Gitea (Create Admin, Token).
-    *   **Step C**: **Hydrate** the repository.
-        *   The script takes the local `nordri` checkout.
-        *   It selects the correct overlay (`envs/gke` or `envs/homelab`).
-        *   It pushes the *Resolved Configuration* to the internal Gitea (`http://gitea-http/nordri.git`).
-3.  **Layer 2.5: Custom Resource Definitions (CRDs)**
-    *   **Action**: Install **Gateway API CRDs** and **Crossplane Core Controller**.
-    *   **Why**: Required before ArgoCD starts. Traefik depends on GatewayClass, and Provider configs depend on Crossplane CRDs being fully established.
-4.  **Layer 3: The Engine (ArgoCD)**
-    *   **Action**: Install **ArgoCD**.
-    *   **Step A**: Argo is installed via Helm.
-    *   **Step B**: Argo is configured with the internal Gitea as a "Repository".
-    *   **Step C**: The "Root Application" is applied, pointing to `HEAD` of the internal Gitea.
-5.  **Layer 4: The Fundamentals (Cluster Fundamentals)**
-    *   **Action**: ArgoCD takes over and installs the "Base System".
-    *   **Traefik v3**: The Gateway (Ingress & Gateway API Provider).
-    *   **Cert-Manager**: SSL Certificates (Depends on Traefik).
-    *   **Crossplane**: Provider Configurations (Kubernetes, Helm).
-    *   **Longhorn/NFS**: Storage Classes (Homelab only).
-5.  **Layer 5: Platform Services (Nidavellir Base)**
-    *   **Action**: ArgoCD Deploys shared services.
-    *   **Heimdall**: Observability (Prometheus/Grafana).
-    *   **Mimir**: Data (DB flavors, Kafka, Valkey - depends on Crossplane).
-    *   **Vegvísir Operator**: Custom controller for dynamic routes.
-    *   Keycloak for identity, Nexus for registries, Jenkins for CI/CD, and so on.
-6.  **Layer 6: User Workloads (The Apps)**
-    *   **Action**: The actual business value.
-    *   **Tafl**: Game Orchestrator.
-    *   **Demicracy**: Backstage.
-    *   **Agones**: Game Servers (Spawned dynamically).
+- Installs **Gitea** (Helm, `gitea` namespace, ephemeral — no persistence)
+- Creates Nordri and Nidavellir repos in Gitea via API
+- Hydrates both repos from local checkouts (applies target overlay for Nordri)
+- Nidavellir is expected as a sibling directory; override with `NIDAVELLIR_DIR`
 
-## Diagram 1: The Bootstrap (L1 - L4)
+### Layer 2.5 — Gateway API CRDs + Crossplane Core
+- Installs **Gateway API CRDs** (required before Traefik's GatewayClass can register)
+- Installs **Crossplane Core** (CRDs must exist before ArgoCD syncs ProviderConfigs)
+
+### Layer 2.6 — Traefik (pre-ArgoCD)
+- Installs **Traefik** via Helm into `kube-system`
+- Registers `IngressRoute` CRDs needed by any ArgoCD-managed IngressRoute resources
+- Sets `gateway.enabled=false` — the Gateway resource is owned by Vegvísir (Nidavellir)
+- On GKE: provisions the LoadBalancer service (source of the cluster's external IP)
+
+### Layer 2.7 — Crossplane Providers + Functions
+- Applies `crossplane-providers.yaml` and waits for all providers to become Healthy
+- Must be healthy before ProviderConfigs (Layer 2.8) can be applied
+
+### Layer 2.8 — Crossplane ProviderConfigs + RBAC
+- Applies `crossplane-configs.yaml` (ProviderConfig CRDs now exist from Layer 2.7)
+
+### Layer 3 — ArgoCD
+- Installs **ArgoCD** via Helm (`argocd` namespace)
+- Applies the Root Application pointing at internal Gitea → ArgoCD takes over
+
+### Layer 4 — Fundamentals (ArgoCD-managed)
+ArgoCD syncs the Nordri app-of-apps. Components vary by target:
+
+| Component | GKE | Homelab |
+|---|---|---|
+| Traefik (adopted by ArgoCD) | ✅ | ✅ |
+| Crossplane (adopted by ArgoCD) | ✅ | ✅ |
+| Velero | ✅ (placeholder creds) | ✅ (Garage S3) |
+| Longhorn | ❌ | ✅ |
+| Garage S3 | ❌ | ✅ |
+
+cert-manager is **not** a Nordri Layer 4 component. It is deployed by
+Vegvísir (Nidavellir Tier 2) via ArgoCD sync-waves after Nordri stabilises.
+
+### Nidavellir (Tier 2) — Platform Services
+ArgoCD syncs Nidavellir from the internal Gitea. Vegvísir deploys in sync-wave order:
+
+| Wave | Resource |
+|---|---|
+| 10 | cert-manager |
+| 11 | SelfSigned ClusterIssuer (bootstrap) |
+| 12 | traefik-gateway-default-cert Certificate |
+| 13 | Traefik Gateway resource |
+| 15 | letsencrypt-gateway-staging + letsencrypt-gateway ClusterIssuers |
+
+## Post-Bootstrap (GKE)
+
+After the root app is applied the bootstrap script waits for the Traefik LB IP and
+prints DNS instructions. cert-manager and the Gateway deploy automatically via ArgoCD.
+
+**Manual steps required:**
+1. Point your domain A record at the printed Traefik LB IP
+2. Test cert issuance with `letsencrypt-gateway-staging` before using production
+   (see `nidavellir/demos/whoami/` for a ready-made validation app)
+
+## Updating a running cluster
+
+To push local changes to Gitea without reinstalling anything:
+
+```bash
+./update-embedded-git.sh [gke|homelab]
+```
+
+This re-hydrates both the Nordri and Nidavellir repos and triggers an ArgoCD sync.
+
+## Diagrams
+
+### Bootstrap sequence (L2–L4)
 
 ```mermaid
 graph TD
-    Local[Local Machine] -->|1. Setup K8s| L1[L1: Cluster]
-    Local -->|2. Bootstrap Gitea| L2[L2: Seed Gitea]
-    Local -->|3. Install CRDs| L2.5[L2.5: Gateway API & Crossplane]
-    Local -->|4. Install Argo| L3[L3: ArgoCD]
-    
-    L3 -->|Syncs| L2
-    
-    L3 -->|Deploys| L4[L4: Fundamentals]
-    
-    subgraph L4
-        Traefik
-        CertMgr[Cert-Manager]
-        Crossplane
-    end
+    Local[Local Machine] -->|gke-provision.sh| L1[L1: GKE Cluster]
+    Local -->|bootstrap.sh| L2[L2: Seed Gitea]
+    L2 --> L25[L2.5: Gateway API CRDs + Crossplane]
+    L25 --> L26[L2.6: Traefik]
+    L26 --> L27[L2.7: Crossplane Providers]
+    L27 --> L28[L2.8: ProviderConfigs]
+    L28 --> L3[L3: ArgoCD]
+    L3 -->|Root App| L4[L4: Fundamentals]
+    L3 -->|Nidavellir App| N[Vegvísir / Mimir / Heimdall / ...]
 ```
 
-## Diagram 2: The Platform (L5 - L6)
+### ArgoCD sync-wave ordering (Nidavellir/Vegvísir)
 
 ```mermaid
-graph TD
-    L4_Argo[L3: ArgoCD] -->|Deploys| L5[L5: Platform Services]
-    L4_Argo -->|Deploys| L6[L6: User Workloads]
-    
-    subgraph L5_Services
-        Heimdall[Observability]
-        Keycloak[Identity]
-        Vegvisir[Vegvísir Operator]
-    end
-    
-    subgraph L6_Workloads
-        Tafl
-        Backstage
-        Games[Agones Fleets]
-    end
-    
-    Tafl -->|Uses| L5_Services
-    Backstage -->|Uses| L5_Services
-    Games -->|Routes via| Vegvisir
+graph LR
+    CM[cert-manager\nwave 10] --> SI[SelfSigned Issuer\nwave 11]
+    SI --> DC[Default Cert\nwave 12]
+    DC --> GW[Gateway\nwave 13]
+    GW --> LE[LetsEncrypt Issuers\nwave 15]
 ```
 
-## Repository Structure
+## Validation
 
-To support this "Hydration", the source code is structured to separate shared platform logic from environment specifics.
-
-```text
-/nordri
-  /platform        # Shared Helm Charts / Kustomize Bases
-    /argocd        # The App-of-Apps definition
-    /traefik       # Base Traefik config
-    /crossplane    # Base Crossplane config
-
-  /envs            # Environment Overrides
-    /gke
-      /values.yaml # "Enable Cloud Armor", "Use GCS"
-    /homelab
-      /values.yaml # "Enable NodePort", "Use Garage"
-```
-
-## Why this Approach?
-
-1.  **Environment Isolation**: The GKE cluster has absolutely no knowledge of the Homelab cluster, and vice-versa. There is no shared "Master Config" that can accidentally break both.
-2.  **Offline Capability**: The Homelab requires no connection to GitHub.com to operate or recover, once the bootstrap script pushes the local files.
-3.  **Inspectable State**: The "Seed Gitea" contains the exact state of the cluster. You can verify exactly what manifests Argo is applying by looking at the internal Gitea UI.
-4.  **Standardization**: Both environments enable the "Platform" the same way, differing only in the hydration values.
+`validate.py` is homelab-centric and outdated — it will be replaced by kuttl tests
+covering both GKE and homelab targets. See `docs/kuttl-tests.md` for the design plan.
