@@ -11,6 +11,8 @@ TARGET=$1
 GITEA_USER="nordri-admin"
 GITEA_PASS="nordri-password-change-me"
 GITEA_REPO_NAME="nordri"
+NIDAVELLIR_GITEA_REPO="nidavellir"
+NIDAVELLIR_DIR="${NIDAVELLIR_DIR:-$(dirname "$SCRIPT_DIR")/nidavellir}"
 
 if [[ -z "$TARGET" ]]; then
     echo "Usage: ./update.sh [gke|homelab]"
@@ -82,6 +84,38 @@ git push -u origin main --force
 cd -
 
 rm -rf $HYDRATE_DIR
+
+echo "✅ Nordri configuration updated."
+
+# Also push Nidavellir so ArgoCD picks up any changes there too.
+if [[ -d "$NIDAVELLIR_DIR" ]]; then
+    echo "💧 Updating Nidavellir in Seed Gitea..."
+
+    curl -s -X POST "http://$GITEA_USER:$GITEA_PASS@localhost:3000/api/v1/user/repos" \
+      -H "Content-Type: application/json" \
+      -d "{\"name\": \"$NIDAVELLIR_GITEA_REPO\", \"private\": false}" > /dev/null || true
+
+    NIDAVELLIR_HYDRATE=$(mktemp -d)
+    cp -r "$NIDAVELLIR_DIR/." "$NIDAVELLIR_HYDRATE/"
+    rm -rf "$NIDAVELLIR_HYDRATE/.git"
+
+    cd "$NIDAVELLIR_HYDRATE"
+    git init
+    git config user.email "bootstrap@nordri.local"
+    git config user.name "Nordri Update"
+    git checkout -b main
+    git add .
+    git commit -m "Update for $TARGET"
+    git remote add origin "http://$GITEA_USER:$GITEA_PASS@localhost:3000/$GITEA_USER/$NIDAVELLIR_GITEA_REPO.git"
+    git push -u origin main --force
+    cd -
+    rm -rf "$NIDAVELLIR_HYDRATE"
+
+    echo "✅ Nidavellir updated."
+else
+    echo "⚠️  Nidavellir directory not found at: $NIDAVELLIR_DIR"
+    echo "   Set NIDAVELLIR_DIR env var or clone nidavellir as a sibling of this repo."
+fi
 
 echo "✅ Configuration Updated."
 echo "🔄 Triggering ArgoCD Sync (Root App)..."

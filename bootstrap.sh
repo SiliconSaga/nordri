@@ -52,6 +52,12 @@ if command -v rdctl &> /dev/null; then
 fi
 
 # --- Step 1: Install Seed Gitea (Layer 2) ---
+# This is the SEED instance — intentionally minimal and ephemeral. It exists solely
+# to host the Nordri + Nidavellir repos so ArgoCD has a GitOps source during bootstrap.
+# It runs with persistence.enabled=false and uses the chart's bundled Postgres + Valkey.
+#
+# TODO: After Mimir is stable, harden Gitea into a proper platform component:
+#   - See nidavellir/docs/platform-gitea.md for design notes.
 echo "📦 [Layer 2] Installing Seed Gitea..."
 helm repo add gitea-charts https://dl.gitea.io/charts/ >/dev/null 2>&1
 helm repo update
@@ -322,6 +328,25 @@ kubectl apply -f "$SCRIPT_DIR/platform/root-app.yaml" -n argocd
 
 echo "✅ Root Application applied. ArgoCD is now syncing from the internal Seed Gitea."
 
+# --- GKE: Pre-create Velero namespace + dummy credentials ---
+# Velero's Helm chart requires the velero-credentials secret to exist before the pod
+# starts. ArgoCD begins syncing Velero immediately after the root app is applied, so
+# we create a placeholder secret now to prevent a CrashLoopBackOff.
+#
+# TODO: Replace this block with proper GCS + Workload Identity setup.
+# When done, no secret will be needed at all (useSecret: false in velero-gke.yaml).
+# See docs/velero-gke.md for the full implementation plan.
+if [[ "$TARGET" == "gke" ]]; then
+    echo "🔑 [GKE] Pre-creating Velero namespace and placeholder credentials..."
+    kubectl create namespace velero --dry-run=client -o yaml | kubectl apply -f -
+    kubectl create secret generic velero-credentials -n velero \
+      --from-literal=cloud="[default]
+aws_access_key_id=PLACEHOLDER
+aws_secret_access_key=PLACEHOLDER" \
+      --dry-run=client -o yaml | kubectl apply -f -
+    echo "✅ Velero placeholder credentials created (temporary — see docs/velero-gke.md)."
+fi
+
 # --- Step 5: Initialize Garage S3 + Velero Credentials (Layer 5) ---
 # Wait for ArgoCD to deploy Garage, then set up layout, API key, bucket, and Velero secret.
 # Only runs for homelab target (Garage is homelab-specific).
@@ -450,27 +475,27 @@ if [[ "$TARGET" == "gke" ]]; then
 
     echo ""
     echo "╔══════════════════════════════════════════════════════════════════╗"
-    echo "║              📋 MANUAL STEPS REQUIRED                          ║"
+    echo "║              📋 MANUAL STEPS REQUIRED                            ║"
     echo "╠══════════════════════════════════════════════════════════════════╣"
-    echo "║  ArgoCD is now syncing. Two manual steps remain:               ║"
-    echo "║                                                                 ║"
-    echo "║  1. Point your domain(s) at the Traefik LoadBalancer:           ║"
-    echo "║                                                                 ║"
-    echo "║     <your-domain>  →  A record  →  $TRAEFIK_IP"
-    echo "║                                                                 ║"
-    echo "║     Add A records (and wildcards) at your DNS registrar.       ║"
-    echo "║     cert-manager will issue certs once DNS propagates.         ║"
-    echo "║                                                                 ║"
-    echo "║  2. cert-manager + issuers deploy automatically via ArgoCD:    ║"
-    echo "║     • wave 10 — cert-manager itself                            ║"
-    echo "║     • wave 15 — letsencrypt-gateway-staging (test first)       ║"
-    echo "║     • wave 15 — letsencrypt-gateway (production)               ║"
-    echo "║     Monitor: kubectl get applications -n argocd                ║"
-    echo "║                                                                 ║"
-    echo "║  3. Use letsencrypt-gateway-staging to validate the pipeline   ║"
-    echo "║     before requesting production certs. Staging certs are      ║"
-    echo "║     untrusted by browsers but confirm the full ACME flow.      ║"
-    echo "║                                                                 ║"
+    echo "║  ArgoCD is now syncing. Two manual steps remain:                 ║"
+    echo "║                                                                  ║"
+    echo "║  1. Point your domain(s) at the Traefik LoadBalancer:            ║"
+    echo "║                                                                  ║"
+    echo "║     <your-domain>  →  A record  →  $TRAEFIK_IP                   ║"
+    echo "║                                                                  ║"
+    echo "║     Add A records (and wildcards) at your DNS registrar.         ║"
+    echo "║     cert-manager will issue certs once DNS propagates.           ║"
+    echo "║                                                                  ║"
+    echo "║  2. cert-manager + issuers deploy automatically via ArgoCD:      ║"
+    echo "║     • wave 10 — cert-manager itself                              ║"
+    echo "║     • wave 15 — letsencrypt-gateway-staging (test first)         ║"
+    echo "║     • wave 15 — letsencrypt-gateway (production)                 ║"
+    echo "║     Monitor: kubectl get applications -n argocd                  ║"
+    echo "║                                                                  ║"
+    echo "║  3. Use letsencrypt-gateway-staging to validate the pipeline     ║"
+    echo "║     before requesting production certs. Staging certs are        ║"
+    echo "║     untrusted by browsers but confirm the full ACME flow.        ║"
+    echo "║                                                                  ║"
     echo "╚══════════════════════════════════════════════════════════════════╝"
     echo ""
 fi

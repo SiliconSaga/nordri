@@ -14,6 +14,9 @@
 # After creating the cluster:
 #   ./bootstrap.sh gke
 #
+# To start over with a clean cluster (recommended over fighting finalizers):
+#   ./scripts/gke-provision.sh delete   # then re-run create
+#
 # After testing:
 #   ./scripts/gke-provision.sh delete
 
