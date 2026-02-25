@@ -473,6 +473,22 @@ if [[ "$TARGET" == "gke" ]]; then
         sleep 10
     done
 
+    # --- DNS Automation (optional — requires NameCheap credentials) ---
+    # Set NAMECHEAP_API_USER and NAMECHEAP_API_KEY to automate A record updates.
+    # See scripts/update-dns-namecheap.sh for one-time NameCheap setup instructions.
+    DNS_UPDATED=false
+    if [[ -n "${NAMECHEAP_API_KEY:-}" ]]; then
+        echo ""
+        echo "🔧 [DNS] NameCheap credentials detected — attempting automated DNS update..."
+        if "$SCRIPT_DIR/scripts/update-dns-namecheap.sh" \
+             "${NAMECHEAP_DOMAIN:-cmdbee.org}" "$TRAEFIK_IP"; then
+            DNS_UPDATED=true
+        else
+            echo "⚠️  DNS automation failed. Follow manual instructions below."
+        fi
+    fi
+
+    if [[ "$DNS_UPDATED" == "false" ]]; then
     echo ""
     echo "╔══════════════════════════════════════════════════════════════════╗"
     echo "║              📋 MANUAL STEPS REQUIRED                            ║"
@@ -498,6 +514,7 @@ if [[ "$TARGET" == "gke" ]]; then
     echo "║                                                                  ║"
     echo "╚══════════════════════════════════════════════════════════════════╝"
     echo ""
+    fi   # DNS_UPDATED
 fi
 
 echo "🎉 Bootstrap Complete!"
