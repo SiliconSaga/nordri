@@ -1,0 +1,8 @@
+apiVersion: kuttl.dev/v1beta1
+kind: TestSuite
+testDirs:
+  - tests/e2e/shared
+  - tests/e2e/gke
+timeout: 120
+parallel: 1
+skipDelete: false
