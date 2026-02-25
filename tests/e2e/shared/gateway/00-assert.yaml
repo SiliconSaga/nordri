@@ -1,0 +1,16 @@
+# tests/e2e/shared/gateway/00-assert.yaml
+# Assert the Traefik Gateway is Programmed (listeners are valid and active).
+# The Gateway lives in kube-system; Vegvísir (Nidavellir) owns it.
+# We assert it here as part of the nordri shared substrate check because
+# the Gateway's Programmed state confirms Traefik + cert-manager are wired correctly.
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: traefik-gateway
+  namespace: kube-system
+status:
+  conditions:
+  - type: Accepted
+    status: "True"
+  - type: Programmed
+    status: "True"
