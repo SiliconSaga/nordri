@@ -1,0 +1,47 @@
+# tests/e2e/shared/argocd/00-assert.yaml
+# Assert nordri-owned ArgoCD applications are Synced and Healthy.
+# nidavellir-owned apps (nidavellir, vegvisir, cert-manager) are asserted
+# in nidavellir's own kuttl tests.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: nordri-root
+  namespace: argocd
+status:
+  health:
+    status: Healthy
+  sync:
+    status: Synced
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: layer4-fundamentals
+  namespace: argocd
+status:
+  health:
+    status: Healthy
+  sync:
+    status: Synced
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: traefik
+  namespace: argocd
+status:
+  health:
+    status: Healthy
+  sync:
+    status: Synced
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: crossplane
+  namespace: argocd
+status:
+  health:
+    status: Healthy
+  sync:
+    status: Synced
