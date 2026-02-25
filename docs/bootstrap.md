@@ -71,11 +71,45 @@ ArgoCD syncs Nidavellir from the internal Gitea. Vegvísir deploys in sync-wave 
 
 ## Post-Bootstrap (GKE)
 
-After the root app is applied the bootstrap script waits for the Traefik LB IP and
-prints DNS instructions. cert-manager and the Gateway deploy automatically via ArgoCD.
+After the root app is applied the bootstrap script waits for the Traefik LB IP.
+cert-manager and the Gateway deploy automatically via ArgoCD.
 
-**Manual steps required:**
-1. Point your domain A record at the printed Traefik LB IP
+### Automated DNS (recommended)
+
+Set these env vars before running `bootstrap.sh` to have DNS updated automatically:
+
+```bash
+export NAMECHEAP_API_USER=your-username
+export NAMECHEAP_API_KEY=your-api-key
+export NAMECHEAP_DOMAIN=cmdbee.org   # default; override for other domains
+./bootstrap.sh gke
+```
+
+The script updates `@` and `*` A records to the Traefik LB IP via the NameCheap API,
+then cert-manager can issue certs as soon as DNS propagates (~1–5 minutes).
+
+**One-time NameCheap setup:**
+1. Log in → Profile → Tools → API Access → Enable API
+2. Whitelist your public IP: `curl https://api.ipify.org`
+3. Copy the API key
+
+If the call fails (e.g. your IP changed), `bootstrap.sh` falls back to manual
+instructions. Re-run `scripts/update-dns-namecheap.sh` once the whitelist is updated.
+
+**Testing the script without touching real DNS:**
+
+```bash
+NAMECHEAP_API_USER=sandboxuser NAMECHEAP_API_KEY=sandboxkey \
+  NAMECHEAP_SANDBOX=true \
+  ./scripts/update-dns-namecheap.sh cmdbee.org 1.2.3.4
+```
+
+Requires a separate account at [sandbox.namecheap.com](https://www.sandbox.namecheap.com).
+
+### Manual DNS (fallback)
+
+If credentials are not set, `bootstrap.sh` prints the LB IP and these steps:
+1. Point `@` and `*` A records at the printed Traefik LB IP at your registrar
 2. Test cert issuance with `letsencrypt-gateway-staging` before using production
    (see `nidavellir/demos/whoami/` for a ready-made validation app)
 
