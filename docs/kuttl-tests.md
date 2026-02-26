@@ -1,5 +1,39 @@
 # Kuttl Test Design — Nordri + Nidavellir
 
+## Running the tests
+
+### Nordri (platform substrate)
+
+```bash
+cd /path/to/nordri
+kubectl kuttl test --config kuttl-test-gke.yaml
+```
+
+Covers: ArgoCD app health, Gateway Programmed, Crossplane providers/functions, Velero.
+
+Test cases: `tests/e2e/shared/argocd`, `tests/e2e/shared/gateway`,
+`tests/e2e/shared/crossplane`, `tests/e2e/gke/velero`
+
+### Nidavellir (routing layer)
+
+```bash
+cd /path/to/nidavellir
+
+# Platform assertions (fast, no external dependencies)
+kubectl kuttl test --config kuttl-test.yaml
+
+# End-to-end cert issuance (requires DNS — run after bootstrap + DNS update)
+WHOAMI_DOMAIN=test.cmdbee.org kubectl kuttl test --config kuttl-test-e2e.yaml
+```
+
+Platform test covers: nidavellir/vegvisir/cert-manager ArgoCD apps Synced+Healthy,
+bootstrap default cert Ready, both ClusterIssuers Ready.
+
+E2e test covers: whoami demo app deploys, staging cert issues via ACME HTTP-01
+challenge, HTTP 200 confirmed from the hostname.
+
+---
+
 ## Context
 
 Mimir has kuttl e2e tests that apply Crossplane claims and assert they reach Ready.

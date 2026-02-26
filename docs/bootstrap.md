@@ -152,5 +152,21 @@ graph LR
 
 ## Validation
 
-`validate.py` is homelab-centric and outdated — it will be replaced by kuttl tests
-covering both GKE and homelab targets. See `docs/kuttl-tests.md` for the design plan.
+After bootstrap completes and DNS is updated, run the full test suite:
+
+```bash
+# Nordri platform substrate
+kubectl kuttl test --config kuttl-test-gke.yaml
+
+# Nidavellir routing layer
+cd ../nidavellir
+kubectl kuttl test --config kuttl-test.yaml
+
+# End-to-end cert issuance (requires DNS to be propagated)
+WHOAMI_DOMAIN=test.cmdbee.org kubectl kuttl test --config kuttl-test-e2e.yaml
+```
+
+See `docs/kuttl-tests.md` for full test structure and design notes.
+
+`validate.py` is retained for quick human-readable homelab smoke checks but is
+no longer the primary validation mechanism.
