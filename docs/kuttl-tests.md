@@ -6,13 +6,20 @@
 
 ```bash
 cd /path/to/nordri
+
+# GKE
 kubectl kuttl test --config kuttl-test-gke.yaml
+
+# Homelab
+kubectl kuttl test --config kuttl-test-homelab.yaml
 ```
 
-Covers: ArgoCD app health, Gateway Programmed, Crossplane providers/functions, Velero.
+Shared test cases (both targets): `tests/e2e/shared/argocd`, `tests/e2e/shared/crossplane`,
+`tests/e2e/shared/velero`
 
-Test cases: `tests/e2e/shared/argocd`, `tests/e2e/shared/gateway`,
-`tests/e2e/shared/crossplane`, `tests/e2e/gke/velero`
+GKE-only: `tests/e2e/gke/gateway` (Gateway API — homelab uses IngressRoutes instead)
+
+Homelab-only: `tests/e2e/homelab/longhorn`, `tests/e2e/homelab/garage`
 
 ### Nidavellir (routing layer)
 
@@ -53,18 +60,24 @@ A kuttl skill exists in the workspace — invoke it when implementing.
 ```
 nordri/
   kuttl-test-gke.yaml          # testDirs: tests/e2e/shared + tests/e2e/gke
+  kuttl-test-homelab.yaml      # testDirs: tests/e2e/shared + tests/e2e/homelab
   tests/
     e2e/
-      shared/
+      shared/                  # Both GKE and homelab
         argocd/
           00-assert.yaml       # ArgoCD apps Synced + Healthy
-        gateway/
-          00-assert.yaml       # Gateway Accepted+Programmed=True
         crossplane/
           00-assert.yaml       # Providers + Functions Healthy+Installed=True
-      gke/
         velero/
           00-assert.yaml       # Velero deployment readyReplicas=1
+      gke/
+        gateway/
+          00-assert.yaml       # Gateway Accepted+Programmed=True (GKE/Nidavellir only)
+      homelab/
+        longhorn/
+          00-assert.yaml       # longhorn-manager DaemonSet + longhorn-ui Deployment
+        garage/
+          00-assert.yaml       # Garage StatefulSet readyReplicas=1
 
 nidavellir/
   kuttl-test.yaml              # platform suite — testDirs: tests/platform

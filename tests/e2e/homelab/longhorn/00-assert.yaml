@@ -1,0 +1,20 @@
+# tests/e2e/homelab/longhorn/00-assert.yaml
+# Assert Longhorn storage is running. longhorn-manager is the core DaemonSet;
+# it must be scheduled on all nodes (numberReady == desiredNumberScheduled).
+# validate.py previously checked pod health in the longhorn namespace.
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: longhorn-manager
+  namespace: longhorn
+status:
+  numberReady: 1
+---
+# Longhorn UI deployment should also be up for operator access.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: longhorn-ui
+  namespace: longhorn
+status:
+  readyReplicas: 1

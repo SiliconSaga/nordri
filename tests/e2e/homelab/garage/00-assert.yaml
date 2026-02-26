@@ -1,0 +1,12 @@
+# tests/e2e/homelab/garage/00-assert.yaml
+# Assert Garage S3-compatible object store is running.
+# Deployed as a StatefulSet (1 replica for dev, 3+ for production).
+# Garage is the Velero backup target on homelab; if this fails, backups are broken.
+# validate.py previously checked pod health in the garage namespace.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: garage
+  namespace: garage
+status:
+  readyReplicas: 1

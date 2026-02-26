@@ -1,12 +1,12 @@
-# nordri/kuttl-test-gke.yaml
-# Run: kubectl kuttl test --config kuttl-test-gke.yaml
+# nordri/kuttl-test-homelab.yaml
+# Run: kubectl kuttl test --config kuttl-test-homelab.yaml
 # Covers: ArgoCD apps, Crossplane providers/functions, Velero (shared);
-#         Gateway API programmed (GKE-only — homelab uses IngressRoutes)
+#         Longhorn storage, Garage S3 (homelab-only)
 apiVersion: kuttl.dev/v1beta1
 kind: TestSuite
 testDirs:
   - tests/e2e/shared
-  - tests/e2e/gke
+  - tests/e2e/homelab
 timeout: 120
 parallel: 1
 skipDelete: false

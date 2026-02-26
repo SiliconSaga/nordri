@@ -1,8 +1,7 @@
-# tests/e2e/shared/gateway/00-assert.yaml
+# tests/e2e/gke/gateway/00-assert.yaml
 # Assert the Traefik Gateway is Programmed (listeners are valid and active).
-# The Gateway lives in kube-system; Vegvísir (Nidavellir) owns it.
-# We assert it here as part of the nordri shared substrate check because
-# the Gateway's Programmed state confirms Traefik + cert-manager are wired correctly.
+# The Gateway lives in kube-system and is owned by Vegvísir (Nidavellir).
+# GKE-only: homelab uses Traefik IngressRoutes rather than Gateway API.
 apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
 metadata:

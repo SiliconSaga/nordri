@@ -1,0 +1,12 @@
+# tests/e2e/shared/velero/00-assert.yaml
+# Assert Velero deployment is running on both GKE and homelab.
+# GKE: placeholder GCS credentials (real config is a TODO — see docs/velero-gke.md).
+# Homelab: real Garage S3 credentials — full backup functionality expected.
+# A CrashLoopBackOff on either target means missing/invalid credentials.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: velero
+  namespace: velero
+status:
+  readyReplicas: 1
