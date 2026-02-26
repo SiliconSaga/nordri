@@ -1,0 +1,25 @@
+# tests/e2e/homelab/argocd/00-assert.yaml
+# Assert homelab-only ArgoCD applications are Synced and Healthy.
+# Core apps (nordri-root, layer4-fundamentals, traefik, crossplane) are
+# covered by the shared argocd assert that runs on both targets.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: longhorn
+  namespace: argocd
+status:
+  health:
+    status: Healthy
+  sync:
+    status: Synced
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: garage
+  namespace: argocd
+status:
+  health:
+    status: Healthy
+  sync:
+    status: Synced

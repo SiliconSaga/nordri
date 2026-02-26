@@ -199,9 +199,16 @@ The domain in the whoami test should be configurable (env var substitution or
 a separate values file) so it's not permanently hardcoded in the assertion. The
 README in `nidavellir/demos/whoami/` already advises users to set their domain.
 
-## What Happens to validate.py
+## validate.py
 
-Once kuttl tests cover the same ground, `validate.py` can be retired. In the
-interim it remains as a quick human-readable smoke check, but its pod-health
-and PVC checks are duplicated by kuttl assertions and should not be maintained
-in parallel long-term.
+`validate.py` has been deleted. Its pod-health checks are fully covered by
+kuttl. Two homelab-specific checks it performed are not yet ported to kuttl:
+
+- **Ingress connectivity** (`argocd.localhost`, `gitea.localhost`, etc.) —
+  could be added as `02-http.yaml` steps in each homelab test case
+- **Longhorn PVC binding smoke test** — creates a temporary PVC to verify the
+  storage class actually provisions; could be a `TestStep` with `kubectl apply`
+  + assert on PVC `status.phase: Bound`
+
+These are nice-to-have rather than critical; the ArgoCD Synced+Healthy and
+DaemonSet/Deployment readiness assertions catch most real failures.

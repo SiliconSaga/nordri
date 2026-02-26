@@ -167,6 +167,3 @@ WHOAMI_DOMAIN=test.cmdbee.org kubectl kuttl test --config kuttl-test-e2e.yaml
 ```
 
 See `docs/kuttl-tests.md` for full test structure and design notes.
-
-`validate.py` is retained for quick human-readable homelab smoke checks but is
-no longer the primary validation mechanism.
