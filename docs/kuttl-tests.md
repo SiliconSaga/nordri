@@ -52,29 +52,38 @@ A kuttl skill exists in the workspace — invoke it when implementing.
 
 ```
 nordri/
-  kuttl-test.yaml
+  kuttl-test-gke.yaml          # testDirs: tests/e2e/shared + tests/e2e/gke
   tests/
     e2e/
-      argocd/
-        00-assert.yaml     # ArgoCD apps Synced + Healthy
-      gateway/
-        00-assert.yaml     # Gateway Programmed, listeners valid
-      crossplane/
-        00-assert.yaml     # Providers + Functions Healthy
-      velero/
-        00-assert.yaml     # Velero deployment Running
+      shared/
+        argocd/
+          00-assert.yaml       # ArgoCD apps Synced + Healthy
+        gateway/
+          00-assert.yaml       # Gateway Accepted+Programmed=True
+        crossplane/
+          00-assert.yaml       # Providers + Functions Healthy+Installed=True
+      gke/
+        velero/
+          00-assert.yaml       # Velero deployment readyReplicas=1
 
 nidavellir/
-  kuttl-test.yaml
+  kuttl-test.yaml              # platform suite — testDirs: tests/platform
+  kuttl-test-e2e.yaml          # e2e suite — testDirs: tests/e2e
   tests/
-    e2e/
+    platform/
       vegvisir/
-        00-assert.yaml     # ClusterIssuers Ready, default cert Ready
-      whoami/              # Domain-dependent — skip if no DNS
-        00-apply.yaml      # kubectl apply demos/whoami/whoami.yaml
-        01-assert.yaml     # Certificate whoami-cert Ready
-        02-http.yaml       # curl http://test.<domain>/ returns 200
+        00-assert.yaml         # nidavellir/vegvisir/cert-manager ArgoCD apps,
+                               # default cert Ready, ClusterIssuers Ready
+    e2e/
+      whoami/                  # Domain-dependent — requires DNS → LB → ACME
+        00-apply.yaml          # delete ns + kubectl apply demos/whoami/whoami.yaml
+        01-assert.yaml         # Certificate whoami-cert Ready=True
+        02-http.yaml           # curl http://test.cmdbee.org/ returns 200
 ```
+
+Platform tests (`kuttl-test.yaml`) have no external dependencies and complete in ~20s.
+E2e tests (`kuttl-test-e2e.yaml`) require DNS to be pointing at the cluster and allow
+up to 300s for the ACME HTTP-01 challenge round-trip.
 
 ## Tagging Strategy
 

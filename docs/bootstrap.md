@@ -158,7 +158,7 @@ After bootstrap completes and DNS is updated, run the full test suite:
 # Nordri platform substrate
 kubectl kuttl test --config kuttl-test-gke.yaml
 
-# Nidavellir routing layer
+# Nidavellir routing layer (assumes nidavellir is a sibling directory)
 cd ../nidavellir
 kubectl kuttl test --config kuttl-test.yaml
 

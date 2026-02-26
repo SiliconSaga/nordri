@@ -1,3 +1,6 @@
+# nordri/kuttl-test-gke.yaml
+# Run: kubectl kuttl test --config kuttl-test-gke.yaml
+# Covers: ArgoCD apps, Gateway, Crossplane providers/functions, Velero (GKE)
 apiVersion: kuttl.dev/v1beta1
 kind: TestSuite
 testDirs:
