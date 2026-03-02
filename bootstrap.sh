@@ -22,8 +22,10 @@ GITEA_USER="nordri-admin"
 GITEA_PASS="nordri-password-change-me"
 GITEA_REPO_NAME="nordri"
 NIDAVELLIR_GITEA_REPO="nidavellir"
-# Nidavellir is expected as a sibling directory of this repo. Override with NIDAVELLIR_DIR.
+MIMIR_GITEA_REPO="mimir"
+# Sibling directories expected alongside this repo. Override with env vars.
 NIDAVELLIR_DIR="${NIDAVELLIR_DIR:-$(dirname "$SCRIPT_DIR")/nidavellir}"
+MIMIR_DIR="${MIMIR_DIR:-$(dirname "$SCRIPT_DIR")/mimir}"
 INTERNAL_GITEA_URL="http://gitea-http.gitea.svc.cluster.local:3000"
 
 if [[ -z "$TARGET" ]]; then
@@ -128,10 +130,34 @@ kubectl port-forward svc/gitea-http -n gitea 3000:3000 > /dev/null 2>&1 &
 PF_PID=$!
 sleep 5 # Give it a moment
 
-# Create the repo via API
-curl -X POST "http://$GITEA_USER:$GITEA_PASS@localhost:3000/api/v1/user/repos" \
-  -H "Content-Type: application/json" \
-  -d "{\"name\": \"$GITEA_REPO_NAME\", \"private\": false}" || echo "Repo might already exist"
+# Create a Gitea repo via API with retry. Gitea's ephemeral mode can fail on rapid
+# sequential repo creates (initRepository race). We check the response body for errors.
+create_gitea_repo() {
+    local repo_name=$1
+    local max_retries=5
+    for i in $(seq 1 $max_retries); do
+        RESPONSE=$(curl -s -X POST "http://$GITEA_USER:$GITEA_PASS@localhost:3000/api/v1/user/repos" \
+          -H "Content-Type: application/json" \
+          -d "{\"name\": \"$repo_name\", \"private\": false}")
+
+        # Check if response contains a valid repo (has "clone_url") or already-exists error
+        if echo "$RESPONSE" | grep -q '"clone_url"'; then
+            echo "   Created repo: $repo_name"
+            return 0
+        elif echo "$RESPONSE" | grep -q 'already exists'; then
+            echo "   Repo $repo_name already exists."
+            return 0
+        else
+            echo "   Repo creation attempt $i/$max_retries failed for $repo_name: $(echo "$RESPONSE" | head -c 120)"
+            sleep 5
+        fi
+    done
+    echo "❌ Failed to create repo $repo_name after $max_retries attempts."
+    return 1
+}
+
+# Create all repos upfront (sequential with retry to avoid Gitea init races)
+create_gitea_repo "$GITEA_REPO_NAME"
 
 # Prepare the content
 # Copy platform shared files
@@ -171,9 +197,7 @@ echo "✅ Nordri configuration hydrated to Seed Gitea."
 if [[ -d "$NIDAVELLIR_DIR" ]]; then
     echo "💧 [Layer 2] Hydrating Nidavellir to Seed Gitea..."
 
-    curl -X POST "http://$GITEA_USER:$GITEA_PASS@localhost:3000/api/v1/user/repos" \
-      -H "Content-Type: application/json" \
-      -d "{\"name\": \"$NIDAVELLIR_GITEA_REPO\", \"private\": false}" || echo "   Nidavellir repo may already exist."
+    create_gitea_repo "$NIDAVELLIR_GITEA_REPO"
 
     NIDAVELLIR_HYDRATE=$(mktemp -d)
     cp -r "$NIDAVELLIR_DIR/." "$NIDAVELLIR_HYDRATE/"
@@ -196,6 +220,36 @@ else
     echo "⚠️  Nidavellir directory not found at: $NIDAVELLIR_DIR"
     echo "   Set NIDAVELLIR_DIR env var or clone nidavellir as a sibling of this repo."
     echo "   Vegvísir (Gateway + TLS) will not be deployed until Nidavellir is available."
+fi
+
+# Also push Mimir to Gitea so ArgoCD can deploy data service operators + XRDs.
+# Mimir is referenced by nidavellir/apps/mimir-app.yaml (sync-wave 6).
+if [[ -d "$MIMIR_DIR" ]]; then
+    echo "💧 [Layer 2] Hydrating Mimir to Seed Gitea..."
+
+    create_gitea_repo "$MIMIR_GITEA_REPO"
+
+    MIMIR_HYDRATE=$(mktemp -d)
+    cp -r "$MIMIR_DIR/." "$MIMIR_HYDRATE/"
+    rm -rf "$MIMIR_HYDRATE/.git"  # Don't push source .git dir
+
+    cd "$MIMIR_HYDRATE"
+    git init
+    git config user.email "bootstrap@nordri.local"
+    git config user.name "Nordri Bootstrap"
+    git checkout -b main
+    git add .
+    git commit -m "Hydration for $TARGET"
+    git remote add origin "http://$GITEA_USER:$GITEA_PASS@localhost:3000/$GITEA_USER/$MIMIR_GITEA_REPO.git"
+    git push -u origin main --force
+    cd -
+    rm -rf "$MIMIR_HYDRATE"
+
+    echo "✅ Mimir hydrated to Seed Gitea."
+else
+    echo "⚠️  Mimir directory not found at: $MIMIR_DIR"
+    echo "   Set MIMIR_DIR env var or clone mimir as a sibling of this repo."
+    echo "   Data services will not be deployed until Mimir is available."
 fi
 
 # --- Step 2.5: Install Gateway API (Layer 2.5) ---
@@ -287,7 +341,7 @@ helm upgrade --install argocd argo/argo-cd --namespace argocd \
   --set dex.enabled=false \
   --set server.insecure=true \
   --set server.extraArgs={--insecure} \
-  --set configs.cm."kustomize\.buildOptions"="--load-restrictor LoadRestrictionsNone"
+  --set configs.cm."kustomize\.buildOptions"="--load-restrictor LoadRestrictionsNone --enable-helm"
 
 echo "⏳ Waiting for ArgoCD to become ready..."
 TIMEOUT=300
