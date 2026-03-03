@@ -68,7 +68,7 @@ This document outlines the architecture for a robust, hybrid, multi-cluster Kube
 | **Mimir** | Database Management Platform | - | Manages Percona, Kafka, Valkey (External Project) |
 | **Crossplane** | Infrastructure as Code | 2.0+ | Self-service infrastructure provisioning |
 | **Velero** | Backup and disaster recovery | 1.17.0+ | Cross-cluster backup/restore |
-| **Heimdall** | Panoptes Monitoring and observability | Latest | Metrics collection and visualization |
+| **Heimdall** | Observability (Prometheus, Grafana, Loki, Tempo) | Latest | Metrics, logs, traces, dashboards |
 | **Keycloak** | Identity and access management | Latest | Single sign-on and user management |
 | **Backstage** | Developer portal | Latest | Service catalog and developer experience |
 
