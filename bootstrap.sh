@@ -23,9 +23,11 @@ GITEA_PASS="nordri-password-change-me"
 GITEA_REPO_NAME="nordri"
 NIDAVELLIR_GITEA_REPO="nidavellir"
 MIMIR_GITEA_REPO="mimir"
+HEIMDALL_GITEA_REPO="heimdall"
 # Sibling directories expected alongside this repo. Override with env vars.
 NIDAVELLIR_DIR="${NIDAVELLIR_DIR:-$(dirname "$SCRIPT_DIR")/nidavellir}"
 MIMIR_DIR="${MIMIR_DIR:-$(dirname "$SCRIPT_DIR")/mimir}"
+HEIMDALL_DIR="${HEIMDALL_DIR:-$(dirname "$SCRIPT_DIR")/heimdall}"
 INTERNAL_GITEA_URL="http://gitea-http.gitea.svc.cluster.local:3000"
 
 if [[ -z "$TARGET" ]]; then
@@ -250,6 +252,36 @@ else
     echo "⚠️  Mimir directory not found at: $MIMIR_DIR"
     echo "   Set MIMIR_DIR env var or clone mimir as a sibling of this repo."
     echo "   Data services will not be deployed until Mimir is available."
+fi
+
+# Also push Heimdall to Gitea so ArgoCD can deploy the observability stack.
+# Heimdall is referenced by nidavellir/apps/heimdall-app.yaml (sync-wave 10).
+if [[ -d "$HEIMDALL_DIR" ]]; then
+    echo "💧 [Layer 2] Hydrating Heimdall to Seed Gitea..."
+
+    create_gitea_repo "$HEIMDALL_GITEA_REPO"
+
+    HEIMDALL_HYDRATE=$(mktemp -d)
+    cp -r "$HEIMDALL_DIR/." "$HEIMDALL_HYDRATE/"
+    rm -rf "$HEIMDALL_HYDRATE/.git"  # Don't push source .git dir
+
+    cd "$HEIMDALL_HYDRATE"
+    git init
+    git config user.email "bootstrap@nordri.local"
+    git config user.name "Nordri Bootstrap"
+    git checkout -b main
+    git add .
+    git commit -m "Hydration for $TARGET"
+    git remote add origin "http://$GITEA_USER:$GITEA_PASS@localhost:3000/$GITEA_USER/$HEIMDALL_GITEA_REPO.git"
+    git push -u origin main --force
+    cd -
+    rm -rf "$HEIMDALL_HYDRATE"
+
+    echo "✅ Heimdall hydrated to Seed Gitea."
+else
+    echo "⚠️  Heimdall directory not found at: $HEIMDALL_DIR"
+    echo "   Set HEIMDALL_DIR env var or clone heimdall as a sibling of this repo."
+    echo "   Observability stack will not be deployed until Heimdall is available."
 fi
 
 # --- Step 2.5: Install Gateway API (Layer 2.5) ---
