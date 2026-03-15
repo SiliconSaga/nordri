@@ -34,7 +34,7 @@ After bootstrapping, you can access the services:
     *   User: `admin`
     *   Password: Run the command below to retrieve it.
     ```bash
-    kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d
+    kubectl -n argo get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d
     ```
 
 #### Connectivity
@@ -50,7 +50,7 @@ If Ingress is not yet up (or you are debugging Layer 4), use Port Forwarding:
 
 ```bash
 # ArgoCD
-kubectl port-forward svc/argocd-server -n argocd 8080:443
+kubectl port-forward svc/argocd-server -n argo 8080:443
 # Access at https://localhost:8080
 
 # Gitea
@@ -97,7 +97,7 @@ We use a **Kustomize-based App-of-Apps** pattern to handle environment differenc
     *   **GKE**: Uses its own CSI driver (Persistent Disk). Longhorn is not needed.
 
 *   **Argonception**: Most YAML files in `apps/` are `kind: Application`. They tell Argo to sync *another* Helm chart (e.g., the official Traefik chart).
-*   **Namespaces**: Any "loose" manifest (like `ClusterIssuer`) applied by the App-of-Apps will default to the `argocd` namespace unless explicitly namespaced in the file.
+*   **Namespaces**: Any "loose" manifest (like `ClusterIssuer`) applied by the App-of-Apps will default to the `argo` namespace unless explicitly namespaced in the file.
 *   **Values**: Environment-specific values (e.g., LoadBalancer vs NodePort) are injected via the `envs/` directory, which the App-of-Apps or individual Applications reference.
 
 ## Operation & Maintenance

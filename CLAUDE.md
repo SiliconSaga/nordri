@@ -16,7 +16,7 @@ ArgoCD is bootstrapped here and deploys everything above via `nidavellir-apps.ya
 ```
 If ArgoCD doesn't auto-sync after push:
 ```bash
-kubectl annotate application vegvisir -n argocd argocd.argoproj.io/refresh=hard --overwrite
+kubectl annotate application vegvisir -n argo argocd.argoproj.io/refresh=hard --overwrite
 ```
 
 ### Run kuttl tests (GKE)

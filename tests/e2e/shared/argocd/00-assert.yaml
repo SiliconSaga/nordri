@@ -6,7 +6,7 @@ apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
   name: nordri-root
-  namespace: argocd
+  namespace: argo
 status:
   health:
     status: Healthy
@@ -17,7 +17,7 @@ apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
   name: layer4-fundamentals
-  namespace: argocd
+  namespace: argo
 status:
   health:
     status: Healthy
@@ -28,7 +28,7 @@ apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
   name: traefik
-  namespace: argocd
+  namespace: argo
 status:
   health:
     status: Healthy
@@ -39,7 +39,7 @@ apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
   name: crossplane
-  namespace: argocd
+  namespace: argo
 status:
   health:
     status: Healthy

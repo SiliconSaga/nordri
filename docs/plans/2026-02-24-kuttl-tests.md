@@ -80,7 +80,7 @@ apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
   name: nordri-root
-  namespace: argocd
+  namespace: argo
 status:
   health:
     status: Healthy
@@ -91,7 +91,7 @@ apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
   name: layer4-fundamentals
-  namespace: argocd
+  namespace: argo
 status:
   health:
     status: Healthy
@@ -102,7 +102,7 @@ apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
   name: traefik
-  namespace: argocd
+  namespace: argo
 status:
   health:
     status: Healthy
@@ -113,7 +113,7 @@ apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
   name: crossplane
-  namespace: argocd
+  namespace: argo
 status:
   health:
     status: Healthy
@@ -322,7 +322,7 @@ apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
   name: nidavellir
-  namespace: argocd
+  namespace: argo
 status:
   health:
     status: Healthy
@@ -333,7 +333,7 @@ apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
   name: vegvisir
-  namespace: argocd
+  namespace: argo
 status:
   health:
     status: Healthy
@@ -344,7 +344,7 @@ apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
   name: cert-manager
-  namespace: argocd
+  namespace: argo
 status:
   health:
     status: Healthy

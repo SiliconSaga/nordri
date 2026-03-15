@@ -130,7 +130,7 @@ apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
   name: nordri-root
-  namespace: argocd
+  namespace: argo
 status:
   health:
     status: Healthy

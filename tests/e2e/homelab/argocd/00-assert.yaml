@@ -6,7 +6,7 @@ apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
   name: longhorn
-  namespace: argocd
+  namespace: argo
 status:
   health:
     status: Healthy
@@ -17,7 +17,7 @@ apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
   name: garage
-  namespace: argocd
+  namespace: argo
 status:
   health:
     status: Healthy

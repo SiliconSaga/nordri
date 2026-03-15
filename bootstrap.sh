@@ -367,9 +367,9 @@ echo "✅ Crossplane ProviderConfigs & RBAC applied."
 # --- Step 3: Install ArgoCD (Layer 3) ---
 echo "🔥 [Layer 3] Installing ArgoCD..."
 helm repo add argo https://argoproj.github.io/argo-helm >/dev/null 2>&1
-kubectl create namespace argocd --dry-run=client -o yaml | kubectl apply -f -
+kubectl create namespace argo --dry-run=client -o yaml | kubectl apply -f -
 
-helm upgrade --install argocd argo/argo-cd --namespace argocd \
+helm upgrade --install argocd argo/argo-cd --namespace argo \
   --set dex.enabled=false \
   --set server.insecure=true \
   --set server.extraArgs={--insecure} \
@@ -387,7 +387,7 @@ while true; do
     fi
 
     # Check if argocd-server is Ready
-    STATUS=$(kubectl get pods -n argocd -l app.kubernetes.io/name=argocd-server -o jsonpath='{.items[0].status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
+    STATUS=$(kubectl get pods -n argo -l app.kubernetes.io/name=argocd-server -o jsonpath='{.items[0].status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
     
     if [[ "$STATUS" == "True" ]]; then
         echo "✅ ArgoCD Server is Ready."
@@ -395,7 +395,7 @@ while true; do
     fi
 
     echo "   ... waiting for ArgoCD Server ($ELAPSED/${TIMEOUT}s)"
-    kubectl logs -n argocd -l app.kubernetes.io/name=argocd-server --tail=1 2>/dev/null || true
+    kubectl logs -n argo -l app.kubernetes.io/name=argocd-server --tail=1 2>/dev/null || true
     
     sleep 5
 done
@@ -410,7 +410,7 @@ echo "🔗 [Layer 3] Connecting Argo to Seed Gitea..."
 
 # Apply the Root App
 echo "🌱 [Layer 4] Applying Root Application..."
-kubectl apply -f "$SCRIPT_DIR/platform/root-app.yaml" -n argocd
+kubectl apply -f "$SCRIPT_DIR/platform/root-app.yaml" -n argo
 
 echo "✅ Root Application applied. ArgoCD is now syncing from the internal Seed Gitea."
 
@@ -592,7 +592,7 @@ if [[ "$TARGET" == "gke" ]]; then
     echo "║     • cert-manager operator installs first                       ║"
     echo "║     • traefik-gateway applies and registers its Listener         ║"
     echo "║     • letsencrypt-gateway (staging & prod) Issuers register      ║"
-    echo "║     Monitor: kubectl get applications -n argocd                  ║"
+    echo "║     Monitor: kubectl get applications -n argo                     ║"
     echo "║                                                                  ║"
     echo "║  3. Use letsencrypt-gateway-staging to validate the pipeline     ║"
     echo "║     before requesting production certs. Staging certs are        ║"

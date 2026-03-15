@@ -30,6 +30,13 @@ logs/
 *.swp
 *.swo
 
+# Agent draft clearinghouse (issues, PRs)
+.issues/
+.prs/
+
+# GCP auth cache
+gke_gcloud_auth_plugin_cache
+
 # OS files
 .DS_Store
 Thumbs.db
