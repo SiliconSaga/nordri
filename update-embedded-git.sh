@@ -12,7 +12,11 @@ GITEA_USER="nordri-admin"
 GITEA_PASS="nordri-password-change-me"
 GITEA_REPO_NAME="nordri"
 NIDAVELLIR_GITEA_REPO="nidavellir"
+MIMIR_GITEA_REPO="mimir"
+HEIMDALL_GITEA_REPO="heimdall"
 NIDAVELLIR_DIR="${NIDAVELLIR_DIR:-$(dirname "$SCRIPT_DIR")/nidavellir}"
+MIMIR_DIR="${MIMIR_DIR:-$(dirname "$SCRIPT_DIR")/mimir}"
+HEIMDALL_DIR="${HEIMDALL_DIR:-$(dirname "$SCRIPT_DIR")/heimdall}"
 
 if [[ -z "$TARGET" ]]; then
     echo "Usage: ./update.sh [gke|homelab]"
@@ -115,6 +119,64 @@ if [[ -d "$NIDAVELLIR_DIR" ]]; then
 else
     echo "⚠️  Nidavellir directory not found at: $NIDAVELLIR_DIR"
     echo "   Set NIDAVELLIR_DIR env var or clone nidavellir as a sibling of this repo."
+fi
+
+if [[ -d "$MIMIR_DIR" ]]; then
+    echo "💧 Updating Mimir in Seed Gitea..."
+
+    curl -s -X POST "http://$GITEA_USER:$GITEA_PASS@localhost:3000/api/v1/user/repos" \
+      -H "Content-Type: application/json" \
+      -d "{\"name\": \"$MIMIR_GITEA_REPO\", \"private\": false}" > /dev/null || true
+
+    MIMIR_HYDRATE=$(mktemp -d)
+    cp -r "$MIMIR_DIR/." "$MIMIR_HYDRATE/"
+    rm -rf "$MIMIR_HYDRATE/.git"
+
+    cd "$MIMIR_HYDRATE"
+    git init
+    git config user.email "bootstrap@nordri.local"
+    git config user.name "Nordri Update"
+    git checkout -b main
+    git add .
+    git commit -m "Update for $TARGET"
+    git remote add origin "http://$GITEA_USER:$GITEA_PASS@localhost:3000/$GITEA_USER/$MIMIR_GITEA_REPO.git"
+    git push -u origin main --force
+    cd -
+    rm -rf "$MIMIR_HYDRATE"
+
+    echo "✅ Mimir updated."
+else
+    echo "⚠️  Mimir directory not found at: $MIMIR_DIR"
+    echo "   Set MIMIR_DIR env var or clone mimir as a sibling of this repo."
+fi
+
+if [[ -d "$HEIMDALL_DIR" ]]; then
+    echo "💧 Updating Heimdall in Seed Gitea..."
+
+    curl -s -X POST "http://$GITEA_USER:$GITEA_PASS@localhost:3000/api/v1/user/repos" \
+      -H "Content-Type: application/json" \
+      -d "{\"name\": \"$HEIMDALL_GITEA_REPO\", \"private\": false}" > /dev/null || true
+
+    HEIMDALL_HYDRATE=$(mktemp -d)
+    cp -r "$HEIMDALL_DIR/." "$HEIMDALL_HYDRATE/"
+    rm -rf "$HEIMDALL_HYDRATE/.git"
+
+    cd "$HEIMDALL_HYDRATE"
+    git init
+    git config user.email "bootstrap@nordri.local"
+    git config user.name "Nordri Update"
+    git checkout -b main
+    git add .
+    git commit -m "Update for $TARGET"
+    git remote add origin "http://$GITEA_USER:$GITEA_PASS@localhost:3000/$GITEA_USER/$HEIMDALL_GITEA_REPO.git"
+    git push -u origin main --force
+    cd -
+    rm -rf "$HEIMDALL_HYDRATE"
+
+    echo "✅ Heimdall updated."
+else
+    echo "⚠️  Heimdall directory not found at: $HEIMDALL_DIR"
+    echo "   Set HEIMDALL_DIR env var or clone heimdall as a sibling of this repo."
 fi
 
 echo "✅ Configuration Updated."
