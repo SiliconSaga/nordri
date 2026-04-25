@@ -26,8 +26,19 @@ spec:
         ports:
           web:
             exposedPort: 80
+            # Allow encoded `#` (%23) in URL paths.
+            # Required for Matrix Synapse and other APIs that put room aliases
+            # like #room:server in path segments. Traefik 3.6.4+ rejects these
+            # by default (CVE hardening). Safe for our use cases.
+            # See: https://doc.traefik.io/traefik/security/request-path/
+            http:
+              encodedCharacters:
+                allowEncodedHash: true
           websecure:
             exposedPort: 443
+            http:
+              encodedCharacters:
+                allowEncodedHash: true
   destination:
     server: https://kubernetes.default.svc
     namespace: kube-system
