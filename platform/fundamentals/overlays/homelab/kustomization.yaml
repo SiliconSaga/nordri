@@ -14,6 +14,9 @@ resources:
   # Homelab Specific Apps
   - ../../apps/longhorn.yaml
   - ../../apps/garage.yaml
+
+  # Homelab Specific Manifests
+  - ../../manifests/cluster-identity-homelab.yaml
   
   # Exclusions
   # We do NOT include cert-manager.yaml here.

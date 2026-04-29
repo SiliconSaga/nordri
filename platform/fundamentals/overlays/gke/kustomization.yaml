@@ -10,6 +10,9 @@ resources:
   # Shared Manifests
   - ../../manifests/crossplane-providers.yaml
   - ../../manifests/crossplane-configs.yaml
+
+  # GKE Specific Manifests
+  - ../../manifests/cluster-identity-gke.yaml
   # Note: Gateway API CRDs, Traefik Gateway resource, and ClusterIssuers are
   # managed by the Nidavellir platform component, not Nordri. cert-manager
   # itself is pre-installed on this cluster and also excluded.
