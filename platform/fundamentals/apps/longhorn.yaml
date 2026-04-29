@@ -15,6 +15,12 @@ spec:
       values: |
         preUpgradeChecker:
           jobEnabled: false
+        # Cluster ships with local-path (Rancher) as default StorageClass; keep
+        # it that way. Compositions explicitly reference longhorn or local-path
+        # via the cluster-identity EnvironmentConfig, so the default-class
+        # fallback only matters for workloads that omit storageClassName.
+        persistence:
+          defaultClass: false
   destination:
     server: https://kubernetes.default.svc
     namespace: longhorn
