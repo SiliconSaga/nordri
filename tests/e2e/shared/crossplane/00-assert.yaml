@@ -1,7 +1,7 @@
 # tests/e2e/shared/crossplane/00-assert.yaml
 # Assert all Crossplane providers and functions are Healthy.
 # Providers: provider-helm, provider-kubernetes
-# Functions: function-auto-ready, function-go-templating
+# Functions: function-auto-ready, function-go-templating, function-environment-configs
 apiVersion: pkg.crossplane.io/v1
 kind: Provider
 metadata:
@@ -39,6 +39,17 @@ apiVersion: pkg.crossplane.io/v1beta1
 kind: Function
 metadata:
   name: function-go-templating
+status:
+  conditions:
+  - type: Healthy
+    status: "True"
+  - type: Installed
+    status: "True"
+---
+apiVersion: pkg.crossplane.io/v1beta1
+kind: Function
+metadata:
+  name: function-environment-configs
 status:
   conditions:
   - type: Healthy

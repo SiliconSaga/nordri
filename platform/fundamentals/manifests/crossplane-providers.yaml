@@ -119,3 +119,16 @@ metadata:
     argocd.argoproj.io/sync-wave: "5"
 spec:
   package: xpkg.upbound.io/crossplane-contrib/function-go-templating:v0.4.0
+---
+# Required by Crossplane v2: spec.environment was removed from Composition,
+# so EnvironmentConfigs are loaded into the pipeline context via this function.
+# Used by the cluster-identity pattern (environment, storageClass, domain) so
+# composition templates stay environment-agnostic.
+apiVersion: pkg.crossplane.io/v1beta1
+kind: Function
+metadata:
+  name: function-environment-configs
+  annotations:
+    argocd.argoproj.io/sync-wave: "5"
+spec:
+  package: xpkg.upbound.io/crossplane-contrib/function-environment-configs:v0.4.0
