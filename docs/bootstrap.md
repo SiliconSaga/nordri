@@ -36,6 +36,12 @@ Provision the raw cluster before running any scripts.
 ### Layer 2.7 — Crossplane Providers + Functions
 - Applies `crossplane-providers.yaml` and waits for all providers to become Healthy
 - Must be healthy before ProviderConfigs (Layer 2.8) can be applied
+- Functions: `function-auto-ready`, `function-go-templating`,
+  `function-environment-configs`. The last one is required for the
+  cluster-identity pattern — see [`cluster-identity.md`](cluster-identity.md)
+  for how downstream compositions consume per-environment values
+  (`storageClass`, `domain`, etc.) without claim parameters or per-environment
+  hydration
 
 ### Layer 2.8 — Crossplane ProviderConfigs + RBAC
 - Applies `crossplane-configs.yaml` (ProviderConfig CRDs now exist from Layer 2.7)

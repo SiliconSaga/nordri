@@ -1,0 +1,14 @@
+# Cluster identity for Crossplane compositions (homelab).
+# Loaded into the pipeline context by function-environment-configs so
+# compositions can stay environment-agnostic — they read storageClass,
+# domain, etc. from this resource instead of branching on a claim parameter.
+apiVersion: apiextensions.crossplane.io/v1beta1
+kind: EnvironmentConfig
+metadata:
+  name: cluster-identity
+  annotations:
+    argocd.argoproj.io/sync-wave: "5"
+data:
+  environment: homelab
+  storageClass: local-path
+  domain: homelab.local
