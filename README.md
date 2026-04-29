@@ -88,6 +88,17 @@ We use a **Kustomize-based App-of-Apps** pattern to handle environment differenc
 3.  **Application Creation**: The overlay includes the specific `Application` manifests from `apps/`.
 4.  **Resource Creation**: The overlay includes raw manifests from `manifests/`.
 
+## Composition Patterns
+
+Nordri exposes substrate patterns that downstream components (Heimdall, Mimir,
+…) consume in their Crossplane compositions:
+
+* **[Cluster identity](docs/cluster-identity.md)** — workspace-scoped
+  `EnvironmentConfig/cluster-identity` provisioned per environment. Compositions
+  read per-cluster facts (`storageClass`, `domain`, `environment`) from it via
+  `function-environment-configs` so claims and templates stay
+  environment-agnostic. Read this before authoring a new Composition.
+
 ## Important Notes
 
 *   **Storage Strategy**: The default `local-path` provisioner (built-in to k3d/k3s) is used for development. It is node-local and does **not replicate** across nodes.
