@@ -148,7 +148,8 @@ top-level field.
 ## See also
 
 - Heimdall is the proving ground — see
-  [`components/heimdall/crossplane/composition.yaml`](../../heimdall/crossplane/composition.yaml).
+  [`heimdall/crossplane/composition.yaml`](https://github.com/SiliconSaga/heimdall/blob/main/crossplane/composition.yaml)
+  (separate repo).
 - Function source:
   https://github.com/crossplane-contrib/function-environment-configs
 - `function-go-templating` template syntax:
