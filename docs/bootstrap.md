@@ -19,9 +19,23 @@ Provision the raw cluster before running any scripts.
 `./bootstrap.sh [gke|homelab]`
 
 - Installs **Gitea** (Helm, `gitea` namespace, ephemeral — no persistence)
+- **Resolves Gitea admin credentials** and persists them to the
+  `gitea/gitea-admin-credentials` Secret. On a fresh install the script
+  generates a strong random password (~140 bits via `openssl rand`); on a
+  re-run it reuses whatever's already in the Secret. Existing pre-Secret
+  clusters get the historical default (`nordri-password-change-me`)
+  captured into the Secret on first re-run so subsequent scripts can read
+  from one place. Override with `GITEA_USER` / `GITEA_PASS` env vars.
 - Creates Nordri and Nidavellir repos in Gitea via API
 - Hydrates both repos from local checkouts (applies target overlay for Nordri)
 - Nidavellir is expected as a sibling directory; override with `NIDAVELLIR_DIR`
+
+Retrieve the active password:
+
+```bash
+kubectl get secret -n gitea gitea-admin-credentials \
+  -o jsonpath='{.data.password}' | base64 -d
+```
 
 ### Layer 2.5 — Gateway API CRDs + Crossplane Core
 - Installs **Gateway API CRDs** (required before Traefik's GatewayClass can register)
@@ -128,6 +142,35 @@ To push local changes to Gitea without reinstalling anything:
 ```
 
 This re-hydrates both the Nordri and Nidavellir repos and triggers an ArgoCD sync.
+
+### Talking to Gitea over a real ingress (skipping port-forward)
+
+By default the script reaches Gitea via `kubectl port-forward` to
+`localhost:3000`. On clusters that already have the Gitea HTTPRoute
+deployed (see `platform/fundamentals/ingress/gitea-{homelab,gke}.yaml`)
+you can skip the port-forward by setting `GITEA_HOST`:
+
+```bash
+GITEA_HOST=gitea.cmdbee.org ./update-embedded-git.sh gke
+GITEA_HOST=gitea.localhost  ./update-embedded-git.sh homelab
+```
+
+Useful when:
+- Workstation's git credential manager intercepts `localhost:3000`
+  (notably Windows Git Credential Manager + a `provider=generic` config).
+- Gitea is reachable directly via DNS and the port-forward is just
+  overhead.
+
+`GITEA_SCHEME` (default `http`) controls the URL scheme; once the
+Vegvísir wildcard cert lands on the Gateway listener, set
+`GITEA_SCHEME=https` to encrypt credential traffic.
+
+### Credentials
+
+Both `bootstrap.sh` and `update-embedded-git.sh` read the Gitea admin
+credentials from the `gitea/gitea-admin-credentials` Secret. Override
+with `GITEA_USER` / `GITEA_PASS` env vars on either script. See the
+script headers for the full resolution order.
 
 ## Diagrams
 
