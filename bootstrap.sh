@@ -262,17 +262,24 @@ echo "   Working in $HYDRATE_DIR"
 # probe Gitea before continuing so we don't push credentials at a wrong
 # endpoint or an unready ingress.
 if [[ "$GITEA_HOST" == "localhost:3000" ]]; then
-    kubectl port-forward svc/gitea-http -n gitea 3000:3000 > /dev/null 2>&1 &
-    PF_PID=$!
-    ATTEMPTS=0
-    until probe_gitea; do
-        ATTEMPTS=$((ATTEMPTS + 1))
-        if [[ $ATTEMPTS -ge 30 ]]; then
-            echo "❌ Gitea did not become reachable on $GITEA_HOST within 30s." >&2
-            exit 1
-        fi
-        sleep 1
-    done
+    if probe_gitea; then
+        # Re-runs may already have a port-forward (or some other localhost
+        # listener serving Gitea); reuse it instead of stacking another
+        # background process.
+        echo "   Reusing existing Gitea endpoint at $GITEA_HOST."
+    else
+        kubectl port-forward svc/gitea-http -n gitea 3000:3000 > /dev/null 2>&1 &
+        PF_PID=$!
+        ATTEMPTS=0
+        until probe_gitea; do
+            ATTEMPTS=$((ATTEMPTS + 1))
+            if [[ $ATTEMPTS -ge 30 ]]; then
+                echo "❌ Gitea did not become reachable on $GITEA_HOST within 30s." >&2
+                exit 1
+            fi
+            sleep 1
+        done
+    fi
 else
     echo "   Using GITEA_HOST=$GITEA_HOST (skipping port-forward)."
     if ! probe_gitea; then
