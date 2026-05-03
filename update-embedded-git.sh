@@ -58,28 +58,44 @@ NIDAVELLIR_DIR="${NIDAVELLIR_DIR:-$(dirname "$SCRIPT_DIR")/nidavellir}"
 MIMIR_DIR="${MIMIR_DIR:-$(dirname "$SCRIPT_DIR")/mimir}"
 HEIMDALL_DIR="${HEIMDALL_DIR:-$(dirname "$SCRIPT_DIR")/heimdall}"
 
-# Resolve Gitea admin credentials.
+# Resolve Gitea admin credentials. Username and password are resolved
+# independently so an explicit override for one doesn't bypass Secret
+# loading for the other.
 #
-# Priority:
-#   1. Explicit GITEA_USER / GITEA_PASS env vars (always win).
-#   2. Secret gitea/gitea-admin-credentials read via kubectl from the
-#      currently-active context (preferred — bootstrap.sh creates this).
-#   3. Historical default "nordri-admin / nordri-password-change-me" with a
-#      one-line warning. Useful for clusters bootstrapped before the
-#      Secret-backed credential flow landed; fixed by re-running bootstrap.sh.
-if [[ -z "${GITEA_USER:-}" || -z "${GITEA_PASS:-}" ]]; then
-    if kubectl get secret -n "$GITEA_CREDENTIALS_NAMESPACE" "$GITEA_CREDENTIALS_SECRET" >/dev/null 2>&1; then
-        GITEA_USER="${GITEA_USER:-$(kubectl get secret -n "$GITEA_CREDENTIALS_NAMESPACE" "$GITEA_CREDENTIALS_SECRET" -o jsonpath='{.data.username}' | base64 -d)}"
-        GITEA_PASS="${GITEA_PASS:-$(kubectl get secret -n "$GITEA_CREDENTIALS_NAMESPACE" "$GITEA_CREDENTIALS_SECRET" -o jsonpath='{.data.password}' | base64 -d)}"
-        echo "🔑 Loaded Gitea credentials from $GITEA_CREDENTIALS_NAMESPACE/$GITEA_CREDENTIALS_SECRET (user: $GITEA_USER)."
-    fi
+# Username priority:  explicit env  >  Secret  >  "nordri-admin"
+# Password priority:  explicit env  >  Secret  >  historical default (with a
+#                     warning — the cluster needs a bootstrap.sh re-run to
+#                     populate the Secret).
+explicit_user="${GITEA_USER:-}"
+explicit_pass="${GITEA_PASS:-}"
+secret_user=""
+secret_pass=""
+if kubectl get secret -n "$GITEA_CREDENTIALS_NAMESPACE" "$GITEA_CREDENTIALS_SECRET" >/dev/null 2>&1; then
+    secret_user="$(kubectl get secret -n "$GITEA_CREDENTIALS_NAMESPACE" "$GITEA_CREDENTIALS_SECRET" -o jsonpath='{.data.username}' | base64 --decode)"
+    secret_pass="$(kubectl get secret -n "$GITEA_CREDENTIALS_NAMESPACE" "$GITEA_CREDENTIALS_SECRET" -o jsonpath='{.data.password}' | base64 --decode)"
 fi
-GITEA_USER="${GITEA_USER:-nordri-admin}"
-if [[ -z "${GITEA_PASS:-}" ]]; then
+
+# Username
+if [[ -n "$explicit_user" ]]; then
+    GITEA_USER="$explicit_user"
+elif [[ -n "$secret_user" ]]; then
+    GITEA_USER="$secret_user"
+else
+    GITEA_USER="nordri-admin"
+fi
+
+# Password
+if [[ -n "$explicit_pass" ]]; then
+    GITEA_PASS="$explicit_pass"
+elif [[ -n "$secret_pass" ]]; then
+    GITEA_PASS="$secret_pass"
+    echo "🔑 Loaded Gitea credentials from $GITEA_CREDENTIALS_NAMESPACE/$GITEA_CREDENTIALS_SECRET (user: $GITEA_USER)."
+else
     GITEA_PASS="$GITEA_PASS_HISTORICAL_DEFAULT"
     echo "⚠️  No $GITEA_CREDENTIALS_NAMESPACE/$GITEA_CREDENTIALS_SECRET Secret and no GITEA_PASS env var — using historical default password."
     echo "   Re-run bootstrap.sh on this cluster to populate the Secret with the active credentials."
 fi
+unset explicit_user explicit_pass secret_user secret_pass
 # Scheme defaults to http intentionally — see GITEA_SCHEME header docs.
 GITEA_SCHEME="${GITEA_SCHEME:-http}"
 # Single derived base URL so we don't repeat scheme/user/pass/host in 8 places.

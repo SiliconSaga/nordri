@@ -18,17 +18,22 @@ By default the script kubectl-port-forwards to `localhost:3000`. To push
 via the Gitea HTTPRoute instead (recommended on clusters where the
 ingress is wired up — and required when the local git credential
 manager intercepts localhost):
+
 ```bash
 GITEA_HOST=gitea.cmdbee.org ./update-embedded-git.sh gke
 GITEA_HOST=gitea.localhost  ./update-embedded-git.sh homelab
 ```
+
 Admin credentials are read from `gitea/gitea-admin-credentials` (created
 by `bootstrap.sh` on fresh installs). Retrieve with:
+
 ```bash
 kubectl get secret -n gitea gitea-admin-credentials \
-  -o jsonpath='{.data.password}' | base64 -d
+  -o jsonpath='{.data.password}' | base64 --decode
 ```
+
 If ArgoCD doesn't auto-sync after push:
+
 ```bash
 kubectl annotate application vegvisir -n argo argocd.argoproj.io/refresh=hard --overwrite
 ```

@@ -50,11 +50,12 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 TARGET=$1
-# Default values; resolve_gitea_credentials() (called after the gitea namespace
-# is created) finalizes GITEA_USER/GITEA_PASS from the gitea-admin-credentials
-# Secret, the Helm release state, or random generation. Explicit env vars take
-# precedence — see the Optional environment overrides block in the header.
-GITEA_USER="${GITEA_USER:-nordri-admin}"
+# Capture explicit env-var input here without applying defaults — that lets
+# resolve_gitea_credentials() distinguish "user explicitly set this" from
+# "we should fall back to Secret / Helm state / generation". Defaults apply
+# inside the resolver. See the Optional environment overrides block in the
+# header.
+GITEA_USER="${GITEA_USER:-}"
 GITEA_PASS="${GITEA_PASS:-}"
 GITEA_HOST="${GITEA_HOST:-localhost:3000}"
 GITEA_SCHEME="${GITEA_SCHEME:-http}"
@@ -121,44 +122,64 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Resolve the Gitea admin credentials before installing the chart.
+# Resolve Gitea admin credentials before installing the chart. Username and
+# password are resolved independently so explicit env-var overrides for one
+# don't accidentally bypass Secret loading for the other.
 #
-# Priority:
-#   1. Explicit GITEA_PASS env var (always wins).
-#   2. Secret gitea/gitea-admin-credentials if it exists (re-runs are
-#      idempotent and a previously-generated random password survives).
-#   3. Historical default if a Helm release named 'gitea' already exists in
-#      the gitea namespace (existing cluster — capture into Secret).
-#   4. Generate a strong random password (fresh install).
+# Username priority:  explicit env  >  Secret  >  "nordri-admin"
+# Password priority:  explicit env  >  Secret  >  historical default (when
+#                     a 'gitea' Helm release already exists in the namespace)
+#                     >  freshly-generated random
 #
-# Whichever wins, we end with the Secret reflecting the active credentials so
-# update-embedded-git.sh and any future scripts can read them from one place.
+# Whichever combination wins, the credentials Secret is rewritten below to
+# match, so update-embedded-git.sh and any future scripts have a single
+# source of truth. (Caveat: the Helm chart does NOT change an existing
+# admin user's username/password on upgrade. If you supply env-var
+# overrides that don't match the live cluster, the Secret will record
+# your intent but the running Gitea will still hold its previous values
+# — consistent rotation requires a re-install or an API-driven password
+# change, both out of scope for this script.)
 resolve_gitea_credentials() {
-    if [[ -n "$GITEA_PASS" ]]; then
-        echo "🔑 Using GITEA_PASS from environment."
-        return
-    fi
+    local explicit_user="$GITEA_USER"
+    local explicit_pass="$GITEA_PASS"
+    local secret_user=""
+    local secret_pass=""
 
     if kubectl get secret -n "$GITEA_CREDENTIALS_NAMESPACE" "$GITEA_CREDENTIALS_SECRET" >/dev/null 2>&1; then
-        GITEA_USER="$(kubectl get secret -n "$GITEA_CREDENTIALS_NAMESPACE" "$GITEA_CREDENTIALS_SECRET" -o jsonpath='{.data.username}' | base64 -d)"
-        GITEA_PASS="$(kubectl get secret -n "$GITEA_CREDENTIALS_NAMESPACE" "$GITEA_CREDENTIALS_SECRET" -o jsonpath='{.data.password}' | base64 -d)"
-        echo "🔑 Loaded Gitea credentials from $GITEA_CREDENTIALS_NAMESPACE/$GITEA_CREDENTIALS_SECRET (user: $GITEA_USER)."
-        return
+        secret_user="$(kubectl get secret -n "$GITEA_CREDENTIALS_NAMESPACE" "$GITEA_CREDENTIALS_SECRET" -o jsonpath='{.data.username}' | base64 --decode)"
+        secret_pass="$(kubectl get secret -n "$GITEA_CREDENTIALS_NAMESPACE" "$GITEA_CREDENTIALS_SECRET" -o jsonpath='{.data.password}' | base64 --decode)"
     fi
 
-    if helm status gitea -n "$GITEA_CREDENTIALS_NAMESPACE" >/dev/null 2>&1; then
+    # Username
+    if [[ -n "$explicit_user" ]]; then
+        GITEA_USER="$explicit_user"
+    elif [[ -n "$secret_user" ]]; then
+        GITEA_USER="$secret_user"
+    else
+        GITEA_USER="nordri-admin"
+    fi
+
+    # Password
+    if [[ -n "$explicit_pass" ]]; then
+        GITEA_PASS="$explicit_pass"
+        echo "🔑 Using GITEA_PASS from environment (user: $GITEA_USER)."
+    elif [[ -n "$secret_pass" ]]; then
+        GITEA_PASS="$secret_pass"
+        echo "🔑 Loaded Gitea password from $GITEA_CREDENTIALS_NAMESPACE/$GITEA_CREDENTIALS_SECRET (user: $GITEA_USER)."
+    elif helm status gitea -n "$GITEA_CREDENTIALS_NAMESPACE" >/dev/null 2>&1; then
         GITEA_PASS="$GITEA_PASS_HISTORICAL_DEFAULT"
-        echo "🔑 Existing Gitea release detected without a credentials Secret."
+        echo "🔑 Existing Gitea release detected without a credentials Secret (user: $GITEA_USER)."
         echo "   Capturing historical default password into $GITEA_CREDENTIALS_NAMESPACE/$GITEA_CREDENTIALS_SECRET."
-        echo "   (To rotate, delete the Secret and the Gitea pod, then re-run this script.)"
-        return
+        echo "   Note: this script does not rotate a live Gitea password — the chart preserves"
+        echo "   the existing admin user on upgrade. To rotate: change it via the Gitea API or"
+        echo "   web UI, then update the Secret to match (or pass GITEA_PASS=<new> here)."
+    else
+        # Fresh install: generate a strong random password.
+        # 24 chars from base64 of 18 random bytes, stripped of /, +, = and trimmed
+        # to 24 chars. ~140 bits of entropy — plenty for a service account.
+        GITEA_PASS="$(openssl rand -base64 24 | tr -d '/+=' | cut -c1-24)"
+        echo "🔑 Generated random Gitea admin password (user: $GITEA_USER, will be stored in $GITEA_CREDENTIALS_NAMESPACE/$GITEA_CREDENTIALS_SECRET)."
     fi
-
-    # Fresh install: generate a strong random password.
-    # 24 chars from base64 of 18 random bytes, stripped of /, +, = and trimmed
-    # to 24 chars. ~140 bits of entropy — plenty for a service account.
-    GITEA_PASS="$(openssl rand -base64 24 | tr -d '/+=' | cut -c1-24)"
-    echo "🔑 Generated random Gitea admin password (will be stored in $GITEA_CREDENTIALS_NAMESPACE/$GITEA_CREDENTIALS_SECRET)."
 }
 resolve_gitea_credentials
 

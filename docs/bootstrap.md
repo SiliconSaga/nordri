@@ -34,7 +34,7 @@ Retrieve the active password:
 
 ```bash
 kubectl get secret -n gitea gitea-admin-credentials \
-  -o jsonpath='{.data.password}' | base64 -d
+  -o jsonpath='{.data.password}' | base64 --decode
 ```
 
 ### Layer 2.5 — Gateway API CRDs + Crossplane Core
