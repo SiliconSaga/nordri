@@ -39,9 +39,13 @@ After bootstrapping, you can access the services:
         ```
 
         Existing clusters bootstrapped before this Secret-backed flow landed
-        keep their historical default password (`nordri-password-change-me`)
-        — re-running `./bootstrap.sh <target>` captures the active credentials
-        into the Secret without changing them.
+        kept their historical default password (`nordri-password-change-me`).
+        Re-running `./bootstrap.sh <target>` writes that historical default
+        into the Secret as a best-effort capture — note the script can't
+        actually read the live password back from Gitea, so if the password
+        was already rotated via Gitea's API or UI, pass the live value via
+        `GITEA_PASS=<value>` on the re-run (or update the Secret directly)
+        so subsequent scripts read a value that matches reality.
 *   **ArgoCD**:
     *   User: `admin`
     *   Password: Run the command below to retrieve it.

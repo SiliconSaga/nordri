@@ -24,8 +24,11 @@ Provision the raw cluster before running any scripts.
   generates a strong random password (~140 bits via `openssl rand`); on a
   re-run it reuses whatever's already in the Secret. Existing pre-Secret
   clusters get the historical default (`nordri-password-change-me`)
-  captured into the Secret on first re-run so subsequent scripts can read
-  from one place. Override with `GITEA_USER` / `GITEA_PASS` env vars.
+  written into the Secret on first re-run as a best-effort capture — the
+  script cannot read the live password back from Gitea, so if the
+  password has already been rotated, pass the actual value via
+  `GITEA_PASS=<value>` on the re-run (it bypasses the Secret rewrite to
+  avoid clobbering live state with an unverified guess).
 - Creates Nordri and Nidavellir repos in Gitea via API
 - Hydrates both repos from local checkouts (applies target overlay for Nordri)
 - Nidavellir is expected as a sibling directory; override with `NIDAVELLIR_DIR`

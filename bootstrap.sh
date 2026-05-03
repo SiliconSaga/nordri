@@ -159,6 +159,17 @@ resolve_gitea_credentials() {
         GITEA_USER="nordri-admin"
     fi
 
+    # Detect whether a Helm release for Gitea already exists. We use this
+    # to gate two things: the historical-default fallback (only makes sense
+    # for an existing install) and the Secret rewrite below (we don't want
+    # to overwrite the canonical Secret with override values we can't
+    # verify against live Gitea, since the chart preserves the admin user
+    # on upgrade).
+    local existing_release=false
+    if helm status gitea -n "$GITEA_CREDENTIALS_NAMESPACE" >/dev/null 2>&1; then
+        existing_release=true
+    fi
+
     # Password
     if [[ -n "$explicit_pass" ]]; then
         GITEA_PASS="$explicit_pass"
@@ -166,7 +177,7 @@ resolve_gitea_credentials() {
     elif [[ -n "$secret_pass" ]]; then
         GITEA_PASS="$secret_pass"
         echo "🔑 Loaded Gitea password from $GITEA_CREDENTIALS_NAMESPACE/$GITEA_CREDENTIALS_SECRET (user: $GITEA_USER)."
-    elif helm status gitea -n "$GITEA_CREDENTIALS_NAMESPACE" >/dev/null 2>&1; then
+    elif [[ "$existing_release" == "true" ]]; then
         GITEA_PASS="$GITEA_PASS_HISTORICAL_DEFAULT"
         echo "🔑 Existing Gitea release detected without a credentials Secret (user: $GITEA_USER)."
         echo "   Capturing historical default password into $GITEA_CREDENTIALS_NAMESPACE/$GITEA_CREDENTIALS_SECRET."
@@ -175,24 +186,60 @@ resolve_gitea_credentials() {
         echo "   web UI, then update the Secret to match (or pass GITEA_PASS=<new> here)."
     else
         # Fresh install: generate a strong random password.
-        # 24 chars from base64 of 18 random bytes, stripped of /, +, = and trimmed
-        # to 24 chars. ~140 bits of entropy — plenty for a service account.
+        # `openssl rand -base64 24` = 24 random bytes → 32 base64 chars; we
+        # strip the symbol chars (/, +, =) and trim to 24 chars from the
+        # remaining 62-symbol alphabet, giving ~143 bits of effective
+        # entropy — plenty for a service account.
         GITEA_PASS="$(openssl rand -base64 24 | tr -d '/+=' | cut -c1-24)"
         echo "🔑 Generated random Gitea admin password (user: $GITEA_USER, will be stored in $GITEA_CREDENTIALS_NAMESPACE/$GITEA_CREDENTIALS_SECRET)."
+    fi
+
+    # Decide whether the canonical Secret can safely be rewritten with the
+    # resolved values. We can rewrite when we *know* they match what
+    # Gitea will accept — i.e. fresh install (Helm is about to create the
+    # user with these creds), or values that came from the existing
+    # Secret. We CANNOT rewrite when explicit env overrides are supplied
+    # against an existing release: the chart won't change the live user,
+    # so the overrides might disagree with reality and we'd be poisoning
+    # the canonical source. The caller can still drive the script with
+    # those overrides for one-shot work; we just don't persist them.
+    SAFE_TO_WRITE_SECRET=true
+    if [[ "$existing_release" == "true" ]]; then
+        if [[ -n "$explicit_user" || -n "$explicit_pass" ]]; then
+            SAFE_TO_WRITE_SECRET=false
+            echo "⚠️  Explicit GITEA_USER/GITEA_PASS supplied against an existing Gitea release."
+            echo "   The Helm chart preserves the admin user on upgrade, so we can't verify"
+            echo "   the override matches live Gitea without round-tripping the API."
+            echo "   Skipping rewrite of $GITEA_CREDENTIALS_NAMESPACE/$GITEA_CREDENTIALS_SECRET."
+            echo "   Either rotate live Gitea to match (Gitea API/UI) and re-run without"
+            echo "   overrides, or pass the overrides on every invocation that needs them."
+        fi
     fi
 }
 resolve_gitea_credentials
 
-# Persist the active credentials to the Secret. Idempotent.
-kubectl create secret generic "$GITEA_CREDENTIALS_SECRET" \
-    -n "$GITEA_CREDENTIALS_NAMESPACE" \
-    --from-literal=username="$GITEA_USER" \
-    --from-literal=password="$GITEA_PASS" \
-    --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+# Persist the active credentials to the Secret. Idempotent. Gated on
+# SAFE_TO_WRITE_SECRET — see resolve_gitea_credentials() for why we skip
+# the write when override env vars meet an existing install.
+if [[ "$SAFE_TO_WRITE_SECRET" == "true" ]]; then
+    kubectl create secret generic "$GITEA_CREDENTIALS_SECRET" \
+        -n "$GITEA_CREDENTIALS_NAMESPACE" \
+        --from-literal=username="$GITEA_USER" \
+        --from-literal=password="$GITEA_PASS" \
+        --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+fi
 
-# Now that user/pass are settled, build the URL base reused below.
-GITEA_BASE="${GITEA_SCHEME}://${GITEA_USER}:${GITEA_PASS}@${GITEA_HOST}"
-GITEA_PROBE_URL="${GITEA_SCHEME}://${GITEA_HOST}/api/v1/version"
+# Now that user/pass are settled, build the URL bases reused below.
+# `git remote add` requires the credentials embedded in the URL — so we
+# percent-encode user/pass to handle special chars (@, :, /, #) without
+# corrupting the URL. API calls go through curl -u instead and just use
+# the credentials-less base URL.
+urlencode() { jq -rn --arg s "$1" '$s|@uri'; }
+GITEA_USER_ENC="$(urlencode "$GITEA_USER")"
+GITEA_PASS_ENC="$(urlencode "$GITEA_PASS")"
+GITEA_API_URL="${GITEA_SCHEME}://${GITEA_HOST}"
+GITEA_GIT_BASE="${GITEA_SCHEME}://${GITEA_USER_ENC}:${GITEA_PASS_ENC}@${GITEA_HOST}"
+GITEA_PROBE_URL="${GITEA_API_URL}/api/v1/version"
 
 # Probe the Gitea endpoint. Returns 0 if Gitea answers /api/v1/version
 # with HTTP 200. Used to confirm we're talking to actual Gitea, not just
@@ -280,7 +327,10 @@ create_gitea_repo() {
     local repo_name=$1
     local max_retries=5
     for i in $(seq 1 $max_retries); do
-        RESPONSE=$(curl -s -X POST "$GITEA_BASE/api/v1/user/repos" \
+        # `-u user:pass` keeps credentials out of the URL so special chars
+        # in GITEA_PASS (@, :, /, #) can't corrupt URL parsing.
+        RESPONSE=$(curl -s -u "$GITEA_USER:$GITEA_PASS" \
+          -X POST "$GITEA_API_URL/api/v1/user/repos" \
           -H "Content-Type: application/json" \
           -d "{\"name\": \"$repo_name\", \"private\": false}")
 
@@ -329,9 +379,12 @@ git config user.name "Nordri Bootstrap"
 git checkout -b main
 git add .
 git commit -m "Hydration for $TARGET"
-git remote add origin "$GITEA_BASE/$GITEA_USER/$GITEA_REPO_NAME.git"
+git remote add origin "$GITEA_GIT_BASE/$GITEA_USER/$GITEA_REPO_NAME.git"
 git push -u origin main --force
 cd -
+# `git remote add` writes the admin password into .git/config; don't leave
+# that lying around on disk after the push completes.
+rm -rf "$HYDRATE_DIR"
 
 echo "✅ Nordri configuration hydrated to Seed Gitea."
 
@@ -354,7 +407,7 @@ if [[ -d "$NIDAVELLIR_DIR" ]]; then
     git checkout -b main
     git add .
     git commit -m "Hydration for $TARGET"
-    git remote add origin "$GITEA_BASE/$GITEA_USER/$NIDAVELLIR_GITEA_REPO.git"
+    git remote add origin "$GITEA_GIT_BASE/$GITEA_USER/$NIDAVELLIR_GITEA_REPO.git"
     git push -u origin main --force
     cd -
     rm -rf "$NIDAVELLIR_HYDRATE"
@@ -384,7 +437,7 @@ if [[ -d "$MIMIR_DIR" ]]; then
     git checkout -b main
     git add .
     git commit -m "Hydration for $TARGET"
-    git remote add origin "$GITEA_BASE/$GITEA_USER/$MIMIR_GITEA_REPO.git"
+    git remote add origin "$GITEA_GIT_BASE/$GITEA_USER/$MIMIR_GITEA_REPO.git"
     git push -u origin main --force
     cd -
     rm -rf "$MIMIR_HYDRATE"
@@ -414,7 +467,7 @@ if [[ -d "$HEIMDALL_DIR" ]]; then
     git checkout -b main
     git add .
     git commit -m "Hydration for $TARGET"
-    git remote add origin "$GITEA_BASE/$GITEA_USER/$HEIMDALL_GITEA_REPO.git"
+    git remote add origin "$GITEA_GIT_BASE/$GITEA_USER/$HEIMDALL_GITEA_REPO.git"
     git push -u origin main --force
     cd -
     rm -rf "$HEIMDALL_HYDRATE"

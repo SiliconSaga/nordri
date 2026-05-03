@@ -98,10 +98,15 @@ fi
 unset explicit_user explicit_pass secret_user secret_pass
 # Scheme defaults to http intentionally — see GITEA_SCHEME header docs.
 GITEA_SCHEME="${GITEA_SCHEME:-http}"
-# Single derived base URL so we don't repeat scheme/user/pass/host in 8 places.
-GITEA_BASE="${GITEA_SCHEME}://${GITEA_USER}:${GITEA_PASS}@${GITEA_HOST}"
-# Unauthenticated probe URL (no creds) for liveness checks.
-GITEA_PROBE_URL="${GITEA_SCHEME}://${GITEA_HOST}/api/v1/version"
+# Build URL bases. `git remote add` requires creds embedded in the URL,
+# so we percent-encode user/pass to handle special chars (@, :, /, #).
+# API calls go through curl -u with the credentials-less base URL.
+urlencode() { jq -rn --arg s "$1" '$s|@uri'; }
+GITEA_USER_ENC="$(urlencode "$GITEA_USER")"
+GITEA_PASS_ENC="$(urlencode "$GITEA_PASS")"
+GITEA_API_URL="${GITEA_SCHEME}://${GITEA_HOST}"
+GITEA_GIT_BASE="${GITEA_SCHEME}://${GITEA_USER_ENC}:${GITEA_PASS_ENC}@${GITEA_HOST}"
+GITEA_PROBE_URL="${GITEA_API_URL}/api/v1/version"
 
 # Probe the Gitea endpoint for the current $GITEA_HOST. Returns 0 if Gitea
 # answers /api/v1/version with HTTP 200, non-zero otherwise. Avoids
@@ -112,31 +117,41 @@ probe_gitea() {
 
 # Create a Gitea repo if it doesn't already exist. Treats 201 (Created)
 # and 409 (already exists) as success; anything else (DNS failure, auth
-# rejection, 5xx) prints the response body and fails the script — so a
-# broken Gitea endpoint surfaces immediately, not deep inside the
-# subsequent `git push`.
+# rejection, 5xx) retries up to 5x with a short backoff (matches
+# bootstrap.sh's create_gitea_repo — Seed Gitea can intermittently fail
+# sequential creates due to an `initRepository` race), then prints the
+# response body and fails the script.
 ensure_gitea_repo() {
     local repo_name=$1
-    local response_file
-    local status
-    response_file=$(mktemp)
-    status=$(curl -sS -o "$response_file" -w "%{http_code}" \
-        -X POST "$GITEA_BASE/api/v1/user/repos" \
-        -H "Content-Type: application/json" \
-        -d "{\"name\": \"$repo_name\", \"private\": false}") || true
-    case "$status" in
-        201|409)
+    local max_retries=5
+    local i status response_file
+    for i in $(seq 1 $max_retries); do
+        response_file=$(mktemp)
+        # `-u user:pass` keeps credentials out of the URL so special chars
+        # in $GITEA_PASS can't corrupt URL parsing.
+        status=$(curl -sS -o "$response_file" -w "%{http_code}" \
+            -u "$GITEA_USER:$GITEA_PASS" \
+            -X POST "$GITEA_API_URL/api/v1/user/repos" \
+            -H "Content-Type: application/json" \
+            -d "{\"name\": \"$repo_name\", \"private\": false}") || true
+        case "$status" in
+            201|409)
+                rm -f "$response_file"
+                return 0
+                ;;
+        esac
+        if [[ $i -lt $max_retries ]]; then
+            echo "   Repo creation attempt $i/$max_retries for '$repo_name' returned HTTP $status; retrying in 5s..." >&2
             rm -f "$response_file"
-            return 0
-            ;;
-        *)
-            echo "❌ Failed to create or confirm Gitea repo '$repo_name' (HTTP $status):" >&2
-            cat "$response_file" >&2
-            echo >&2
-            rm -f "$response_file"
-            return 1
-            ;;
-    esac
+            sleep 5
+            continue
+        fi
+        echo "❌ Failed to create or confirm Gitea repo '$repo_name' after $max_retries attempts (HTTP $status):" >&2
+        cat "$response_file" >&2
+        echo >&2
+        rm -f "$response_file"
+        return 1
+    done
 }
 
 if [[ -z "$TARGET" ]]; then
@@ -223,7 +238,7 @@ git config user.name "Nordri Update"
 git checkout -b main
 git add .
 git commit -m "Update Configuration for $TARGET"
-git remote add origin "$GITEA_BASE/$GITEA_USER/$GITEA_REPO_NAME.git"
+git remote add origin "$GITEA_GIT_BASE/$GITEA_USER/$GITEA_REPO_NAME.git"
 # Force push to overwrite the previous state with the new desired state
 git push -u origin main --force
 cd -
@@ -249,7 +264,7 @@ if [[ -d "$NIDAVELLIR_DIR" ]]; then
     git checkout -b main
     git add .
     git commit -m "Update for $TARGET"
-    git remote add origin "$GITEA_BASE/$GITEA_USER/$NIDAVELLIR_GITEA_REPO.git"
+    git remote add origin "$GITEA_GIT_BASE/$GITEA_USER/$NIDAVELLIR_GITEA_REPO.git"
     git push -u origin main --force
     cd -
     rm -rf "$NIDAVELLIR_HYDRATE"
@@ -276,7 +291,7 @@ if [[ -d "$MIMIR_DIR" ]]; then
     git checkout -b main
     git add .
     git commit -m "Update for $TARGET"
-    git remote add origin "$GITEA_BASE/$GITEA_USER/$MIMIR_GITEA_REPO.git"
+    git remote add origin "$GITEA_GIT_BASE/$GITEA_USER/$MIMIR_GITEA_REPO.git"
     git push -u origin main --force
     cd -
     rm -rf "$MIMIR_HYDRATE"
@@ -303,7 +318,7 @@ if [[ -d "$HEIMDALL_DIR" ]]; then
     git checkout -b main
     git add .
     git commit -m "Update for $TARGET"
-    git remote add origin "$GITEA_BASE/$GITEA_USER/$HEIMDALL_GITEA_REPO.git"
+    git remote add origin "$GITEA_GIT_BASE/$GITEA_USER/$HEIMDALL_GITEA_REPO.git"
     git push -u origin main --force
     cd -
     rm -rf "$HEIMDALL_HYDRATE"
