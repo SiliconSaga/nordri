@@ -9,8 +9,10 @@
 # components (e.g. cluster-identity-demo) DO use cluster-identity.domain at
 # composition time.
 #
-# Sync-wave 5: alongside the Vegvísir Gateway resource so this binds as
-# soon as the Gateway is Programmed.
+# Sync-wave 14: after Vegvísir's `traefik-gateway` resource (wave 13). The
+# Gateway must exist before this HTTPRoute can attach. ArgoCD will retry
+# until the parentRef resolves, but applying after the Gateway avoids
+# spurious "ResolvedRefs=False" noise on first sync.
 #
 # Replaces the older Traefik `IngressRoute` to align Gitea's ingress with
 # the Gateway-API direction the rest of the platform is taking.
@@ -20,7 +22,7 @@ metadata:
   name: gitea
   namespace: gitea
   annotations:
-    argocd.argoproj.io/sync-wave: "5"
+    argocd.argoproj.io/sync-wave: "14"
 spec:
   parentRefs:
     - name: traefik-gateway

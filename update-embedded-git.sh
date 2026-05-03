@@ -21,9 +21,6 @@ set -e
 #                 GITEA_HOST=gitea.cmdbee.org ./update-embedded-git.sh gke
 #                 GITEA_HOST=gitea.localhost ./update-embedded-git.sh homelab
 #
-#   GITEA_USER  Admin username for Seed Gitea. Default: read from the
-#               gitea/gitea-admin-credentials Secret if present; otherwise
-#               "nordri-admin".
 #   GITEA_PASS  Admin password. Resolution order:
 #                 • Explicit env var (one-shot use, doesn't touch the Secret).
 #                 • gitea/gitea-admin-credentials Secret (the normal path
@@ -45,6 +42,18 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 TARGET=$1
+
+# Validate args before anything that touches the cluster, so wrong inputs
+# fail with a usage message instead of an obscure k8s/credential error.
+if [[ -z "$TARGET" ]]; then
+    echo "Usage: ./update.sh [gke|homelab]"
+    exit 1
+fi
+if [[ "$TARGET" != "gke" && "$TARGET" != "homelab" ]]; then
+    echo "Error: Target must be 'gke' or 'homelab'"
+    exit 1
+fi
+
 command -v jq >/dev/null 2>&1 || {
     echo "❌ This script requires 'jq' on PATH (used to URL-encode Gitea credentials)." >&2
     echo "   Install with: 'apt install jq' / 'brew install jq' / 'choco install jq'." >&2
@@ -63,17 +72,15 @@ NIDAVELLIR_DIR="${NIDAVELLIR_DIR:-$(dirname "$SCRIPT_DIR")/nidavellir}"
 MIMIR_DIR="${MIMIR_DIR:-$(dirname "$SCRIPT_DIR")/mimir}"
 HEIMDALL_DIR="${HEIMDALL_DIR:-$(dirname "$SCRIPT_DIR")/heimdall}"
 
-# Resolve Gitea admin credentials. Username and password are resolved
-# independently from explicit env vars and the in-cluster Secret.
+# Resolve Gitea admin credentials.
 #
-# Username priority:  GITEA_USER env  >  Secret  >  "nordri-admin"
 # Password priority:  GITEA_PASS env  >  Secret  >  fail with helpful message
+# Username:           Secret  >  "nordri-admin"  (not user-overridable)
 #
 # This script does not generate or rotate passwords — that's bootstrap.sh's
 # job. If neither env var nor Secret has a value, the user needs to either
 # run bootstrap.sh (with GITEA_PASS=<live> for an existing cluster) or
 # pass GITEA_PASS=<value> here for one-shot use.
-explicit_user="${GITEA_USER:-}"
 explicit_pass="${GITEA_PASS:-}"
 secret_user=""
 secret_pass=""
@@ -82,10 +89,8 @@ if kubectl get secret -n "$GITEA_CREDENTIALS_NAMESPACE" "$GITEA_CREDENTIALS_SECR
     secret_pass="$(kubectl get secret -n "$GITEA_CREDENTIALS_NAMESPACE" "$GITEA_CREDENTIALS_SECRET" -o jsonpath='{.data.password}' | base64 --decode)"
 fi
 
-# Username
-if [[ -n "$explicit_user" ]]; then
-    GITEA_USER="$explicit_user"
-elif [[ -n "$secret_user" ]]; then
+# Username (Secret > default; not user-overridable, see bootstrap.sh).
+if [[ -n "$secret_user" ]]; then
     GITEA_USER="$secret_user"
 else
     GITEA_USER="nordri-admin"
@@ -100,12 +105,12 @@ elif [[ -n "$secret_pass" ]]; then
 else
     echo "❌ No $GITEA_CREDENTIALS_NAMESPACE/$GITEA_CREDENTIALS_SECRET Secret and no GITEA_PASS env var." >&2
     echo "   For a cluster bootstrapped before the Secret-backed flow landed:" >&2
-    echo "     • One-shot:  GITEA_PASS=<live-pw> $0 $1" >&2
-    echo "     • Persist:   GITEA_PASS=<live-pw> $(dirname "$0")/bootstrap.sh <target>" >&2
+    echo "     • One-shot:  GITEA_PASS=<live-pw> $0 $TARGET" >&2
+    echo "     • Persist:   GITEA_PASS=<live-pw> $(dirname "$0")/bootstrap.sh $TARGET" >&2
     echo "   For a fresh cluster, run bootstrap.sh first." >&2
     exit 1
 fi
-unset explicit_user explicit_pass secret_user secret_pass
+unset explicit_pass secret_user secret_pass
 # Scheme defaults to http intentionally — see GITEA_SCHEME header docs.
 GITEA_SCHEME="${GITEA_SCHEME:-http}"
 # Build URL bases. `git remote add` requires creds embedded in the URL,
@@ -163,16 +168,6 @@ ensure_gitea_repo() {
         return 1
     done
 }
-
-if [[ -z "$TARGET" ]]; then
-    echo "Usage: ./update.sh [gke|homelab]"
-    exit 1
-fi
-
-if [[ "$TARGET" != "gke" && "$TARGET" != "homelab" ]]; then
-    echo "Error: Target must be 'gke' or 'homelab'"
-    exit 1
-fi
 
 echo "🚀 Updating Nordri Configuration for target: $TARGET"
 

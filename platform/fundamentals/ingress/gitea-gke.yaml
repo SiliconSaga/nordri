@@ -27,8 +27,10 @@
 # `GITEA_SCHEME=https` and we can either drop the `web` parentRef here or
 # turn it into an HTTP→HTTPS redirect.
 #
-# Sync-wave 5: alongside the Vegvísir Gateway resource so this binds as
-# soon as the Gateway is Programmed.
+# Sync-wave 14: after Vegvísir's `traefik-gateway` resource (wave 13). The
+# Gateway must exist before this HTTPRoute can attach. ArgoCD will retry
+# until the parentRef resolves, but applying after the Gateway avoids
+# spurious "ResolvedRefs=False" noise on first sync.
 #
 # This file is GKE-specific because static Kustomize manifests can't read
 # EnvironmentConfig at apply time. Crossplane-driven ingresses in
@@ -40,7 +42,7 @@ metadata:
   name: gitea
   namespace: gitea
   annotations:
-    argocd.argoproj.io/sync-wave: "5"
+    argocd.argoproj.io/sync-wave: "14"
 spec:
   parentRefs:
     - name: traefik-gateway
