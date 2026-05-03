@@ -20,15 +20,13 @@ Provision the raw cluster before running any scripts.
 
 - Installs **Gitea** (Helm, `gitea` namespace, ephemeral — no persistence)
 - **Resolves Gitea admin credentials** and persists them to the
-  `gitea/gitea-admin-credentials` Secret. On a fresh install the script
-  generates a strong random password (~140 bits via `openssl rand`); on a
-  re-run it reuses whatever's already in the Secret. Existing pre-Secret
-  clusters get the historical default (`nordri-password-change-me`)
-  written into the Secret on first re-run as a best-effort capture — the
-  script cannot read the live password back from Gitea, so if the
-  password has already been rotated, pass the actual value via
-  `GITEA_PASS=<value>` on the re-run (it bypasses the Secret rewrite to
-  avoid clobbering live state with an unverified guess).
+  `gitea/gitea-admin-credentials` Secret. Resolution order is
+  `GITEA_PASS` env var → existing Secret → freshly-generated random
+  password (~143 bits via `openssl rand`). The Secret is then written
+  unconditionally to match. The script does not generate or rotate
+  passwords for you — `GITEA_PASS=<value>` is the user-supplied path
+  for any case where you already know the live password (existing
+  cluster from before this flow landed, post-rotation, etc.).
 - Creates Nordri and Nidavellir repos in Gitea via API
 - Hydrates both repos from local checkouts (applies target overlay for Nordri)
 - Nidavellir is expected as a sibling directory; override with `NIDAVELLIR_DIR`
@@ -172,8 +170,33 @@ Vegvísir wildcard cert lands on the Gateway listener, set
 
 Both `bootstrap.sh` and `update-embedded-git.sh` read the Gitea admin
 credentials from the `gitea/gitea-admin-credentials` Secret. Override
-with `GITEA_USER` / `GITEA_PASS` env vars on either script. See the
-script headers for the full resolution order.
+with `GITEA_USER` / `GITEA_PASS` env vars on either script.
+
+`bootstrap.sh` *writes* the Secret based on env-var-or-Secret-or-random
+resolution. `update-embedded-git.sh` *reads* only — it fails fast if no
+value is available rather than fabricating one.
+
+#### Rotating the Gitea admin password
+
+The script doesn't rotate passwords directly because the Helm chart
+preserves the existing admin user on upgrade. The supported flow:
+
+1. Change the password in Gitea (UI: Site Administration → Users; or
+   `kubectl exec -n gitea deploy/gitea -- gitea admin user change-password \
+     --username nordri-admin --password '<new>'`).
+2. Update the Secret so other scripts see the change:
+
+   ```bash
+   kubectl create secret generic gitea-admin-credentials -n gitea \
+     --from-literal=username=nordri-admin \
+     --from-literal=password='<new-password>' \
+     --dry-run=client -o yaml | kubectl apply -f -
+   ```
+
+   Or run `GITEA_PASS=<new> ./bootstrap.sh <target>` once — same effect.
+
+This is a temporary state — the longer-term plan is to drive Gitea
+credentials through OpenBAO once it ships in Nidavellir.
 
 ## Diagrams
 

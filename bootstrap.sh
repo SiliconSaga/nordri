@@ -33,16 +33,20 @@ set -e
 #               cert is wired into the listener.
 #
 #   GITEA_USER  Admin username for Seed Gitea (default: nordri-admin).
-#   GITEA_PASS  Admin password. Default behavior:
-#                 • If gitea/gitea-admin-credentials Secret exists, use it
-#                   (idempotent re-run).
-#                 • Else if a Helm release named 'gitea' already exists
-#                   in the gitea namespace, treat as an existing install and
-#                   capture the historical default ('nordri-password-change-me')
-#                   into the Secret so future runs / scripts can read it.
-#                 • Else (fresh install) generate a strong random password
-#                   and store it in the Secret.
-#               Set GITEA_PASS explicitly to override any of the above.
+#   GITEA_PASS  Admin password. Resolution order:
+#                 • Explicit env var — wins. The script trusts that this
+#                   matches what's in (or about to be in) Gitea, writes it
+#                   to the Secret, and uses it for all in-script Gitea API
+#                   calls. Use this on first run against a cluster that
+#                   already has Gitea running with a known password (the
+#                   common case for migration), or for any subsequent
+#                   manual control. If the override doesn't match live
+#                   Gitea, calls will fail loudly with 401, which is the
+#                   right signal to surface a mismatch.
+#                 • Otherwise, the gitea/gitea-admin-credentials Secret if
+#                   it exists (idempotent re-run path).
+#                 • Otherwise, a strong random password is generated.
+#               After resolution, the Secret is rewritten to match.
 #
 #   NIDAVELLIR_DIR / MIMIR_DIR / HEIMDALL_DIR
 #               Absolute path to each sibling component's checkout. Defaults
@@ -66,9 +70,6 @@ HEIMDALL_GITEA_REPO="heimdall"
 # Where the Gitea admin credentials live in-cluster.
 GITEA_CREDENTIALS_NAMESPACE="gitea"
 GITEA_CREDENTIALS_SECRET="gitea-admin-credentials"
-# Historical default password used by clusters bootstrapped before the
-# Secret-backed credential flow landed. Captured into the Secret on re-run.
-GITEA_PASS_HISTORICAL_DEFAULT="nordri-password-change-me"
 # Sibling directories expected alongside this repo. Override with env vars.
 NIDAVELLIR_DIR="${NIDAVELLIR_DIR:-$(dirname "$SCRIPT_DIR")/nidavellir}"
 MIMIR_DIR="${MIMIR_DIR:-$(dirname "$SCRIPT_DIR")/mimir}"
@@ -84,6 +85,12 @@ if [[ "$TARGET" != "gke" && "$TARGET" != "homelab" ]]; then
     echo "Error: Target must be 'gke' or 'homelab'"
     exit 1
 fi
+
+command -v jq >/dev/null 2>&1 || {
+    echo "❌ This script requires 'jq' on PATH (used to URL-encode Gitea credentials)." >&2
+    echo "   Install with: 'apt install jq' / 'brew install jq' / 'choco install jq'." >&2
+    exit 1
+}
 
 echo "🚀 Bootstrapping Nordri for target: $TARGET"
 
@@ -123,22 +130,20 @@ cleanup() {
 trap cleanup EXIT
 
 # Resolve Gitea admin credentials before installing the chart. Username and
-# password are resolved independently so explicit env-var overrides for one
-# don't accidentally bypass Secret loading for the other.
+# password are resolved independently from explicit env vars and the
+# in-cluster Secret.
 #
-# Username priority:  explicit env  >  Secret  >  "nordri-admin"
-# Password priority:  explicit env  >  Secret  >  historical default (when
-#                     a 'gitea' Helm release already exists in the namespace)
-#                     >  freshly-generated random
+# Username priority:  GITEA_USER env  >  Secret  >  "nordri-admin"
+# Password priority:  GITEA_PASS env  >  Secret  >  freshly-generated random
 #
-# Whichever combination wins, the credentials Secret is rewritten below to
-# match, so update-embedded-git.sh and any future scripts have a single
-# source of truth. (Caveat: the Helm chart does NOT change an existing
-# admin user's username/password on upgrade. If you supply env-var
-# overrides that don't match the live cluster, the Secret will record
-# your intent but the running Gitea will still hold its previous values
-# — consistent rotation requires a re-install or an API-driven password
-# change, both out of scope for this script.)
+# The script trusts whatever the resolver picks and writes it to the Secret
+# unconditionally. If the user supplies GITEA_PASS that disagrees with live
+# Gitea (the Helm chart preserves the existing admin user on upgrade), the
+# Secret captures the user's stated intent — subsequent script invocations
+# will fail loudly when authentication fails, which is the correct way to
+# surface a mismatch. To rotate: change the password in Gitea (UI/API),
+# then re-run this script with GITEA_PASS=<new> (or update the Secret
+# directly with kubectl). See README.md "Credentials" for the full flow.
 resolve_gitea_credentials() {
     local explicit_user="$GITEA_USER"
     local explicit_pass="$GITEA_PASS"
@@ -159,17 +164,6 @@ resolve_gitea_credentials() {
         GITEA_USER="nordri-admin"
     fi
 
-    # Detect whether a Helm release for Gitea already exists. We use this
-    # to gate two things: the historical-default fallback (only makes sense
-    # for an existing install) and the Secret rewrite below (we don't want
-    # to overwrite the canonical Secret with override values we can't
-    # verify against live Gitea, since the chart preserves the admin user
-    # on upgrade).
-    local existing_release=false
-    if helm status gitea -n "$GITEA_CREDENTIALS_NAMESPACE" >/dev/null 2>&1; then
-        existing_release=true
-    fi
-
     # Password
     if [[ -n "$explicit_pass" ]]; then
         GITEA_PASS="$explicit_pass"
@@ -177,57 +171,24 @@ resolve_gitea_credentials() {
     elif [[ -n "$secret_pass" ]]; then
         GITEA_PASS="$secret_pass"
         echo "🔑 Loaded Gitea password from $GITEA_CREDENTIALS_NAMESPACE/$GITEA_CREDENTIALS_SECRET (user: $GITEA_USER)."
-    elif [[ "$existing_release" == "true" ]]; then
-        GITEA_PASS="$GITEA_PASS_HISTORICAL_DEFAULT"
-        echo "🔑 Existing Gitea release detected without a credentials Secret (user: $GITEA_USER)."
-        echo "   Capturing historical default password into $GITEA_CREDENTIALS_NAMESPACE/$GITEA_CREDENTIALS_SECRET."
-        echo "   Note: this script does not rotate a live Gitea password — the chart preserves"
-        echo "   the existing admin user on upgrade. To rotate: change it via the Gitea API or"
-        echo "   web UI, then update the Secret to match (or pass GITEA_PASS=<new> here)."
     else
-        # Fresh install: generate a strong random password.
-        # `openssl rand -base64 24` = 24 random bytes → 32 base64 chars; we
-        # strip the symbol chars (/, +, =) and trim to 24 chars from the
-        # remaining 62-symbol alphabet, giving ~143 bits of effective
-        # entropy — plenty for a service account.
+        # Fresh install (or first run that just lacks both env var and Secret):
+        # generate a strong random password. `openssl rand -base64 24` = 24
+        # random bytes → 32 base64 chars; we strip the symbol chars (/, +, =)
+        # and trim to 24 chars from the remaining 62-symbol alphabet, giving
+        # ~143 bits of effective entropy — plenty for a service account.
         GITEA_PASS="$(openssl rand -base64 24 | tr -d '/+=' | cut -c1-24)"
         echo "🔑 Generated random Gitea admin password (user: $GITEA_USER, will be stored in $GITEA_CREDENTIALS_NAMESPACE/$GITEA_CREDENTIALS_SECRET)."
-    fi
-
-    # Decide whether the canonical Secret can safely be rewritten with the
-    # resolved values. We can rewrite when we *know* they match what
-    # Gitea will accept — i.e. fresh install (Helm is about to create the
-    # user with these creds), or values that came from the existing
-    # Secret. We CANNOT rewrite when explicit env overrides are supplied
-    # against an existing release: the chart won't change the live user,
-    # so the overrides might disagree with reality and we'd be poisoning
-    # the canonical source. The caller can still drive the script with
-    # those overrides for one-shot work; we just don't persist them.
-    SAFE_TO_WRITE_SECRET=true
-    if [[ "$existing_release" == "true" ]]; then
-        if [[ -n "$explicit_user" || -n "$explicit_pass" ]]; then
-            SAFE_TO_WRITE_SECRET=false
-            echo "⚠️  Explicit GITEA_USER/GITEA_PASS supplied against an existing Gitea release."
-            echo "   The Helm chart preserves the admin user on upgrade, so we can't verify"
-            echo "   the override matches live Gitea without round-tripping the API."
-            echo "   Skipping rewrite of $GITEA_CREDENTIALS_NAMESPACE/$GITEA_CREDENTIALS_SECRET."
-            echo "   Either rotate live Gitea to match (Gitea API/UI) and re-run without"
-            echo "   overrides, or pass the overrides on every invocation that needs them."
-        fi
     fi
 }
 resolve_gitea_credentials
 
-# Persist the active credentials to the Secret. Idempotent. Gated on
-# SAFE_TO_WRITE_SECRET — see resolve_gitea_credentials() for why we skip
-# the write when override env vars meet an existing install.
-if [[ "$SAFE_TO_WRITE_SECRET" == "true" ]]; then
-    kubectl create secret generic "$GITEA_CREDENTIALS_SECRET" \
-        -n "$GITEA_CREDENTIALS_NAMESPACE" \
-        --from-literal=username="$GITEA_USER" \
-        --from-literal=password="$GITEA_PASS" \
-        --dry-run=client -o yaml | kubectl apply -f - >/dev/null
-fi
+# Persist the active credentials to the Secret. Idempotent.
+kubectl create secret generic "$GITEA_CREDENTIALS_SECRET" \
+    -n "$GITEA_CREDENTIALS_NAMESPACE" \
+    --from-literal=username="$GITEA_USER" \
+    --from-literal=password="$GITEA_PASS" \
+    --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 
 # Now that user/pass are settled, build the URL bases reused below.
 # `git remote add` requires the credentials embedded in the URL — so we
@@ -251,8 +212,8 @@ probe_gitea() {
 # We use a simple configuration for the seed instance
 helm upgrade --install gitea gitea-charts/gitea \
   --namespace gitea \
-  --set gitea.admin.username=$GITEA_USER \
-  --set gitea.admin.password=$GITEA_PASS \
+  --set-string gitea.admin.username="$GITEA_USER" \
+  --set-string gitea.admin.password="$GITEA_PASS" \
   --set persistence.enabled=false \
   --set containerSecurityContext.runAsUser=1000 \
   --set containerSecurityContext.runAsGroup=1000 \

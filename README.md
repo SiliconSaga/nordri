@@ -30,22 +30,46 @@ After bootstrapping, you can access the services:
 #### Credentials
 
 *   **Gitea**:
-    *   User: `nordri-admin` (override via `GITEA_USER` env var on bootstrap)
-    *   Password: generated at bootstrap and stored in the Kubernetes Secret
+    *   User: `nordri-admin` (override via `GITEA_USER` env var on bootstrap).
+    *   Password: stored in the Kubernetes Secret
         `gitea/gitea-admin-credentials`. Retrieve with:
 
         ```bash
-        kubectl get secret -n gitea gitea-admin-credentials -o jsonpath='{.data.password}' | base64 --decode
+        kubectl get secret -n gitea gitea-admin-credentials \
+          -o jsonpath='{.data.password}' | base64 --decode
         ```
 
-        Existing clusters bootstrapped before this Secret-backed flow landed
-        kept their historical default password (`nordri-password-change-me`).
-        Re-running `./bootstrap.sh <target>` writes that historical default
-        into the Secret as a best-effort capture — note the script can't
-        actually read the live password back from Gitea, so if the password
-        was already rotated via Gitea's API or UI, pass the live value via
-        `GITEA_PASS=<value>` on the re-run (or update the Secret directly)
-        so subsequent scripts read a value that matches reality.
+        On a **fresh cluster**, `bootstrap.sh` generates a strong random
+        password, installs Gitea with it, and writes it to the Secret.
+
+        On an **existing cluster** (where Gitea already has an admin user
+        with a known password — e.g. clusters bootstrapped before this
+        Secret-backed flow landed, or any cluster where you've rotated
+        the password manually), pass the live password explicitly:
+
+        ```bash
+        GITEA_PASS=<live-password> ./bootstrap.sh <target>
+        ```
+
+        The script trusts the override, writes it to the Secret, and uses
+        it for the rest of the run. If the value is wrong, subsequent
+        Gitea API calls fail loudly with 401 — better than a silent
+        mismatch.
+
+        To **rotate** the password, change it in Gitea (UI or API), then
+        update the Secret to match — either pass `GITEA_PASS=<new>` to
+        the next bootstrap re-run, or write the Secret directly:
+
+        ```bash
+        kubectl create secret generic gitea-admin-credentials -n gitea \
+          --from-literal=username=nordri-admin \
+          --from-literal=password='<new-password>' \
+          --dry-run=client -o yaml | kubectl apply -f -
+        ```
+
+        `update-embedded-git.sh` and any other consumers will pick up the
+        new value from the Secret on the next run. Long-term, this whole
+        flow is expected to migrate into OpenBAO once Nidavellir lands it.
 *   **ArgoCD**:
     *   User: `admin`
     *   Password: Run the command below to retrieve it.

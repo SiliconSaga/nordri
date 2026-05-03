@@ -24,12 +24,13 @@ set -e
 #   GITEA_USER  Admin username for Seed Gitea. Default: read from the
 #               gitea/gitea-admin-credentials Secret if present; otherwise
 #               "nordri-admin".
-#   GITEA_PASS  Admin password. Default: read from the
-#               gitea/gitea-admin-credentials Secret (created by
-#               bootstrap.sh on fresh installs). Falls back to the
-#               historical "nordri-password-change-me" with a warning if
-#               neither the env var nor the Secret are available — re-run
-#               bootstrap.sh on the cluster to populate the Secret.
+#   GITEA_PASS  Admin password. Resolution order:
+#                 • Explicit env var (one-shot use, doesn't touch the Secret).
+#                 • gitea/gitea-admin-credentials Secret (the normal path
+#                   once bootstrap.sh has run).
+#               Fails fast with a helpful message if neither is available.
+#               This script does NOT generate or rotate passwords — that's
+#               bootstrap.sh's job.
 #   GITEA_SCHEME  http or https. Default: http. Stays on http for now
 #               because the Gateway's websecure listener only carries the
 #               cluster's bootstrap self-signed cert until the Vegvísir
@@ -44,6 +45,11 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 TARGET=$1
+command -v jq >/dev/null 2>&1 || {
+    echo "❌ This script requires 'jq' on PATH (used to URL-encode Gitea credentials)." >&2
+    echo "   Install with: 'apt install jq' / 'brew install jq' / 'choco install jq'." >&2
+    exit 1
+}
 # Default to the historical localhost:3000 (kubectl port-forward path).
 # Override with GITEA_HOST to push directly via Gitea's ingress instead.
 GITEA_HOST="${GITEA_HOST:-localhost:3000}"
@@ -53,19 +59,20 @@ MIMIR_GITEA_REPO="mimir"
 HEIMDALL_GITEA_REPO="heimdall"
 GITEA_CREDENTIALS_NAMESPACE="gitea"
 GITEA_CREDENTIALS_SECRET="gitea-admin-credentials"
-GITEA_PASS_HISTORICAL_DEFAULT="nordri-password-change-me"
 NIDAVELLIR_DIR="${NIDAVELLIR_DIR:-$(dirname "$SCRIPT_DIR")/nidavellir}"
 MIMIR_DIR="${MIMIR_DIR:-$(dirname "$SCRIPT_DIR")/mimir}"
 HEIMDALL_DIR="${HEIMDALL_DIR:-$(dirname "$SCRIPT_DIR")/heimdall}"
 
 # Resolve Gitea admin credentials. Username and password are resolved
-# independently so an explicit override for one doesn't bypass Secret
-# loading for the other.
+# independently from explicit env vars and the in-cluster Secret.
 #
-# Username priority:  explicit env  >  Secret  >  "nordri-admin"
-# Password priority:  explicit env  >  Secret  >  historical default (with a
-#                     warning — the cluster needs a bootstrap.sh re-run to
-#                     populate the Secret).
+# Username priority:  GITEA_USER env  >  Secret  >  "nordri-admin"
+# Password priority:  GITEA_PASS env  >  Secret  >  fail with helpful message
+#
+# This script does not generate or rotate passwords — that's bootstrap.sh's
+# job. If neither env var nor Secret has a value, the user needs to either
+# run bootstrap.sh (with GITEA_PASS=<live> for an existing cluster) or
+# pass GITEA_PASS=<value> here for one-shot use.
 explicit_user="${GITEA_USER:-}"
 explicit_pass="${GITEA_PASS:-}"
 secret_user=""
@@ -91,9 +98,12 @@ elif [[ -n "$secret_pass" ]]; then
     GITEA_PASS="$secret_pass"
     echo "🔑 Loaded Gitea credentials from $GITEA_CREDENTIALS_NAMESPACE/$GITEA_CREDENTIALS_SECRET (user: $GITEA_USER)."
 else
-    GITEA_PASS="$GITEA_PASS_HISTORICAL_DEFAULT"
-    echo "⚠️  No $GITEA_CREDENTIALS_NAMESPACE/$GITEA_CREDENTIALS_SECRET Secret and no GITEA_PASS env var — using historical default password."
-    echo "   Re-run bootstrap.sh on this cluster to populate the Secret with the active credentials."
+    echo "❌ No $GITEA_CREDENTIALS_NAMESPACE/$GITEA_CREDENTIALS_SECRET Secret and no GITEA_PASS env var." >&2
+    echo "   For a cluster bootstrapped before the Secret-backed flow landed:" >&2
+    echo "     • One-shot:  GITEA_PASS=<live-pw> $0 $1" >&2
+    echo "     • Persist:   GITEA_PASS=<live-pw> $(dirname "$0")/bootstrap.sh <target>" >&2
+    echo "   For a fresh cluster, run bootstrap.sh first." >&2
+    exit 1
 fi
 unset explicit_user explicit_pass secret_user secret_pass
 # Scheme defaults to http intentionally — see GITEA_SCHEME header docs.
