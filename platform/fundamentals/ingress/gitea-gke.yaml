@@ -1,0 +1,42 @@
+# Gitea ingress for the GKE overlay — Gateway API HTTPRoute.
+#
+# Hostname matches `cluster-identity-gke.yaml` (domain: cmdbee.org) so the
+# in-cluster Gitea is reachable at https://gitea.cmdbee.org via the wildcard
+# A record that already points at the Traefik LB. HTTPS termination
+# currently uses the Gateway listener's default self-signed cert (browser
+# warning) until the Vegvísir wildcard-cert work lands; HTTP works fine.
+#
+# Sync-wave 5: alongside the Vegvísir Gateway resource so this binds as
+# soon as the Gateway is Programmed.
+#
+# This file is GKE-specific because static Kustomize manifests can't read
+# EnvironmentConfig at apply time. Crossplane-driven ingresses in
+# downstream components (e.g. cluster-identity-demo) DO use
+# cluster-identity.domain at composition time.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: gitea
+  namespace: gitea
+  annotations:
+    argocd.argoproj.io/sync-wave: "5"
+spec:
+  parentRefs:
+    - name: traefik-gateway
+      namespace: kube-system
+      kind: Gateway
+      sectionName: web
+    - name: traefik-gateway
+      namespace: kube-system
+      kind: Gateway
+      sectionName: websecure
+  hostnames:
+    - gitea.cmdbee.org
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: gitea-http
+          port: 3000

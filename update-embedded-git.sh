@@ -5,11 +5,35 @@ set -e
 # Usage: ./update.sh [gke|homelab]
 # Purpose: Re-hydrates and pushes the configuration to the internal Seed Gitea
 #          without reinstalling Gitea, ArgoCD, or other components.
+#
+# Optional environment overrides:
+#
+#   GITEA_HOST  host:port (or just host) for the in-cluster Gitea endpoint.
+#               Default: "localhost:3000" — the script will start a kubectl
+#               port-forward to svc/gitea-http and push via that.
+#               Set to a public URL like "gitea.cmdbee.org" to skip the
+#               port-forward step and push to Gitea over its real ingress.
+#               Useful when (a) the workstation's git credential manager
+#               intercepts localhost:3000 (Windows GCM does this), (b) the
+#               cluster's Gitea is reachable directly via DNS, or (c) you
+#               want to avoid the port-forward overhead.
+#               Examples:
+#                 GITEA_HOST=gitea.cmdbee.org ./update-embedded-git.sh gke
+#                 GITEA_HOST=gitea.localhost ./update-embedded-git.sh homelab
+#
+#   NIDAVELLIR_DIR / MIMIR_DIR / HEIMDALL_DIR
+#               Absolute path to each sibling component's checkout. Defaults
+#               to ../<name> relative to this script.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 TARGET=$1
 GITEA_USER="nordri-admin"
 GITEA_PASS="nordri-password-change-me"
+# Default to the historical localhost:3000 (kubectl port-forward path).
+# Override with GITEA_HOST to push directly via Gitea's ingress instead.
+GITEA_HOST="${GITEA_HOST:-localhost:3000}"
+# Single derived base URL so we don't repeat user/pass/host in 8 places.
+GITEA_BASE="http://${GITEA_USER}:${GITEA_PASS}@${GITEA_HOST}"
 GITEA_REPO_NAME="nordri"
 NIDAVELLIR_GITEA_REPO="nidavellir"
 MIMIR_GITEA_REPO="mimir"
@@ -45,15 +69,22 @@ echo "💧 [Layer 2] Hydrating Configuration..."
 HYDRATE_DIR=$(mktemp -d)
 echo "   Working in $HYDRATE_DIR"
 
-# Ensure Gitea Port Forward is active
-# We check if port 3000 is open, if not we start port-forward
-if ! nc -z localhost 3000 2>/dev/null; then
-    echo "   Starting Port Forward to Gitea..."
-    kubectl port-forward svc/gitea-http -n gitea 3000:3000 > /dev/null 2>&1 &
-    PF_PID=$!
-    sleep 5 # Give it a moment
+# Ensure Gitea is reachable.
+# When GITEA_HOST is the default localhost:3000 we start a kubectl
+# port-forward; when it's overridden to a real ingress hostname (e.g.
+# gitea.cmdbee.org or gitea.localhost) we skip the port-forward and push
+# directly via that URL.
+if [[ "$GITEA_HOST" == "localhost:3000" ]]; then
+    if ! nc -z localhost 3000 2>/dev/null; then
+        echo "   Starting Port Forward to Gitea..."
+        kubectl port-forward svc/gitea-http -n gitea 3000:3000 > /dev/null 2>&1 &
+        PF_PID=$!
+        sleep 5 # Give it a moment
+    else
+        echo "   Port 3000 appears open, assuming existing connection or port-forward."
+    fi
 else
-    echo "   Port 3000 appears open, assuming existing connection or port-forward."
+    echo "   Using GITEA_HOST=$GITEA_HOST (skipping port-forward)."
 fi
 
 # Prepare the content
@@ -82,7 +113,7 @@ git config user.name "Nordri Update"
 git checkout -b main
 git add .
 git commit -m "Update Configuration for $TARGET"
-git remote add origin "http://$GITEA_USER:$GITEA_PASS@localhost:3000/$GITEA_USER/$GITEA_REPO_NAME.git"
+git remote add origin "$GITEA_BASE/$GITEA_USER/$GITEA_REPO_NAME.git"
 # Force push to overwrite the previous state with the new desired state
 git push -u origin main --force
 cd -
@@ -95,7 +126,7 @@ echo "✅ Nordri configuration updated."
 if [[ -d "$NIDAVELLIR_DIR" ]]; then
     echo "💧 Updating Nidavellir in Seed Gitea..."
 
-    curl -s -X POST "http://$GITEA_USER:$GITEA_PASS@localhost:3000/api/v1/user/repos" \
+    curl -s -X POST "$GITEA_BASE/api/v1/user/repos" \
       -H "Content-Type: application/json" \
       -d "{\"name\": \"$NIDAVELLIR_GITEA_REPO\", \"private\": false}" > /dev/null || true
 
@@ -110,7 +141,7 @@ if [[ -d "$NIDAVELLIR_DIR" ]]; then
     git checkout -b main
     git add .
     git commit -m "Update for $TARGET"
-    git remote add origin "http://$GITEA_USER:$GITEA_PASS@localhost:3000/$GITEA_USER/$NIDAVELLIR_GITEA_REPO.git"
+    git remote add origin "$GITEA_BASE/$GITEA_USER/$NIDAVELLIR_GITEA_REPO.git"
     git push -u origin main --force
     cd -
     rm -rf "$NIDAVELLIR_HYDRATE"
@@ -124,7 +155,7 @@ fi
 if [[ -d "$MIMIR_DIR" ]]; then
     echo "💧 Updating Mimir in Seed Gitea..."
 
-    curl -s -X POST "http://$GITEA_USER:$GITEA_PASS@localhost:3000/api/v1/user/repos" \
+    curl -s -X POST "$GITEA_BASE/api/v1/user/repos" \
       -H "Content-Type: application/json" \
       -d "{\"name\": \"$MIMIR_GITEA_REPO\", \"private\": false}" > /dev/null || true
 
@@ -139,7 +170,7 @@ if [[ -d "$MIMIR_DIR" ]]; then
     git checkout -b main
     git add .
     git commit -m "Update for $TARGET"
-    git remote add origin "http://$GITEA_USER:$GITEA_PASS@localhost:3000/$GITEA_USER/$MIMIR_GITEA_REPO.git"
+    git remote add origin "$GITEA_BASE/$GITEA_USER/$MIMIR_GITEA_REPO.git"
     git push -u origin main --force
     cd -
     rm -rf "$MIMIR_HYDRATE"
@@ -153,7 +184,7 @@ fi
 if [[ -d "$HEIMDALL_DIR" ]]; then
     echo "💧 Updating Heimdall in Seed Gitea..."
 
-    curl -s -X POST "http://$GITEA_USER:$GITEA_PASS@localhost:3000/api/v1/user/repos" \
+    curl -s -X POST "$GITEA_BASE/api/v1/user/repos" \
       -H "Content-Type: application/json" \
       -d "{\"name\": \"$HEIMDALL_GITEA_REPO\", \"private\": false}" > /dev/null || true
 
@@ -168,7 +199,7 @@ if [[ -d "$HEIMDALL_DIR" ]]; then
     git checkout -b main
     git add .
     git commit -m "Update for $TARGET"
-    git remote add origin "http://$GITEA_USER:$GITEA_PASS@localhost:3000/$GITEA_USER/$HEIMDALL_GITEA_REPO.git"
+    git remote add origin "$GITEA_BASE/$GITEA_USER/$HEIMDALL_GITEA_REPO.git"
     git push -u origin main --force
     cd -
     rm -rf "$HEIMDALL_HYDRATE"

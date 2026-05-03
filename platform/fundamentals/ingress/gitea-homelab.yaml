@@ -1,0 +1,43 @@
+# Gitea ingress for the homelab overlay — Gateway API HTTPRoute.
+#
+# Hostname `gitea.localhost` rather than the cluster-identity.domain value
+# (`homelab.local`) because browsers and modern OSes auto-resolve any
+# `*.localhost` name to 127.0.0.1 per RFC 6761, giving a frictionless
+# homelab experience without /etc/hosts or dnsmasq setup. Static Kustomize
+# manifests can't read EnvironmentConfig at apply time, so each overlay
+# picks its own hostname here. Crossplane-driven ingresses in downstream
+# components (e.g. cluster-identity-demo) DO use cluster-identity.domain at
+# composition time.
+#
+# Sync-wave 5: alongside the Vegvísir Gateway resource so this binds as
+# soon as the Gateway is Programmed.
+#
+# Replaces the older Traefik `IngressRoute` to align Gitea's ingress with
+# the Gateway-API direction the rest of the platform is taking.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: gitea
+  namespace: gitea
+  annotations:
+    argocd.argoproj.io/sync-wave: "5"
+spec:
+  parentRefs:
+    - name: traefik-gateway
+      namespace: kube-system
+      kind: Gateway
+      sectionName: web
+    - name: traefik-gateway
+      namespace: kube-system
+      kind: Gateway
+      sectionName: websecure
+  hostnames:
+    - gitea.localhost
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: gitea-http
+          port: 3000
