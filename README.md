@@ -29,7 +29,17 @@ After bootstrapping, you can access the services:
 
 #### Credentials
 
-*   **Gitea**: `nordri-admin` / `nordri-password-change-me` (Defined in `bootstrap.sh`)
+*   **Gitea**:
+    *   User: `nordri-admin` (override via `GITEA_USER` env var on bootstrap)
+    *   Password: generated at bootstrap and stored in the Kubernetes Secret
+        `gitea/gitea-admin-credentials`. Retrieve with:
+        ```bash
+        kubectl get secret -n gitea gitea-admin-credentials -o jsonpath='{.data.password}' | base64 -d
+        ```
+        Existing clusters bootstrapped before this Secret-backed flow landed
+        keep their historical default password (`nordri-password-change-me`)
+        — re-running `./bootstrap.sh <target>` captures the active credentials
+        into the Secret without changing them.
 *   **ArgoCD**:
     *   User: `admin`
     *   Password: Run the command below to retrieve it.

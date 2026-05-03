@@ -15,15 +15,52 @@ set -e
 #
 # After bootstrap, ArgoCD pulls both Nordri and Nidavellir from internal Gitea.
 # See nidavellir/vegvisir/README.md for the procedure to switch to GitHub.
+#
+# Optional environment overrides:
+#
+#   GITEA_HOST  host:port for the Seed Gitea endpoint used by this script.
+#               Default: "localhost:3000" — script will start a kubectl
+#               port-forward to svc/gitea-http and push initial content via
+#               that. Set to a public URL like "gitea.cmdbee.org" to skip
+#               the port-forward (useful when re-running bootstrap on a
+#               cluster that already has the Gitea HTTPRoute deployed, or
+#               when localhost is intercepted by a git credential helper).
+#
+#   GITEA_USER  Admin username for Seed Gitea (default: nordri-admin).
+#   GITEA_PASS  Admin password. Default behavior:
+#                 • If gitea/gitea-admin-credentials Secret exists, use it
+#                   (idempotent re-run).
+#                 • Else if a Helm release named 'gitea' already exists
+#                   in the gitea namespace, treat as an existing install and
+#                   capture the historical default ('nordri-password-change-me')
+#                   into the Secret so future runs / scripts can read it.
+#                 • Else (fresh install) generate a strong random password
+#                   and store it in the Secret.
+#               Set GITEA_PASS explicitly to override any of the above.
+#
+#   NIDAVELLIR_DIR / MIMIR_DIR / HEIMDALL_DIR
+#               Absolute path to each sibling component's checkout. Defaults
+#               to ../<name> relative to this script.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 TARGET=$1
-GITEA_USER="nordri-admin"
-GITEA_PASS="nordri-password-change-me"
+# Default values; resolve_gitea_credentials() (called after the gitea namespace
+# is created) finalizes GITEA_USER/GITEA_PASS from the gitea-admin-credentials
+# Secret, the Helm release state, or random generation. Explicit env vars take
+# precedence — see the Optional environment overrides block in the header.
+GITEA_USER="${GITEA_USER:-nordri-admin}"
+GITEA_PASS="${GITEA_PASS:-}"
+GITEA_HOST="${GITEA_HOST:-localhost:3000}"
 GITEA_REPO_NAME="nordri"
 NIDAVELLIR_GITEA_REPO="nidavellir"
 MIMIR_GITEA_REPO="mimir"
 HEIMDALL_GITEA_REPO="heimdall"
+# Where the Gitea admin credentials live in-cluster.
+GITEA_CREDENTIALS_NAMESPACE="gitea"
+GITEA_CREDENTIALS_SECRET="gitea-admin-credentials"
+# Historical default password used by clusters bootstrapped before the
+# Secret-backed credential flow landed. Captured into the Secret on re-run.
+GITEA_PASS_HISTORICAL_DEFAULT="nordri-password-change-me"
 # Sibling directories expected alongside this repo. Override with env vars.
 NIDAVELLIR_DIR="${NIDAVELLIR_DIR:-$(dirname "$SCRIPT_DIR")/nidavellir}"
 MIMIR_DIR="${MIMIR_DIR:-$(dirname "$SCRIPT_DIR")/mimir}"
@@ -77,6 +114,57 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# Resolve the Gitea admin credentials before installing the chart.
+#
+# Priority:
+#   1. Explicit GITEA_PASS env var (always wins).
+#   2. Secret gitea/gitea-admin-credentials if it exists (re-runs are
+#      idempotent and a previously-generated random password survives).
+#   3. Historical default if a Helm release named 'gitea' already exists in
+#      the gitea namespace (existing cluster — capture into Secret).
+#   4. Generate a strong random password (fresh install).
+#
+# Whichever wins, we end with the Secret reflecting the active credentials so
+# update-embedded-git.sh and any future scripts can read them from one place.
+resolve_gitea_credentials() {
+    if [[ -n "$GITEA_PASS" ]]; then
+        echo "🔑 Using GITEA_PASS from environment."
+        return
+    fi
+
+    if kubectl get secret -n "$GITEA_CREDENTIALS_NAMESPACE" "$GITEA_CREDENTIALS_SECRET" >/dev/null 2>&1; then
+        GITEA_USER="$(kubectl get secret -n "$GITEA_CREDENTIALS_NAMESPACE" "$GITEA_CREDENTIALS_SECRET" -o jsonpath='{.data.username}' | base64 -d)"
+        GITEA_PASS="$(kubectl get secret -n "$GITEA_CREDENTIALS_NAMESPACE" "$GITEA_CREDENTIALS_SECRET" -o jsonpath='{.data.password}' | base64 -d)"
+        echo "🔑 Loaded Gitea credentials from $GITEA_CREDENTIALS_NAMESPACE/$GITEA_CREDENTIALS_SECRET (user: $GITEA_USER)."
+        return
+    fi
+
+    if helm status gitea -n "$GITEA_CREDENTIALS_NAMESPACE" >/dev/null 2>&1; then
+        GITEA_PASS="$GITEA_PASS_HISTORICAL_DEFAULT"
+        echo "🔑 Existing Gitea release detected without a credentials Secret."
+        echo "   Capturing historical default password into $GITEA_CREDENTIALS_NAMESPACE/$GITEA_CREDENTIALS_SECRET."
+        echo "   (To rotate, delete the Secret and the Gitea pod, then re-run this script.)"
+        return
+    fi
+
+    # Fresh install: generate a strong random password.
+    # 24 chars from base64 of 18 random bytes, stripped of /, +, = and trimmed
+    # to 24 chars. ~140 bits of entropy — plenty for a service account.
+    GITEA_PASS="$(openssl rand -base64 24 | tr -d '/+=' | cut -c1-24)"
+    echo "🔑 Generated random Gitea admin password (will be stored in $GITEA_CREDENTIALS_NAMESPACE/$GITEA_CREDENTIALS_SECRET)."
+}
+resolve_gitea_credentials
+
+# Persist the active credentials to the Secret. Idempotent.
+kubectl create secret generic "$GITEA_CREDENTIALS_SECRET" \
+    -n "$GITEA_CREDENTIALS_NAMESPACE" \
+    --from-literal=username="$GITEA_USER" \
+    --from-literal=password="$GITEA_PASS" \
+    --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+
+# Now that user/pass are settled, build the URL base reused below.
+GITEA_BASE="http://${GITEA_USER}:${GITEA_PASS}@${GITEA_HOST}"
+
 # We use a simple configuration for the seed instance
 helm upgrade --install gitea gitea-charts/gitea \
   --namespace gitea \
@@ -123,14 +211,17 @@ echo "💧 [Layer 2] Hydrating Configuration..."
 HYDRATE_DIR=$(mktemp -d)
 echo "   Working in $HYDRATE_DIR"
 
-# Clone the empty repo from the internal Gitea (via port-forward or direct interaction)
-# For bootstrapping simplicity, we'll use the API/CLI to creating the repo, then just push via a temporary Git setup
-# NOTE: In a real script, we might need 'kubectl port-forward' to hit localhost:3000
-# For this script we assume ability to reach it or using internal DNS if running largely inside connection context (unlikely for bootstrap)
-# Let's assume we do a quick port-forward in background
-kubectl port-forward svc/gitea-http -n gitea 3000:3000 > /dev/null 2>&1 &
-PF_PID=$!
-sleep 5 # Give it a moment
+# Reach the Seed Gitea endpoint. By default that's localhost:3000 via a
+# kubectl port-forward; if GITEA_HOST is overridden (e.g. gitea.cmdbee.org
+# on a re-bootstrap of an existing cluster that already has the HTTPRoute
+# wired up), skip the port-forward and use the URL directly.
+if [[ "$GITEA_HOST" == "localhost:3000" ]]; then
+    kubectl port-forward svc/gitea-http -n gitea 3000:3000 > /dev/null 2>&1 &
+    PF_PID=$!
+    sleep 5 # Give it a moment
+else
+    echo "   Using GITEA_HOST=$GITEA_HOST (skipping port-forward)."
+fi
 
 # Create a Gitea repo via API with retry. Gitea's ephemeral mode can fail on rapid
 # sequential repo creates (initRepository race). We check the response body for errors.
@@ -138,7 +229,7 @@ create_gitea_repo() {
     local repo_name=$1
     local max_retries=5
     for i in $(seq 1 $max_retries); do
-        RESPONSE=$(curl -s -X POST "http://$GITEA_USER:$GITEA_PASS@localhost:3000/api/v1/user/repos" \
+        RESPONSE=$(curl -s -X POST "$GITEA_BASE/api/v1/user/repos" \
           -H "Content-Type: application/json" \
           -d "{\"name\": \"$repo_name\", \"private\": false}")
 
@@ -187,7 +278,7 @@ git config user.name "Nordri Bootstrap"
 git checkout -b main
 git add .
 git commit -m "Hydration for $TARGET"
-git remote add origin "http://$GITEA_USER:$GITEA_PASS@localhost:3000/$GITEA_USER/$GITEA_REPO_NAME.git"
+git remote add origin "$GITEA_BASE/$GITEA_USER/$GITEA_REPO_NAME.git"
 git push -u origin main --force
 cd -
 
@@ -212,7 +303,7 @@ if [[ -d "$NIDAVELLIR_DIR" ]]; then
     git checkout -b main
     git add .
     git commit -m "Hydration for $TARGET"
-    git remote add origin "http://$GITEA_USER:$GITEA_PASS@localhost:3000/$GITEA_USER/$NIDAVELLIR_GITEA_REPO.git"
+    git remote add origin "$GITEA_BASE/$GITEA_USER/$NIDAVELLIR_GITEA_REPO.git"
     git push -u origin main --force
     cd -
     rm -rf "$NIDAVELLIR_HYDRATE"
@@ -242,7 +333,7 @@ if [[ -d "$MIMIR_DIR" ]]; then
     git checkout -b main
     git add .
     git commit -m "Hydration for $TARGET"
-    git remote add origin "http://$GITEA_USER:$GITEA_PASS@localhost:3000/$GITEA_USER/$MIMIR_GITEA_REPO.git"
+    git remote add origin "$GITEA_BASE/$GITEA_USER/$MIMIR_GITEA_REPO.git"
     git push -u origin main --force
     cd -
     rm -rf "$MIMIR_HYDRATE"
@@ -272,7 +363,7 @@ if [[ -d "$HEIMDALL_DIR" ]]; then
     git checkout -b main
     git add .
     git commit -m "Hydration for $TARGET"
-    git remote add origin "http://$GITEA_USER:$GITEA_PASS@localhost:3000/$GITEA_USER/$HEIMDALL_GITEA_REPO.git"
+    git remote add origin "$GITEA_BASE/$GITEA_USER/$HEIMDALL_GITEA_REPO.git"
     git push -u origin main --force
     cd -
     rm -rf "$HEIMDALL_HYDRATE"

@@ -21,26 +21,60 @@ set -e
 #                 GITEA_HOST=gitea.cmdbee.org ./update-embedded-git.sh gke
 #                 GITEA_HOST=gitea.localhost ./update-embedded-git.sh homelab
 #
+#   GITEA_USER  Admin username for Seed Gitea. Default: read from the
+#               gitea/gitea-admin-credentials Secret if present; otherwise
+#               "nordri-admin".
+#   GITEA_PASS  Admin password. Default: read from the
+#               gitea/gitea-admin-credentials Secret (created by
+#               bootstrap.sh on fresh installs). Falls back to the
+#               historical "nordri-password-change-me" with a warning if
+#               neither the env var nor the Secret are available — re-run
+#               bootstrap.sh on the cluster to populate the Secret.
+#
 #   NIDAVELLIR_DIR / MIMIR_DIR / HEIMDALL_DIR
 #               Absolute path to each sibling component's checkout. Defaults
 #               to ../<name> relative to this script.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 TARGET=$1
-GITEA_USER="nordri-admin"
-GITEA_PASS="nordri-password-change-me"
 # Default to the historical localhost:3000 (kubectl port-forward path).
 # Override with GITEA_HOST to push directly via Gitea's ingress instead.
 GITEA_HOST="${GITEA_HOST:-localhost:3000}"
-# Single derived base URL so we don't repeat user/pass/host in 8 places.
-GITEA_BASE="http://${GITEA_USER}:${GITEA_PASS}@${GITEA_HOST}"
 GITEA_REPO_NAME="nordri"
 NIDAVELLIR_GITEA_REPO="nidavellir"
 MIMIR_GITEA_REPO="mimir"
 HEIMDALL_GITEA_REPO="heimdall"
+GITEA_CREDENTIALS_NAMESPACE="gitea"
+GITEA_CREDENTIALS_SECRET="gitea-admin-credentials"
+GITEA_PASS_HISTORICAL_DEFAULT="nordri-password-change-me"
 NIDAVELLIR_DIR="${NIDAVELLIR_DIR:-$(dirname "$SCRIPT_DIR")/nidavellir}"
 MIMIR_DIR="${MIMIR_DIR:-$(dirname "$SCRIPT_DIR")/mimir}"
 HEIMDALL_DIR="${HEIMDALL_DIR:-$(dirname "$SCRIPT_DIR")/heimdall}"
+
+# Resolve Gitea admin credentials.
+#
+# Priority:
+#   1. Explicit GITEA_USER / GITEA_PASS env vars (always win).
+#   2. Secret gitea/gitea-admin-credentials read via kubectl from the
+#      currently-active context (preferred — bootstrap.sh creates this).
+#   3. Historical default "nordri-admin / nordri-password-change-me" with a
+#      one-line warning. Useful for clusters bootstrapped before the
+#      Secret-backed credential flow landed; fixed by re-running bootstrap.sh.
+if [[ -z "${GITEA_USER:-}" || -z "${GITEA_PASS:-}" ]]; then
+    if kubectl get secret -n "$GITEA_CREDENTIALS_NAMESPACE" "$GITEA_CREDENTIALS_SECRET" >/dev/null 2>&1; then
+        GITEA_USER="${GITEA_USER:-$(kubectl get secret -n "$GITEA_CREDENTIALS_NAMESPACE" "$GITEA_CREDENTIALS_SECRET" -o jsonpath='{.data.username}' | base64 -d)}"
+        GITEA_PASS="${GITEA_PASS:-$(kubectl get secret -n "$GITEA_CREDENTIALS_NAMESPACE" "$GITEA_CREDENTIALS_SECRET" -o jsonpath='{.data.password}' | base64 -d)}"
+        echo "🔑 Loaded Gitea credentials from $GITEA_CREDENTIALS_NAMESPACE/$GITEA_CREDENTIALS_SECRET (user: $GITEA_USER)."
+    fi
+fi
+GITEA_USER="${GITEA_USER:-nordri-admin}"
+if [[ -z "${GITEA_PASS:-}" ]]; then
+    GITEA_PASS="$GITEA_PASS_HISTORICAL_DEFAULT"
+    echo "⚠️  No $GITEA_CREDENTIALS_NAMESPACE/$GITEA_CREDENTIALS_SECRET Secret and no GITEA_PASS env var — using historical default password."
+    echo "   Re-run bootstrap.sh on this cluster to populate the Secret with the active credentials."
+fi
+# Single derived base URL so we don't repeat user/pass/host in 8 places.
+GITEA_BASE="http://${GITEA_USER}:${GITEA_PASS}@${GITEA_HOST}"
 
 if [[ -z "$TARGET" ]]; then
     echo "Usage: ./update.sh [gke|homelab]"
