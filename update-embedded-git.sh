@@ -30,6 +30,13 @@ set -e
 #               historical "nordri-password-change-me" with a warning if
 #               neither the env var nor the Secret are available — re-run
 #               bootstrap.sh on the cluster to populate the Secret.
+#   GITEA_SCHEME  http or https. Default: http. Stays on http for now
+#               because the Gateway's websecure listener only carries the
+#               cluster's bootstrap self-signed cert until the Vegvísir
+#               wildcard-cert work lands. Set GITEA_SCHEME=https once a
+#               trusted cert is wired into the listener so credentials
+#               aren't sent in cleartext. (See gitea-gke.yaml header for
+#               the broader writeup.)
 #
 #   NIDAVELLIR_DIR / MIMIR_DIR / HEIMDALL_DIR
 #               Absolute path to each sibling component's checkout. Defaults
@@ -73,8 +80,48 @@ if [[ -z "${GITEA_PASS:-}" ]]; then
     echo "⚠️  No $GITEA_CREDENTIALS_NAMESPACE/$GITEA_CREDENTIALS_SECRET Secret and no GITEA_PASS env var — using historical default password."
     echo "   Re-run bootstrap.sh on this cluster to populate the Secret with the active credentials."
 fi
-# Single derived base URL so we don't repeat user/pass/host in 8 places.
-GITEA_BASE="http://${GITEA_USER}:${GITEA_PASS}@${GITEA_HOST}"
+# Scheme defaults to http intentionally — see GITEA_SCHEME header docs.
+GITEA_SCHEME="${GITEA_SCHEME:-http}"
+# Single derived base URL so we don't repeat scheme/user/pass/host in 8 places.
+GITEA_BASE="${GITEA_SCHEME}://${GITEA_USER}:${GITEA_PASS}@${GITEA_HOST}"
+# Unauthenticated probe URL (no creds) for liveness checks.
+GITEA_PROBE_URL="${GITEA_SCHEME}://${GITEA_HOST}/api/v1/version"
+
+# Probe the Gitea endpoint for the current $GITEA_HOST. Returns 0 if Gitea
+# answers /api/v1/version with HTTP 200, non-zero otherwise. Avoids
+# silently sending credentials to a wrong endpoint or an unready ingress.
+probe_gitea() {
+    curl -fsS --max-time 5 "$GITEA_PROBE_URL" >/dev/null 2>&1
+}
+
+# Create a Gitea repo if it doesn't already exist. Treats 201 (Created)
+# and 409 (already exists) as success; anything else (DNS failure, auth
+# rejection, 5xx) prints the response body and fails the script — so a
+# broken Gitea endpoint surfaces immediately, not deep inside the
+# subsequent `git push`.
+ensure_gitea_repo() {
+    local repo_name=$1
+    local response_file
+    local status
+    response_file=$(mktemp)
+    status=$(curl -sS -o "$response_file" -w "%{http_code}" \
+        -X POST "$GITEA_BASE/api/v1/user/repos" \
+        -H "Content-Type: application/json" \
+        -d "{\"name\": \"$repo_name\", \"private\": false}") || true
+    case "$status" in
+        201|409)
+            rm -f "$response_file"
+            return 0
+            ;;
+        *)
+            echo "❌ Failed to create or confirm Gitea repo '$repo_name' (HTTP $status):" >&2
+            cat "$response_file" >&2
+            echo >&2
+            rm -f "$response_file"
+            return 1
+            ;;
+    esac
+}
 
 if [[ -z "$TARGET" ]]; then
     echo "Usage: ./update.sh [gke|homelab]"
@@ -103,22 +150,35 @@ echo "💧 [Layer 2] Hydrating Configuration..."
 HYDRATE_DIR=$(mktemp -d)
 echo "   Working in $HYDRATE_DIR"
 
-# Ensure Gitea is reachable.
-# When GITEA_HOST is the default localhost:3000 we start a kubectl
-# port-forward; when it's overridden to a real ingress hostname (e.g.
-# gitea.cmdbee.org or gitea.localhost) we skip the port-forward and push
-# directly via that URL.
+# Ensure Gitea is reachable. Either way (localhost port-forward or
+# overridden public host) we probe /api/v1/version before continuing —
+# `nc` only proves *something* is on the port; we want to confirm it's
+# actually Gitea before sending credentials.
 if [[ "$GITEA_HOST" == "localhost:3000" ]]; then
-    if ! nc -z localhost 3000 2>/dev/null; then
+    if probe_gitea; then
+        echo "   Reusing existing Gitea endpoint at $GITEA_HOST."
+    else
         echo "   Starting Port Forward to Gitea..."
         kubectl port-forward svc/gitea-http -n gitea 3000:3000 > /dev/null 2>&1 &
         PF_PID=$!
-        sleep 5 # Give it a moment
-    else
-        echo "   Port 3000 appears open, assuming existing connection or port-forward."
+        # Poll until the port-forward serves Gitea, or fail loudly.
+        ATTEMPTS=0
+        until probe_gitea; do
+            ATTEMPTS=$((ATTEMPTS + 1))
+            if [[ $ATTEMPTS -ge 30 ]]; then
+                echo "❌ Gitea did not become reachable on $GITEA_HOST within 30s." >&2
+                exit 1
+            fi
+            sleep 1
+        done
     fi
 else
     echo "   Using GITEA_HOST=$GITEA_HOST (skipping port-forward)."
+    if ! probe_gitea; then
+        echo "❌ Gitea is not answering at $GITEA_PROBE_URL." >&2
+        echo "   Verify the HTTPRoute is deployed and DNS resolves." >&2
+        exit 1
+    fi
 fi
 
 # Prepare the content
@@ -160,9 +220,7 @@ echo "✅ Nordri configuration updated."
 if [[ -d "$NIDAVELLIR_DIR" ]]; then
     echo "💧 Updating Nidavellir in Seed Gitea..."
 
-    curl -s -X POST "$GITEA_BASE/api/v1/user/repos" \
-      -H "Content-Type: application/json" \
-      -d "{\"name\": \"$NIDAVELLIR_GITEA_REPO\", \"private\": false}" > /dev/null || true
+    ensure_gitea_repo "$NIDAVELLIR_GITEA_REPO"
 
     NIDAVELLIR_HYDRATE=$(mktemp -d)
     cp -r "$NIDAVELLIR_DIR/." "$NIDAVELLIR_HYDRATE/"
@@ -189,9 +247,7 @@ fi
 if [[ -d "$MIMIR_DIR" ]]; then
     echo "💧 Updating Mimir in Seed Gitea..."
 
-    curl -s -X POST "$GITEA_BASE/api/v1/user/repos" \
-      -H "Content-Type: application/json" \
-      -d "{\"name\": \"$MIMIR_GITEA_REPO\", \"private\": false}" > /dev/null || true
+    ensure_gitea_repo "$MIMIR_GITEA_REPO"
 
     MIMIR_HYDRATE=$(mktemp -d)
     cp -r "$MIMIR_DIR/." "$MIMIR_HYDRATE/"
@@ -218,9 +274,7 @@ fi
 if [[ -d "$HEIMDALL_DIR" ]]; then
     echo "💧 Updating Heimdall in Seed Gitea..."
 
-    curl -s -X POST "$GITEA_BASE/api/v1/user/repos" \
-      -H "Content-Type: application/json" \
-      -d "{\"name\": \"$HEIMDALL_GITEA_REPO\", \"private\": false}" > /dev/null || true
+    ensure_gitea_repo "$HEIMDALL_GITEA_REPO"
 
     HEIMDALL_HYDRATE=$(mktemp -d)
     cp -r "$HEIMDALL_DIR/." "$HEIMDALL_HYDRATE/"

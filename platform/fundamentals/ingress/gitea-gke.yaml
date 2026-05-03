@@ -1,10 +1,31 @@
 # Gitea ingress for the GKE overlay — Gateway API HTTPRoute.
 #
 # Hostname matches `cluster-identity-gke.yaml` (domain: cmdbee.org) so the
-# in-cluster Gitea is reachable at https://gitea.cmdbee.org via the wildcard
-# A record that already points at the Traefik LB. HTTPS termination
-# currently uses the Gateway listener's default self-signed cert (browser
-# warning) until the Vegvísir wildcard-cert work lands; HTTP works fine.
+# in-cluster Gitea is reachable via the wildcard A record that already
+# points at the Traefik LB.
+#
+# *** Cleartext caveat ***
+#
+# This route binds to BOTH the `web` (HTTP) and `websecure` (HTTPS)
+# listeners. CodeRabbit correctly flagged that exposing a public hostname
+# on plaintext is a security smell — basic auth and git operations should
+# travel over TLS. The reason we still allow `web` here today:
+#
+# 1. The Gateway's `websecure` listener only references the cluster-wide
+#    self-signed `traefik-gateway-default-cert`. There is no per-host or
+#    wildcard cert wired into the listener yet.
+# 2. So `https://gitea.cmdbee.org` reaches Traefik but is served by the
+#    default self-signed cert — browser warning, SAN mismatch, git push
+#    needs `http.sslVerify=false`. That is *worse* practical UX than HTTP
+#    until the wildcard cert is in place.
+# 3. The cluster is experimental, internal, and not handling real user
+#    secrets. Cleartext basic auth is acceptable in this transient state.
+#
+# The fix is the wildcard-cert work tracked as a Vegvísir follow-up (issue
+# scoped, see Thalamus / project tracker). Once a `*.cmdbee.org` cert is
+# referenced on the listener, `update-embedded-git.sh` callers can flip to
+# `GITEA_SCHEME=https` and we can either drop the `web` parentRef here or
+# turn it into an HTTP→HTTPS redirect.
 #
 # Sync-wave 5: alongside the Vegvísir Gateway resource so this binds as
 # soon as the Gateway is Programmed.

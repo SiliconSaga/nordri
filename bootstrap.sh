@@ -25,6 +25,12 @@ set -e
 #               the port-forward (useful when re-running bootstrap on a
 #               cluster that already has the Gitea HTTPRoute deployed, or
 #               when localhost is intercepted by a git credential helper).
+#   GITEA_SCHEME  http or https. Default: http. See update-embedded-git.sh
+#               header for the full reasoning — short version is the
+#               Gateway's websecure listener doesn't yet have a trusted
+#               cert for cmdbee.org, so https reaches Traefik but is served
+#               by a self-signed cert. Flip to https once the wildcard
+#               cert is wired into the listener.
 #
 #   GITEA_USER  Admin username for Seed Gitea (default: nordri-admin).
 #   GITEA_PASS  Admin password. Default behavior:
@@ -51,6 +57,7 @@ TARGET=$1
 GITEA_USER="${GITEA_USER:-nordri-admin}"
 GITEA_PASS="${GITEA_PASS:-}"
 GITEA_HOST="${GITEA_HOST:-localhost:3000}"
+GITEA_SCHEME="${GITEA_SCHEME:-http}"
 GITEA_REPO_NAME="nordri"
 NIDAVELLIR_GITEA_REPO="nidavellir"
 MIMIR_GITEA_REPO="mimir"
@@ -163,7 +170,15 @@ kubectl create secret generic "$GITEA_CREDENTIALS_SECRET" \
     --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 
 # Now that user/pass are settled, build the URL base reused below.
-GITEA_BASE="http://${GITEA_USER}:${GITEA_PASS}@${GITEA_HOST}"
+GITEA_BASE="${GITEA_SCHEME}://${GITEA_USER}:${GITEA_PASS}@${GITEA_HOST}"
+GITEA_PROBE_URL="${GITEA_SCHEME}://${GITEA_HOST}/api/v1/version"
+
+# Probe the Gitea endpoint. Returns 0 if Gitea answers /api/v1/version
+# with HTTP 200. Used to confirm we're talking to actual Gitea, not just
+# any service that happens to be on this host:port.
+probe_gitea() {
+    curl -fsS --max-time 5 "$GITEA_PROBE_URL" >/dev/null 2>&1
+}
 
 # We use a simple configuration for the seed instance
 helm upgrade --install gitea gitea-charts/gitea \
@@ -214,13 +229,28 @@ echo "   Working in $HYDRATE_DIR"
 # Reach the Seed Gitea endpoint. By default that's localhost:3000 via a
 # kubectl port-forward; if GITEA_HOST is overridden (e.g. gitea.cmdbee.org
 # on a re-bootstrap of an existing cluster that already has the HTTPRoute
-# wired up), skip the port-forward and use the URL directly.
+# wired up), skip the port-forward and use the URL directly. Either way,
+# probe Gitea before continuing so we don't push credentials at a wrong
+# endpoint or an unready ingress.
 if [[ "$GITEA_HOST" == "localhost:3000" ]]; then
     kubectl port-forward svc/gitea-http -n gitea 3000:3000 > /dev/null 2>&1 &
     PF_PID=$!
-    sleep 5 # Give it a moment
+    ATTEMPTS=0
+    until probe_gitea; do
+        ATTEMPTS=$((ATTEMPTS + 1))
+        if [[ $ATTEMPTS -ge 30 ]]; then
+            echo "❌ Gitea did not become reachable on $GITEA_HOST within 30s." >&2
+            exit 1
+        fi
+        sleep 1
+    done
 else
     echo "   Using GITEA_HOST=$GITEA_HOST (skipping port-forward)."
+    if ! probe_gitea; then
+        echo "❌ Gitea is not answering at $GITEA_PROBE_URL." >&2
+        echo "   Verify the HTTPRoute is deployed and DNS resolves." >&2
+        exit 1
+    fi
 fi
 
 # Create a Gitea repo via API with retry. Gitea's ephemeral mode can fail on rapid
