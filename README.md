@@ -30,7 +30,10 @@ After bootstrapping, you can access the services:
 #### Credentials
 
 *   **Gitea**:
-    *   User: `nordri-admin` (override via `GITEA_USER` env var on bootstrap).
+    *   User: `nordri-admin`. Not currently a runtime knob — downstream
+        ArgoCD Application repoURLs hardcode this, so changing it would
+        also require a hydration-time substitution pass that the script
+        doesn't do today. Track via the OpenBAO migration.
     *   Password: stored in the Kubernetes Secret
         `gitea/gitea-admin-credentials`. Retrieve with:
 

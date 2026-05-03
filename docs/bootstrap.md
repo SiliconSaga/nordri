@@ -169,8 +169,12 @@ Vegvísir wildcard cert lands on the Gateway listener, set
 ### Credentials
 
 Both `bootstrap.sh` and `update-embedded-git.sh` read the Gitea admin
-credentials from the `gitea/gitea-admin-credentials` Secret. Override
-with `GITEA_USER` / `GITEA_PASS` env vars on either script.
+credentials from the `gitea/gitea-admin-credentials` Secret. Pass
+`GITEA_PASS=<value>` to override the password (used for fresh
+installs against an existing cluster, post-rotation, etc.). The
+username comes from the Secret or defaults to `nordri-admin` and is
+not user-overridable at the script level — downstream ArgoCD app
+repoURLs assume that name.
 
 `bootstrap.sh` *writes* the Secret based on env-var-or-Secret-or-random
 resolution. `update-embedded-git.sh` *reads* only — it fails fast if no
