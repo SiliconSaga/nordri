@@ -23,6 +23,6 @@ resources:
 
   # Ingress Routes
   - ../../ingress/argocd.yaml
-  - ../../ingress/gitea.yaml
+  - ../../ingress/gitea-homelab.yaml
   - ../../ingress/longhorn.yaml
   - ../../ingress/garage.yaml

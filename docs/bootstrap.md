@@ -19,9 +19,24 @@ Provision the raw cluster before running any scripts.
 `./bootstrap.sh [gke|homelab]`
 
 - Installs **Gitea** (Helm, `gitea` namespace, ephemeral — no persistence)
+- **Resolves Gitea admin credentials** and persists them to the
+  `gitea/gitea-admin-credentials` Secret. Resolution order is
+  `GITEA_PASS` env var → existing Secret → freshly-generated random
+  password (~143 bits via `openssl rand`). The Secret is then written
+  unconditionally to match. The script does not generate or rotate
+  passwords for you — `GITEA_PASS=<value>` is the user-supplied path
+  for any case where you already know the live password (existing
+  cluster from before this flow landed, post-rotation, etc.).
 - Creates Nordri and Nidavellir repos in Gitea via API
 - Hydrates both repos from local checkouts (applies target overlay for Nordri)
 - Nidavellir is expected as a sibling directory; override with `NIDAVELLIR_DIR`
+
+Retrieve the active password:
+
+```bash
+kubectl get secret -n gitea gitea-admin-credentials \
+  -o jsonpath='{.data.password}' | base64 --decode
+```
 
 ### Layer 2.5 — Gateway API CRDs + Crossplane Core
 - Installs **Gateway API CRDs** (required before Traefik's GatewayClass can register)
@@ -128,6 +143,65 @@ To push local changes to Gitea without reinstalling anything:
 ```
 
 This re-hydrates both the Nordri and Nidavellir repos and triggers an ArgoCD sync.
+
+### Talking to Gitea over a real ingress (skipping port-forward)
+
+By default the script reaches Gitea via `kubectl port-forward` to
+`localhost:3000`. On clusters that already have the Gitea HTTPRoute
+deployed (see `platform/fundamentals/ingress/gitea-{homelab,gke}.yaml`)
+you can skip the port-forward by setting `GITEA_HOST`:
+
+```bash
+GITEA_HOST=gitea.cmdbee.org ./update-embedded-git.sh gke
+GITEA_HOST=gitea.localhost  ./update-embedded-git.sh homelab
+```
+
+Useful when:
+- Workstation's git credential manager intercepts `localhost:3000`
+  (notably Windows Git Credential Manager + a `provider=generic` config).
+- Gitea is reachable directly via DNS and the port-forward is just
+  overhead.
+
+`GITEA_SCHEME` (default `http`) controls the URL scheme; once the
+Vegvísir wildcard cert lands on the Gateway listener, set
+`GITEA_SCHEME=https` to encrypt credential traffic.
+
+### Credentials
+
+Both `bootstrap.sh` and `update-embedded-git.sh` read the Gitea admin
+password from the `gitea/gitea-admin-credentials` Secret. Pass
+`GITEA_PASS=<value>` to override the password (used for fresh
+installs against an existing cluster, post-rotation, etc.). The
+username is hardcoded to `nordri-admin` in both scripts — downstream
+ArgoCD app repoURLs assume that literal, so any drift would break
+sync. The Secret is written with a `username` field for introspection
+but neither script reads it back.
+
+`bootstrap.sh` *writes* the Secret based on env-var-or-Secret-or-random
+resolution. `update-embedded-git.sh` *reads* only — it fails fast if no
+value is available rather than fabricating one.
+
+#### Rotating the Gitea admin password
+
+The script doesn't rotate passwords directly because the Helm chart
+preserves the existing admin user on upgrade. The supported flow:
+
+1. Change the password in Gitea (UI: Site Administration → Users; or
+   `kubectl exec -n gitea deploy/gitea -- gitea admin user change-password \
+     --username nordri-admin --password '<new>'`).
+2. Update the Secret so other scripts see the change:
+
+   ```bash
+   kubectl create secret generic gitea-admin-credentials -n gitea \
+     --from-literal=username=nordri-admin \
+     --from-literal=password='<new-password>' \
+     --dry-run=client -o yaml | kubectl apply -f -
+   ```
+
+   Or run `GITEA_PASS=<new> ./bootstrap.sh <target>` once — same effect.
+
+This is a temporary state — the longer-term plan is to drive Gitea
+credentials through OpenBAO once it ships in Nidavellir.
 
 ## Diagrams
 
