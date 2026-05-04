@@ -53,12 +53,11 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 TARGET=$1
-# Capture explicit env-var input here without applying defaults — the
-# resolver populates the value below. Username override isn't a documented
-# knob (the rest of the substrate — ArgoCD Application repoURLs, etc. —
-# hardcodes "nordri-admin"); changing it requires more surgery. So
-# username is only read from the Secret or defaults; only password
-# accepts an env override.
+# Capture explicit GITEA_PASS env input here without applying a default —
+# the resolver populates the value below. Username is fixed to
+# "nordri-admin" inside the resolver (downstream ArgoCD Application
+# repoURLs hardcode that literal, so any drift would break sync); only
+# password accepts an env override.
 GITEA_PASS="${GITEA_PASS:-}"
 GITEA_HOST="${GITEA_HOST:-localhost:3000}"
 GITEA_SCHEME="${GITEA_SCHEME:-http}"
@@ -320,10 +319,14 @@ create_gitea_repo() {
     for i in $(seq 1 $max_retries); do
         # `-u user:pass` keeps credentials out of the URL so special chars
         # in GITEA_PASS (@, :, /, #) can't corrupt URL parsing.
+        # `|| true` after the command substitution prevents `set -e` from
+        # killing the retry loop on transport-level curl failures (DNS,
+        # TCP refusal, TLS handshake) — those are exactly the cases the
+        # retry exists to cover.
         RESPONSE=$(curl -s -u "$GITEA_USER:$GITEA_PASS" \
           -X POST "$GITEA_API_URL/api/v1/user/repos" \
           -H "Content-Type: application/json" \
-          -d "{\"name\": \"$repo_name\", \"private\": false}")
+          -d "{\"name\": \"$repo_name\", \"private\": false}" || true)
 
         # Check if response contains a valid repo (has "clone_url") or already-exists error
         if echo "$RESPONSE" | grep -q '"clone_url"'; then
