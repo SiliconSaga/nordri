@@ -250,6 +250,14 @@ fi
 # Copy the root application (optional, but good for completeness)
 cp "$SCRIPT_DIR/platform/root-app.yaml" "$HYDRATE_DIR/"
 
+# Ensure the nordri repo exists in Gitea before pushing. The Seed Gitea
+# runs without persistence; if the pod ever rotates and the repo got lost
+# (we hit exactly this earlier — postgres survived but blob storage
+# didn't), `git push` would fail with a misleading "remote rejected"
+# error. ensure_gitea_repo treats 201/409 as success and retries
+# transport errors.
+ensure_gitea_repo "$GITEA_REPO_NAME"
+
 # Push to Gitea
 cd $HYDRATE_DIR
 git init

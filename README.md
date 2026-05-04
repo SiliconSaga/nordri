@@ -55,9 +55,15 @@ After bootstrapping, you can access the services:
         ```
 
         The script trusts the override, writes it to the Secret, and uses
-        it for the rest of the run. If the value is wrong, subsequent
-        Gitea API calls fail loudly with 401 — better than a silent
-        mismatch.
+        it for the rest of the run. If the value is wrong, two things
+        happen: the in-script Gitea API calls (and any subsequent
+        `update-embedded-git.sh` invocation) fail with 401, *and* the
+        Secret has been poisoned with the wrong value. Recover by
+        running with the correct password — `GITEA_PASS=<correct> ./bootstrap.sh
+        <target>` rewrites the Secret — or delete the Secret manually
+        (`kubectl delete secret -n gitea gitea-admin-credentials`) and
+        run bootstrap.sh again with the right value. The fail-loud-and-
+        recoverable trade-off is intentional vs. a silent fallback.
 
         To **rotate** the password, change it in Gitea (UI or API), then
         update the Secret to match — either pass `GITEA_PASS=<new>` to

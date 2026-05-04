@@ -45,11 +45,13 @@ metadata:
     argocd.argoproj.io/sync-wave: "14"
 spec:
   parentRefs:
-    - name: traefik-gateway
+    - group: gateway.networking.k8s.io
+      name: traefik-gateway
       namespace: kube-system
       kind: Gateway
       sectionName: web
-    - name: traefik-gateway
+    - group: gateway.networking.k8s.io
+      name: traefik-gateway
       namespace: kube-system
       kind: Gateway
       sectionName: websecure
