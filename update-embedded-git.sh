@@ -2,7 +2,7 @@
 set -e
 
 # Nordri Update Script
-# Usage: ./update.sh [gke|homelab]
+# Usage: ./update-embedded-git.sh [gke|homelab]
 # Purpose: Re-hydrates and pushes the configuration to the internal Seed Gitea
 #          without reinstalling Gitea, ArgoCD, or other components.
 #
@@ -46,7 +46,7 @@ TARGET=$1
 # Validate args before anything that touches the cluster, so wrong inputs
 # fail with a usage message instead of an obscure k8s/credential error.
 if [[ -z "$TARGET" ]]; then
-    echo "Usage: ./update.sh [gke|homelab]"
+    echo "Usage: ./update-embedded-git.sh [gke|homelab]"
     exit 1
 fi
 if [[ "$TARGET" != "gke" && "$TARGET" != "homelab" ]]; then
@@ -75,26 +75,21 @@ HEIMDALL_DIR="${HEIMDALL_DIR:-$(dirname "$SCRIPT_DIR")/heimdall}"
 # Resolve Gitea admin credentials.
 #
 # Password priority:  GITEA_PASS env  >  Secret  >  fail with helpful message
-# Username:           Secret  >  "nordri-admin"  (not user-overridable)
+# Username:           always "nordri-admin" (matches downstream ArgoCD
+#                     app repoURLs; see bootstrap.sh header).
 #
 # This script does not generate or rotate passwords — that's bootstrap.sh's
 # job. If neither env var nor Secret has a value, the user needs to either
 # run bootstrap.sh (with GITEA_PASS=<live> for an existing cluster) or
 # pass GITEA_PASS=<value> here for one-shot use.
 explicit_pass="${GITEA_PASS:-}"
-secret_user=""
 secret_pass=""
 if kubectl get secret -n "$GITEA_CREDENTIALS_NAMESPACE" "$GITEA_CREDENTIALS_SECRET" >/dev/null 2>&1; then
-    secret_user="$(kubectl get secret -n "$GITEA_CREDENTIALS_NAMESPACE" "$GITEA_CREDENTIALS_SECRET" -o jsonpath='{.data.username}' | base64 --decode)"
     secret_pass="$(kubectl get secret -n "$GITEA_CREDENTIALS_NAMESPACE" "$GITEA_CREDENTIALS_SECRET" -o jsonpath='{.data.password}' | base64 --decode)"
 fi
 
-# Username (Secret > default; not user-overridable, see bootstrap.sh).
-if [[ -n "$secret_user" ]]; then
-    GITEA_USER="$secret_user"
-else
-    GITEA_USER="nordri-admin"
-fi
+# Username is fixed (see bootstrap.sh header for rationale).
+GITEA_USER="nordri-admin"
 
 # Password
 if [[ -n "$explicit_pass" ]]; then
@@ -110,9 +105,16 @@ else
     echo "   For a fresh cluster, run bootstrap.sh first." >&2
     exit 1
 fi
-unset explicit_pass secret_user secret_pass
+unset explicit_pass secret_pass
 # Scheme defaults to http intentionally — see GITEA_SCHEME header docs.
 GITEA_SCHEME="${GITEA_SCHEME:-http}"
+# Guard: the kubectl port-forward target (svc/gitea-http) only speaks plain
+# HTTP, so GITEA_SCHEME=https against localhost:3000 will fail. Force http
+# and warn loudly if the caller mistakenly mixed them.
+if [[ "$GITEA_HOST" == "localhost:3000" && "$GITEA_SCHEME" != "http" ]]; then
+    echo "⚠️  Ignoring GITEA_SCHEME=$GITEA_SCHEME with default localhost:3000 — the port-forwarded gitea-http service is HTTP-only. Forcing http."
+    GITEA_SCHEME="http"
+fi
 # Build URL bases. `git remote add` requires creds embedded in the URL,
 # so we percent-encode user/pass to handle special chars (@, :, /, #).
 # API calls go through curl -u with the credentials-less base URL.
@@ -171,12 +173,24 @@ ensure_gitea_repo() {
 
 echo "🚀 Updating Nordri Configuration for target: $TARGET"
 
-# Cleanup function to kill port forward on exit
+# Cleanup on every script exit (success or failure) — kills the
+# port-forward and removes any temp hydration dirs we registered.
+# `git remote add` writes the embedded admin password into each temp
+# dir's .git/config; without trap-based cleanup, `set -e` exits before
+# the success-path `rm -rf` runs on a push failure, leaving credentials
+# on disk.
+declare -a TEMP_DIRS=()
 cleanup() {
-    if [[ -n "$PF_PID" ]]; then
+    if [[ -n "${PF_PID:-}" ]]; then
         echo "🧹 Stopping Port Forward (PID: $PF_PID)..."
-        kill $PF_PID 2>/dev/null || true
+        kill "$PF_PID" 2>/dev/null || true
     fi
+    local d
+    for d in "${TEMP_DIRS[@]}"; do
+        if [[ -n "$d" && -d "$d" ]]; then
+            rm -rf "$d"
+        fi
+    done
 }
 trap cleanup EXIT
 
@@ -184,6 +198,7 @@ echo "💧 [Layer 2] Hydrating Configuration..."
 
 # Create a temporary directory for hydration
 HYDRATE_DIR=$(mktemp -d)
+TEMP_DIRS+=("$HYDRATE_DIR")
 echo "   Working in $HYDRATE_DIR"
 
 # Ensure Gitea is reachable. Either way (localhost port-forward or
@@ -259,6 +274,7 @@ if [[ -d "$NIDAVELLIR_DIR" ]]; then
     ensure_gitea_repo "$NIDAVELLIR_GITEA_REPO"
 
     NIDAVELLIR_HYDRATE=$(mktemp -d)
+    TEMP_DIRS+=("$NIDAVELLIR_HYDRATE")
     cp -r "$NIDAVELLIR_DIR/." "$NIDAVELLIR_HYDRATE/"
     rm -rf "$NIDAVELLIR_HYDRATE/.git"
 
@@ -286,6 +302,7 @@ if [[ -d "$MIMIR_DIR" ]]; then
     ensure_gitea_repo "$MIMIR_GITEA_REPO"
 
     MIMIR_HYDRATE=$(mktemp -d)
+    TEMP_DIRS+=("$MIMIR_HYDRATE")
     cp -r "$MIMIR_DIR/." "$MIMIR_HYDRATE/"
     rm -rf "$MIMIR_HYDRATE/.git"
 
@@ -313,6 +330,7 @@ if [[ -d "$HEIMDALL_DIR" ]]; then
     ensure_gitea_repo "$HEIMDALL_GITEA_REPO"
 
     HEIMDALL_HYDRATE=$(mktemp -d)
+    TEMP_DIRS+=("$HEIMDALL_HYDRATE")
     cp -r "$HEIMDALL_DIR/." "$HEIMDALL_HYDRATE/"
     rm -rf "$HEIMDALL_HYDRATE/.git"
 

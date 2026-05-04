@@ -62,6 +62,13 @@ TARGET=$1
 GITEA_PASS="${GITEA_PASS:-}"
 GITEA_HOST="${GITEA_HOST:-localhost:3000}"
 GITEA_SCHEME="${GITEA_SCHEME:-http}"
+# Guard: the kubectl port-forward target (svc/gitea-http) only speaks plain
+# HTTP, so GITEA_SCHEME=https against localhost:3000 will fail. Force http
+# and warn loudly if the caller mistakenly mixed them.
+if [[ "$GITEA_HOST" == "localhost:3000" && "$GITEA_SCHEME" != "http" ]]; then
+    echo "⚠️  Ignoring GITEA_SCHEME=$GITEA_SCHEME with default localhost:3000 — the port-forwarded gitea-http service is HTTP-only. Forcing http."
+    GITEA_SCHEME="http"
+fi
 GITEA_REPO_NAME="nordri"
 NIDAVELLIR_GITEA_REPO="nidavellir"
 MIMIR_GITEA_REPO="mimir"
@@ -118,13 +125,27 @@ helm repo add gitea-charts https://dl.gitea.io/charts/ >/dev/null 2>&1
 helm repo update
 kubectl create namespace gitea --dry-run=client -o yaml | kubectl apply -f -
 
-# We use a simple configuration for the seed instance
-# Cleanup function to kill port forward on exit
+# We use a simple configuration for the seed instance.
+#
+# Cleanup runs on every script exit (success or failure) — kills the
+# port-forward and removes any temp hydration dirs we registered. The
+# temp dirs hold the Nordri/Nidavellir/Mimir/Heimdall checkouts that
+# get pushed to Gitea, and `git remote add` writes the embedded admin
+# password into each one's .git/config. Without trap-based cleanup,
+# `set -e` exits before the success-path `rm -rf` runs on a push
+# failure, leaving credentials on disk.
+declare -a TEMP_DIRS=()
 cleanup() {
-    if [[ -n "$PF_PID" ]]; then
+    if [[ -n "${PF_PID:-}" ]]; then
         echo "🧹 Stopping Port Forward (PID: $PF_PID)..."
-        kill $PF_PID 2>/dev/null || true
+        kill "$PF_PID" 2>/dev/null || true
     fi
+    local d
+    for d in "${TEMP_DIRS[@]}"; do
+        if [[ -n "$d" && -d "$d" ]]; then
+            rm -rf "$d"
+        fi
+    done
 }
 trap cleanup EXIT
 
@@ -132,7 +153,10 @@ trap cleanup EXIT
 #
 # Password priority:  GITEA_PASS env  >  Secret  >  random (only when this
 #                     looks like a fresh install)
-# Username:           Secret  >  "nordri-admin"
+# Username:           always "nordri-admin" — downstream ArgoCD app
+#                     repoURLs hardcode this, so any drift would break
+#                     ArgoCD sync. The Secret records the username for
+#                     introspection but the script never reads it back.
 #
 # Existing-cluster guard: if a Helm release named 'gitea' is already
 # present and we'd otherwise generate a fresh random password (no env
@@ -147,21 +171,14 @@ trap cleanup EXIT
 # kubectl). See README.md "Credentials" for the full flow.
 resolve_gitea_credentials() {
     local explicit_pass="$GITEA_PASS"
-    local secret_user=""
     local secret_pass=""
 
     if kubectl get secret -n "$GITEA_CREDENTIALS_NAMESPACE" "$GITEA_CREDENTIALS_SECRET" >/dev/null 2>&1; then
-        secret_user="$(kubectl get secret -n "$GITEA_CREDENTIALS_NAMESPACE" "$GITEA_CREDENTIALS_SECRET" -o jsonpath='{.data.username}' | base64 --decode)"
         secret_pass="$(kubectl get secret -n "$GITEA_CREDENTIALS_NAMESPACE" "$GITEA_CREDENTIALS_SECRET" -o jsonpath='{.data.password}' | base64 --decode)"
     fi
 
-    # Username (Secret > default; not user-overridable since downstream
-    # ArgoCD apps hardcode "nordri-admin" as the repoURL owner).
-    if [[ -n "$secret_user" ]]; then
-        GITEA_USER="$secret_user"
-    else
-        GITEA_USER="nordri-admin"
-    fi
+    # Username is fixed (see header comment).
+    GITEA_USER="nordri-admin"
 
     # Password
     if [[ -n "$explicit_pass" ]]; then
@@ -258,6 +275,7 @@ echo "💧 [Layer 2] Hydrating Configuration..."
 
 # Create a temporary directory for hydration
 HYDRATE_DIR=$(mktemp -d)
+TEMP_DIRS+=("$HYDRATE_DIR")
 echo "   Working in $HYDRATE_DIR"
 
 # Reach the Seed Gitea endpoint. By default that's localhost:3000 via a
@@ -370,6 +388,7 @@ if [[ -d "$NIDAVELLIR_DIR" ]]; then
     create_gitea_repo "$NIDAVELLIR_GITEA_REPO"
 
     NIDAVELLIR_HYDRATE=$(mktemp -d)
+    TEMP_DIRS+=("$NIDAVELLIR_HYDRATE")
     cp -r "$NIDAVELLIR_DIR/." "$NIDAVELLIR_HYDRATE/"
     rm -rf "$NIDAVELLIR_HYDRATE/.git"  # Don't push source .git dir
 
@@ -400,6 +419,7 @@ if [[ -d "$MIMIR_DIR" ]]; then
     create_gitea_repo "$MIMIR_GITEA_REPO"
 
     MIMIR_HYDRATE=$(mktemp -d)
+    TEMP_DIRS+=("$MIMIR_HYDRATE")
     cp -r "$MIMIR_DIR/." "$MIMIR_HYDRATE/"
     rm -rf "$MIMIR_HYDRATE/.git"  # Don't push source .git dir
 
@@ -430,6 +450,7 @@ if [[ -d "$HEIMDALL_DIR" ]]; then
     create_gitea_repo "$HEIMDALL_GITEA_REPO"
 
     HEIMDALL_HYDRATE=$(mktemp -d)
+    TEMP_DIRS+=("$HEIMDALL_HYDRATE")
     cp -r "$HEIMDALL_DIR/." "$HEIMDALL_HYDRATE/"
     rm -rf "$HEIMDALL_HYDRATE/.git"  # Don't push source .git dir
 
