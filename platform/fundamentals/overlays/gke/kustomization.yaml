@@ -16,3 +16,6 @@ resources:
   # Note: Gateway API CRDs, Traefik Gateway resource, and ClusterIssuers are
   # managed by the Nidavellir platform component, not Nordri. cert-manager
   # itself is pre-installed on this cluster and also excluded.
+
+  # GKE Specific Ingress Routes
+  - ../../ingress/gitea-gke.yaml
