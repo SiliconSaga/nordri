@@ -100,7 +100,11 @@ command -v jq >/dev/null 2>&1 || {
 echo "🚀 Bootstrapping Nordri for target: $TARGET"
 
 # --- Step 0: Pre-flight Checks (Rancher Desktop Specifics) ---
-if command -v rdctl &> /dev/null; then
+# Only relevant when the TARGET is the local Rancher Desktop VM (homelab path).
+# `rdctl` may be installed on a workstation that's also being used to bootstrap
+# a remote cluster (e.g. GKE) — in that case the VM preflight is meaningless
+# and `rdctl shell` would target the wrong machine.
+if [[ "$TARGET" == "homelab" ]] && command -v rdctl &> /dev/null; then
     echo "🔍 Detected Rancher Desktop (rdctl). Checking for required VM dependencies..."
     # Check for iscsiadm (required for Longhorn)
     if ! rdctl shell which iscsiadm >/dev/null 2>&1; then
