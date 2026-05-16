@@ -19,3 +19,4 @@ resources:
 
   # GKE Specific Ingress Routes
   - ../../ingress/gitea-gke.yaml
+  - ../../ingress/gitea-cert.yaml
