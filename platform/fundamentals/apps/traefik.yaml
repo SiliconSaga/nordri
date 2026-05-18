@@ -10,6 +10,12 @@ spec:
   source:
     repoURL: 'https://traefik.github.io/charts'
     chart: traefik
+    # PINNED to the 3.6.x chart line (38.x). Do NOT bump to chart 40.x /
+    # Traefik 3.7.x without re-testing TLS: Traefik 3.7.x regressed the
+    # Kubernetes Gateway provider's certificate loading — a Gateway listener's
+    # `certificateRefs` Secret is not loaded into the TLS store, so every
+    # HTTPS host serves the self-signed default cert. Verified broken on
+    # 3.7.1, working on 3.6.5. See SiliconSaga/yggdrasil#65.
     targetRevision: 38.0.1
     helm:
       # We just set generic values here. The App-of-Apps or Argo overrides

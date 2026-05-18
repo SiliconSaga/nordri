@@ -19,4 +19,5 @@ resources:
 
   # GKE Specific Ingress Routes
   - ../../ingress/gitea-gke.yaml
-  - ../../ingress/gitea-cert.yaml
+  # gitea TLS is covered by the platform wildcard cert (*.cmdbee.org) issued by
+  # Vegvísir — no per-host Certificate. See SiliconSaga/yggdrasil#65.
