@@ -38,13 +38,13 @@ kubectl get secret -n gitea gitea-admin-credentials \
   -o jsonpath='{.data.password}' | base64 --decode
 ```
 
-### Layer 2.5 — Gateway API CRDs + Crossplane Core
-- Installs **Gateway API CRDs** (required before Traefik's GatewayClass can register)
+### Layer 2.5 — Crossplane Core
 - Installs **Crossplane Core** (CRDs must exist before ArgoCD syncs ProviderConfigs)
 
 ### Layer 2.6 — Traefik (pre-ArgoCD)
 - Installs **Traefik** via Helm into `kube-system`
-- Registers `IngressRoute` CRDs needed by any ArgoCD-managed IngressRoute resources
+- Registers `IngressRoute`/`Middleware`/etc. CRDs needed by ArgoCD-managed resources
+- Installs **Gateway API CRDs** (bundled by Traefik chart 38+) — verified post-install
 - Sets `gateway.enabled=false` — the Gateway resource is owned by Vegvísir (Nidavellir)
 - On GKE: provisions the LoadBalancer service (source of the cluster's external IP)
 
@@ -211,8 +211,8 @@ credentials through OpenBAO once it ships in Nidavellir.
 graph TD
     Local[Local Machine] -->|gke-provision.sh| L1[L1: GKE Cluster]
     Local -->|bootstrap.sh| L2[L2: Seed Gitea]
-    L2 --> L25[L2.5: Gateway API CRDs + Crossplane]
-    L25 --> L26[L2.6: Traefik]
+    L2 --> L25[L2.5: Crossplane Core]
+    L25 --> L26[L2.6: Traefik + Gateway API CRDs]
     L26 --> L27[L2.7: Crossplane Providers]
     L27 --> L28[L2.8: ProviderConfigs]
     L28 --> L3[L3: ArgoCD]
