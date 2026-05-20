@@ -550,7 +550,13 @@ echo "⏳ Waiting for Traefik to become ready..."
 kubectl rollout status deployment/traefik -n kube-system --timeout=120s || { echo "❌ Traefik failed to start."; exit 1; }
 
 echo "   Verifying Gateway API CRDs (installed by Traefik chart)..."
-kubectl wait --for=condition=established --timeout=30s crd/gatewayclasses.gateway.networking.k8s.io || { echo "❌ Gateway API CRDs missing after Traefik install"; exit 1; }
+# Wait on the three CRDs the downstream Vegvísir stack actually consumes:
+# GatewayClass + Gateway + HTTPRoute. The chart could partially install
+# (e.g. version skew, hook failure) and a single-CRD check would miss it.
+kubectl wait --for=condition=established --timeout=30s \
+    crd/gatewayclasses.gateway.networking.k8s.io \
+    crd/gateways.gateway.networking.k8s.io \
+    crd/httproutes.gateway.networking.k8s.io || { echo "❌ Gateway API CRDs missing after Traefik install"; exit 1; }
 echo "✅ Traefik Installed (Gateway API + IngressRoute CRDs available)."
 
 # --- Step 2.7: Install Crossplane Providers + Functions (Layer 2.7) ---

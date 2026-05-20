@@ -39,9 +39,11 @@ kubectl get secret -n gitea gitea-admin-credentials \
 ```
 
 ### Layer 2.5 — Crossplane Core
+
 - Installs **Crossplane Core** (CRDs must exist before ArgoCD syncs ProviderConfigs)
 
 ### Layer 2.6 — Traefik (pre-ArgoCD)
+
 - Installs **Traefik** via Helm into `kube-system`
 - Registers `IngressRoute`/`Middleware`/etc. CRDs needed by ArgoCD-managed resources
 - Installs **Gateway API CRDs** (bundled by Traefik chart 38+) — verified post-install
