@@ -109,7 +109,9 @@ if [[ "$TARGET" == "homelab" ]] && command -v rdctl &> /dev/null; then
     # Check for iscsiadm (required for Longhorn)
     if ! rdctl shell which iscsiadm >/dev/null 2>&1; then
         echo "⚠️  'iscsiadm' missing in Rancher Desktop VM. Installing open-iscsi..."
-        rdctl shell "sudo apk update && sudo apk add open-iscsi && sudo rc-service iscsid start"
+        # `rdctl shell` invokes commands via nsenter, not a shell — so compound
+        # commands (&&, |, ;) must be wrapped in `sh -c` to be parsed.
+        rdctl shell sh -c "sudo apk update && sudo apk add open-iscsi && sudo rc-service iscsid start"
         echo "✅ Installed open-iscsi."
     else
          echo "✅ 'iscsiadm' found in VM."
@@ -327,10 +329,16 @@ create_gitea_repo() {
         # killing the retry loop on transport-level curl failures (DNS,
         # TCP refusal, TLS handshake) — those are exactly the cases the
         # retry exists to cover.
+        # `auto_init: true` creates an initial commit on `main` and sets the
+        # repo's HEAD symbolic ref to it. Without auto-init, a fresh repo has
+        # no HEAD ref — our later `git push --force` creates `refs/heads/main`
+        # but HEAD remains unresolved, and ArgoCD apps using `targetRevision:
+        # HEAD` fail with `unable to resolve 'HEAD' to a commit SHA`. The
+        # force-push later in the script overwrites the auto-init commit.
         RESPONSE=$(curl -s -u "$GITEA_USER:$GITEA_PASS" \
           -X POST "$GITEA_API_URL/api/v1/user/repos" \
           -H "Content-Type: application/json" \
-          -d "{\"name\": \"$repo_name\", \"private\": false}" || true)
+          -d "{\"name\": \"$repo_name\", \"private\": false, \"auto_init\": true, \"default_branch\": \"main\"}" || true)
 
         # Check if response contains a valid repo (has "clone_url") or already-exists error
         if echo "$RESPONSE" | grep -q '"clone_url"'; then
@@ -480,14 +488,13 @@ else
     echo "   Observability stack will not be deployed until Heimdall is available."
 fi
 
-# --- Step 2.5: Install Gateway API (Layer 2.5) ---
-echo "🚪 [Layer 2.5] Installing Gateway API CRDs..."
-kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.2.0/standard-install.yaml
-
-echo "   Verifying Gateway API CRDs..."
-kubectl wait --for=condition=established --timeout=30s crd/gatewayclasses.gateway.networking.k8s.io || { echo "❌ Failed to install Gateway API CRDs"; exit 1; }
-echo "✅ Gateway API CRDs installed."
-
+# --- Step 2.5: Install Crossplane Core (Layer 2.5) ---
+# Gateway API CRDs were installed here in earlier versions, but Traefik chart
+# 38+ bundles its own copy alongside IngressRoute/Middleware CRDs. Applying
+# them ourselves with `kubectl apply` (client-side, field-manager
+# `kubectl-client-side-apply`) caused a field-manager conflict on first
+# `helm install traefik`. We now let the Traefik chart in Layer 2.6 install
+# the Gateway API CRDs; the verify step moves with them.
 echo "✈️ [Layer 2.5] Installing Crossplane Core..."
 helm repo add crossplane-stable https://charts.crossplane.io/stable >/dev/null 2>&1
 helm repo update
@@ -541,7 +548,16 @@ helm upgrade --install traefik traefik/traefik \
 
 echo "⏳ Waiting for Traefik to become ready..."
 kubectl rollout status deployment/traefik -n kube-system --timeout=120s || { echo "❌ Traefik failed to start."; exit 1; }
-echo "✅ Traefik Installed (IngressRoute CRDs now available)."
+
+echo "   Verifying Gateway API CRDs (installed by Traefik chart)..."
+# Wait on the three CRDs the downstream Vegvísir stack actually consumes:
+# GatewayClass + Gateway + HTTPRoute. The chart could partially install
+# (e.g. version skew, hook failure) and a single-CRD check would miss it.
+kubectl wait --for=condition=established --timeout=30s \
+    crd/gatewayclasses.gateway.networking.k8s.io \
+    crd/gateways.gateway.networking.k8s.io \
+    crd/httproutes.gateway.networking.k8s.io || { echo "❌ Gateway API CRDs missing after Traefik install"; exit 1; }
+echo "✅ Traefik Installed (Gateway API + IngressRoute CRDs available)."
 
 # --- Step 2.7: Install Crossplane Providers + Functions (Layer 2.7) ---
 # Pre-install providers so their CRDs (ProviderConfig, etc.) exist before ArgoCD tries to sync.
