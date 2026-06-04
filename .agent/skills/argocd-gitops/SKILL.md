@@ -179,7 +179,7 @@ kubectl -n argocd rollout restart deployment/argocd-repo-server
 - **Removing a child Application's YAML from a parent's directory while `prune: true`** → child + all its live resources deleted on next sync.
 - **`Replace=true` to bypass the 262KB annotation limit** → wrong fix; breaks SSA field ownership. Use `ServerSideApply=true`.
 - **Forgetting `includeCRDs: true`** in Kustomize `helmCharts` → operator pods crash looking for their own CRDs.
-- **Forgetting `kustomize.buildOptions: --enable-helm`** in `argocd-cm` → Kustomize-with-Helm sources silently render without the chart.
+- **Forgetting `kustomize.buildOptions: --enable-helm`** in `argocd-cm` when a kustomization uses `helmCharts:` → manifest generation fails with an explicit "must specify --enable-helm" error and the sync errors out. Not silent — but easy to misdiagnose as a Kustomize bug if you don't know the ArgoCD-side knob exists.
 - **Treating sync waves as readiness gates** → waves order sync *starts*, not "wait until Healthy." Use retry + backoff, or `PreSync` Hooks polling `kubectl wait`.
 
 ## Portable Shell Scripts (Bootstrap-Adjacent)
