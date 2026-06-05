@@ -24,14 +24,14 @@ NOT for the generic ArgoCD GitOps patterns — sibling skill `argocd-gitops` cov
 | Need to know | Where it lives | Why |
 |---|---|---|
 | Layer ordering | `bootstrap.sh` (thorough inline comments) | Source of truth — the comments explain *why* each layer exists |
-| Crossplane core version | `bootstrap.sh` (`CROSSPLANE_VERSION`) | Bumped together with the providers |
+| Crossplane core version | `bootstrap.sh` (Helm flag `--version 2.1.4` on the Crossplane install) | Bumped together with the providers |
 | Provider + function versions | `platform/fundamentals/manifests/crossplane-providers.yaml` | Single YAML, one entry per provider/function |
-| Traefik chart version | `bootstrap.sh` (chart 38.0.1, pinned) | Chart 38+ bundles Gateway API CRDs; earlier the standalone `gateway-api/standard-install.yaml` apply caused a field-manager conflict on first Helm install |
+| Traefik chart version | `bootstrap.sh` (chart 38.0.1, pinned via Helm `--version`) | Chart 38+ bundles Gateway API CRDs as part of the install; earlier setups applied Gateway API CRDs separately, which caused a field-manager conflict on first Helm install |
 | Garage init flow | `bootstrap.sh` Layer 5 (homelab only) | Waits for `garage/garage-0` Ready, then `layout assign -z dc1 -c 1G` per node → `layout apply --version 1` → create key → create bucket → write `velero/velero-credentials` Secret |
 | GKE Velero credentials | Pre-created placeholder Secret to avoid CrashLoopBackOff | TODO: replace with GCS + Workload Identity (see `docs/velero-gke.md`) |
 | ArgoCD namespace | `argo` (NOT `argocd`) | Reserved to avoid colliding with legacy installations |
 | Seed Gitea internal URL | `http://gitea-http.gitea.svc.cluster.local:3000` | ArgoCD Applications target this during bootstrap; can be switched to GitHub later |
-| Admin creds | Secret `gitea/gitea-admin-credentials`, user `nordri-admin` | Plain-text password in init-container env by design (Seed-by-design low-security) |
+| Admin creds | Secret `gitea/gitea-admin-credentials`, user `nordri-admin` | Password sourced from `$GITEA_PASS` env (or an existing `gitea-admin-credentials` Secret), passed to Helm via `--set-string gitea.admin.password="$GITEA_PASS"`, and re-written into the Secret. |
 
 ## Bootstrap Layer Map
 
@@ -57,8 +57,8 @@ Why pre-ArgoCD layers exist: ArgoCD can't sync resources whose CRDs don't exist 
 
 | Component | Version | Notes |
 |---|---|---|
-| Crossplane Core | `2.1.4` | `CROSSPLANE_VERSION` in `bootstrap.sh` |
-| Traefik chart | `38.0.1` | Includes Gateway API CRDs (avoids the field-manager conflict the old standalone-apply caused). Don't bump to 3.7.x charts without verifying the Gateway-provider cert regression is fixed upstream. |
+| Crossplane Core | `2.1.4` | Pinned via Helm `--version 2.1.4` in `bootstrap.sh` (no `CROSSPLANE_VERSION` variable; the literal is inline on the install line) |
+| Traefik chart | `38.0.1` (app `3.6.5`) | Chart 38.x bundles Gateway API CRDs (avoids the field-manager conflict a separate CRD apply used to cause). Don't bump Traefik **app** to `3.7.x` (any chart bump that pulls it in): there's a Gateway-provider cert regression on 3.7.x — stay on app `3.6.5` / chart `38.x` until that's fixed upstream. |
 | provider-kubernetes | `v1.2.0` | `crossplane-providers.yaml` |
 | provider-helm | `v1.0.0` | `crossplane-providers.yaml` |
 | function-go-templating | `v0.4.0` | `crossplane-providers.yaml` |
@@ -88,16 +88,16 @@ A pre-created **placeholder** `velero-credentials` Secret prevents the Velero po
 
 ArgoCD Applications during bootstrap target `http://gitea-http.gitea.svc.cluster.local:3000/<owner>/<repo>` — the in-cluster Gitea. This is what `update-embedded-git.sh <homelab|gke>` hydrates from your local working tree.
 
-The Gitea instance is **ephemeral by design** (SQLite-backed, `persistence.enabled=false`, init-container has plain-text admin password as an env var). It exists to break the chicken-and-egg of "ArgoCD needs to sync from a Git source, but GitHub can't reach the cluster's API server during bootstrap." Production day-2 graduates this to a persistent Forgejo deployment (`docs/plans/2026-05-15-forgejo-day2-design.md`, in flight).
+The Gitea instance is **ephemeral by design** (bundled Postgres + Valkey from the Gitea chart, `persistence.enabled=false`). It exists to break the chicken-and-egg of "ArgoCD needs to sync from a Git source, but GitHub can't reach the cluster's API server during bootstrap." Day-2 plan to graduate this to a persistent Forgejo deployment lives in the realm (see `realms/realm-siliconsaga/docs/plans/`).
 
-When GitHub is reachable from the cluster (i.e. post-bootstrap, on GKE), Applications can be re-pointed at GitHub directly — see the `vegvisir/README.md` transition notes in Nidavellir.
+When GitHub is reachable from the cluster (i.e. post-bootstrap, on GKE), Applications can be re-pointed at GitHub directly — see the `nidavellir/vegvisir/README.md` transition notes (cross-repo; in the workspace checkout it lives at `components/nidavellir/vegvisir/README.md`).
 
 ## Common Mistakes
 
 - **Skipping pre-ArgoCD Helm layers** ("can't ArgoCD just install Traefik?") — no. ArgoCD can't sync `IngressRoute` resources before the Traefik CRDs exist; Layer 2.6 is the resolution.
-- **Bumping Traefik chart blindly** — chart 38+ owns Gateway API CRDs. Earlier-chart-plus-standalone-CRD-apply causes a field-manager conflict on the first Helm install. The 3.7.x regression on the Gateway provider also bit us once (covered in Thalamus); keep on 38.x / 3.6.5 until that's resolved upstream.
+- **Bumping Traefik chart blindly** — chart 38+ owns the Gateway API CRDs; pre-38 setups that applied Gateway API CRDs separately caused a field-manager conflict on the first Helm install. Also: any chart bump that pulls Traefik **app** version `3.7.x` reintroduces a Gateway-provider cert regression we hit once. Stay on chart `38.x` / app `3.6.5` until that's resolved upstream.
 - **Using `--set watchNamespace=""`** on any Helm-installed operator — Helm silently ignores empty strings. Use `watchAllNamespaces=true`. (Also covered in sibling `crossplane-compositions` skill.)
-- **Garage init failing on `replicationFactor > node count`** — the homelab is single-node, the layout is 1/1. Multi-node homelab would need values.yaml tweaks; covered in `docs/plans/2026-04-28-longhorn-evaluation.md`'s storage-tier note.
+- **Garage init failing on `replicationFactor > node count`** — the homelab is single-node, the layout is 1/1. Multi-node homelab would need the Garage chart's `replicationFactor` adjusted via values overrides; see the Garage chart docs for the live key.
 - **Git Bash MSYS path mangling** — `kubectl exec pod -- /garage <cmd>` from Git Bash converts `/garage` to `C:/Program Files/Git/garage`. Prefix with `MSYS_NO_PATHCONV=1` or run from PowerShell.
 
 ## Sources
@@ -106,6 +106,5 @@ When GitHub is reachable from the cluster (i.e. post-bootstrap, on GKE), Applica
 - `platform/fundamentals/manifests/crossplane-providers.yaml` — provider + function version pins.
 - `platform/root-app.yaml` — the L4 entry point ArgoCD adopts.
 - `docs/velero-gke.md` — Velero on GKE TODO (Workload Identity + GCS).
-- `docs/plans/2026-05-15-forgejo-day2-design.md` — Forgejo day-2 graduation (in flight).
 - Sibling skills: [`argocd-gitops`](../argocd-gitops/SKILL.md) for GitOps generic patterns; [`crossplane-compositions`](../crossplane-compositions/SKILL.md) for Composition Pipeline-mode patterns.
-- Realm context: `realms/realm-siliconsaga/docs/stack-tier-1.md` (narrative).
+- Cross-repo (yggdrasil workspace): `realms/realm-siliconsaga/docs/stack-tier-1.md` carries the narrative; the Forgejo day-2 plan and other realm-side design docs live under `realms/realm-siliconsaga/docs/plans/`. From inside the nordri checkout alone these paths won't resolve — clone via `ws clone` to see them.
