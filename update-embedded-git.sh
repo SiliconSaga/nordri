@@ -72,6 +72,14 @@ NIDAVELLIR_DIR="${NIDAVELLIR_DIR:-$(dirname "$SCRIPT_DIR")/nidavellir}"
 MIMIR_DIR="${MIMIR_DIR:-$(dirname "$SCRIPT_DIR")/mimir}"
 HEIMDALL_DIR="${HEIMDALL_DIR:-$(dirname "$SCRIPT_DIR")/heimdall}"
 
+# Vendored upstream mirrors (declared in the realm ecosystem.yaml with
+# tier: vendor). Unlike the working-tree repos above — which hydrate as a
+# fresh orphan commit of the local tree — vendor mirrors push their REAL
+# git history and tags, so in-cluster ArgoCD apps can pin exact upstream
+# tags (e.g. keycloak-operator pins targetRevision "26.6.3"). Space-
+# separated list of component dir names under the workspace components/.
+VENDOR_MIRRORS="${VENDOR_MIRRORS:-keycloak-k8s-resources}"
+
 # Resolve Gitea admin credentials.
 #
 # Password priority:  GITEA_PASS env  >  Secret  >  fail with helpful message
@@ -359,6 +367,23 @@ else
     echo "⚠️  Heimdall directory not found at: $HEIMDALL_DIR"
     echo "   Set HEIMDALL_DIR env var or clone heimdall as a sibling of this repo."
 fi
+
+# Vendor mirrors: push real history + tags from the local clone so
+# in-cluster apps can pin upstream tags. Heads and tags only — never
+# refs/pull/* or other namespaces an upstream mirror may carry.
+for VENDOR in $VENDOR_MIRRORS; do
+    VENDOR_DIR="$(dirname "$SCRIPT_DIR")/$VENDOR"
+    if [[ -d "$VENDOR_DIR/.git" ]]; then
+        echo "💧 Updating vendor mirror '$VENDOR' in Seed Gitea..."
+        ensure_gitea_repo "$VENDOR"
+        git -C "$VENDOR_DIR" push --force "$GITEA_GIT_BASE/$GITEA_USER/$VENDOR.git" 'refs/heads/*:refs/heads/*'
+        git -C "$VENDOR_DIR" push --force "$GITEA_GIT_BASE/$GITEA_USER/$VENDOR.git" 'refs/tags/*:refs/tags/*'
+        echo "✅ Vendor mirror '$VENDOR' updated."
+    else
+        echo "⚠️  Vendor mirror '$VENDOR' not cloned at: $VENDOR_DIR"
+        echo "   Run 'ws clone $VENDOR' if apps on this cluster pin it."
+    fi
+done
 
 echo "✅ Configuration Updated."
 echo "🔄 Triggering ArgoCD Sync (Root App)..."
