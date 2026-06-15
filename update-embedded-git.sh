@@ -368,16 +368,29 @@ else
     echo "   Set HEIMDALL_DIR env var or clone heimdall as a sibling of this repo."
 fi
 
-# Vendor mirrors: push real history + tags from the local clone so
-# in-cluster apps can pin upstream tags. Heads and tags only — never
-# refs/pull/* or other namespaces an upstream mirror may carry.
+# Vendor mirrors: push the local clone's heads + tags into the seed so
+# in-cluster apps can pin upstream tags. --prune drops seed refs that no
+# longer exist locally (e.g. a tag retracted upstream and picked up on a
+# re-sync), so the seed copy can't drift past the local clone over repeated
+# hydrations.
+#
+# Heads + tags globs only — deliberately NOT `git push --mirror`: from a
+# non-bare working clone, --mirror pushes the remote-tracking refs
+# (refs/remotes/<remote>/*) verbatim, littering the seed with refs/remotes/*
+# and the HEAD symref rather than clean heads. It would also carry any
+# refs/pull/* an upstream mirror has.
+#
+# Scope note: refs/heads/* from a normal `ws clone` is just the default
+# branch — enough to give the seed repo a HEAD. Non-default upstream
+# branches aren't mirrored, because vendor apps pin TAGS (fully mirrored
+# below), not dev branches. If an app ever needs to pin a branch, revisit.
 for VENDOR in $VENDOR_MIRRORS; do
     VENDOR_DIR="$(dirname "$SCRIPT_DIR")/$VENDOR"
     if [[ -d "$VENDOR_DIR/.git" ]]; then
         echo "💧 Updating vendor mirror '$VENDOR' in Seed Gitea..."
         ensure_gitea_repo "$VENDOR"
-        git -C "$VENDOR_DIR" push --force "$GITEA_GIT_BASE/$GITEA_USER/$VENDOR.git" 'refs/heads/*:refs/heads/*'
-        git -C "$VENDOR_DIR" push --force "$GITEA_GIT_BASE/$GITEA_USER/$VENDOR.git" 'refs/tags/*:refs/tags/*'
+        git -C "$VENDOR_DIR" push --force --prune "$GITEA_GIT_BASE/$GITEA_USER/$VENDOR.git" 'refs/heads/*:refs/heads/*'
+        git -C "$VENDOR_DIR" push --force --prune "$GITEA_GIT_BASE/$GITEA_USER/$VENDOR.git" 'refs/tags/*:refs/tags/*'
         echo "✅ Vendor mirror '$VENDOR' updated."
     else
         echo "⚠️  Vendor mirror '$VENDOR' not cloned at: $VENDOR_DIR"
