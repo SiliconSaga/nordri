@@ -368,34 +368,43 @@ else
     echo "   Set HEIMDALL_DIR env var or clone heimdall as a sibling of this repo."
 fi
 
-# Vendor mirrors: faithfully mirror the local clone into the seed so an
-# in-cluster app can pin ANY upstream ref — a tag (as keycloak-operator does)
-# OR a branch (a future vendor might). Push every upstream branch as a head
-# plus every tag, with --prune so refs deleted upstream don't linger in the
-# seed across re-hydrations.
+# Vendor mirrors: mirror the local clone into the seed so an in-cluster app
+# can pin ANY upstream ref — a tag (as keycloak-operator does) OR a branch (a
+# future vendor might). A normal `ws clone` keeps only the default branch as a
+# local head (refs/heads/*) and the rest under refs/remotes/<remote>/*, so we
+# push both: the heads glob carries the default branch reliably, and a loop
+# adds every non-default upstream branch from the remote-tracking namespace
+# (skipping the HEAD symref so we never push a bogus refs/heads/HEAD).
 #
-# A normal `ws clone` keeps non-default branches under refs/remotes/<remote>/*
-# (only the default branch gets a local refs/heads/* entry), so we push from
-# the remote-tracking namespace to capture them all. We drop that namespace's
-# HEAD symref first so the wildcard doesn't try to create a bogus
-# refs/heads/HEAD on the seed; deleting it is harmless to the working clone
-# (git recreates it on the next fetch/pull). This reads from the as-fetched
-# remote-tracking refs (no network at hydrate time) — refresh the mirror with
-# `ws pull <vendor>` to advance it.
+# Heads are pushed WITHOUT --prune on purpose: pruning the heads namespace
+# would try to delete the seed's default branch whenever a branch name isn't
+# in the source set, which Gitea rejects ("default branch cannot be deleted")
+# and fails the whole hydration. Tags DO get --prune — they're the drift-prone
+# refs (a retracted tag should disappear) and tag pruning can't hit that trap.
+# A branch deleted upstream lingers in the ephemeral seed until the next clean
+# bootstrap; nothing pins a deleted branch, so that's acceptable.
 #
-# Not `git push --mirror`: from a non-bare clone it would push the
-# remote-tracking refs verbatim (littering the seed with refs/remotes/*) and
-# carry any refs/pull/* an upstream mirror has.
+# Reads as-fetched remote-tracking refs (no network at hydrate time) — refresh
+# a mirror with `ws pull <vendor>`. Not `git push --mirror`: from a non-bare
+# clone it pushes refs/remotes/* verbatim (littering the seed) and carries any
+# refs/pull/* an upstream mirror has.
 for VENDOR in $VENDOR_MIRRORS; do
     VENDOR_DIR="$(dirname "$SCRIPT_DIR")/$VENDOR"
     if [[ -d "$VENDOR_DIR/.git" ]]; then
         echo "💧 Updating vendor mirror '$VENDOR' in Seed Gitea..."
         ensure_gitea_repo "$VENDOR"
         VENDOR_REMOTE="$(git -C "$VENDOR_DIR" remote | head -n1)"
-        git -C "$VENDOR_DIR" update-ref -d "refs/remotes/$VENDOR_REMOTE/HEAD" 2>/dev/null || true
-        git -C "$VENDOR_DIR" push --force --prune "$GITEA_GIT_BASE/$GITEA_USER/$VENDOR.git" \
-            "refs/remotes/$VENDOR_REMOTE/*:refs/heads/*" \
-            "refs/tags/*:refs/tags/*"
+        VENDOR_SEED="$GITEA_GIT_BASE/$GITEA_USER/$VENDOR.git"
+        # Default branch (reliably a local head) + every non-default upstream
+        # branch (remote-tracking, minus the HEAD symref), each mapped to a seed head.
+        VENDOR_REFSPECS=("+refs/heads/*:refs/heads/*")
+        while IFS= read -r _vref; do
+            _vbranch="${_vref#refs/remotes/$VENDOR_REMOTE/}"
+            [[ "$_vbranch" == "HEAD" ]] && continue
+            VENDOR_REFSPECS+=("+$_vref:refs/heads/$_vbranch")
+        done < <(git -C "$VENDOR_DIR" for-each-ref --format='%(refname)' "refs/remotes/$VENDOR_REMOTE")
+        git -C "$VENDOR_DIR" push --force "$VENDOR_SEED" "${VENDOR_REFSPECS[@]}"
+        git -C "$VENDOR_DIR" push --force --prune "$VENDOR_SEED" 'refs/tags/*:refs/tags/*'
         echo "✅ Vendor mirror '$VENDOR' updated."
     else
         echo "⚠️  Vendor mirror '$VENDOR' not cloned at: $VENDOR_DIR"
