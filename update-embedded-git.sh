@@ -368,29 +368,34 @@ else
     echo "   Set HEIMDALL_DIR env var or clone heimdall as a sibling of this repo."
 fi
 
-# Vendor mirrors: push the local clone's heads + tags into the seed so
-# in-cluster apps can pin upstream tags. --prune drops seed refs that no
-# longer exist locally (e.g. a tag retracted upstream and picked up on a
-# re-sync), so the seed copy can't drift past the local clone over repeated
-# hydrations.
+# Vendor mirrors: faithfully mirror the local clone into the seed so an
+# in-cluster app can pin ANY upstream ref — a tag (as keycloak-operator does)
+# OR a branch (a future vendor might). Push every upstream branch as a head
+# plus every tag, with --prune so refs deleted upstream don't linger in the
+# seed across re-hydrations.
 #
-# Heads + tags globs only — deliberately NOT `git push --mirror`: from a
-# non-bare working clone, --mirror pushes the remote-tracking refs
-# (refs/remotes/<remote>/*) verbatim, littering the seed with refs/remotes/*
-# and the HEAD symref rather than clean heads. It would also carry any
-# refs/pull/* an upstream mirror has.
+# A normal `ws clone` keeps non-default branches under refs/remotes/<remote>/*
+# (only the default branch gets a local refs/heads/* entry), so we push from
+# the remote-tracking namespace to capture them all. We drop that namespace's
+# HEAD symref first so the wildcard doesn't try to create a bogus
+# refs/heads/HEAD on the seed; deleting it is harmless to the working clone
+# (git recreates it on the next fetch/pull). This reads from the as-fetched
+# remote-tracking refs (no network at hydrate time) — refresh the mirror with
+# `ws pull <vendor>` to advance it.
 #
-# Scope note: refs/heads/* from a normal `ws clone` is just the default
-# branch — enough to give the seed repo a HEAD. Non-default upstream
-# branches aren't mirrored, because vendor apps pin TAGS (fully mirrored
-# below), not dev branches. If an app ever needs to pin a branch, revisit.
+# Not `git push --mirror`: from a non-bare clone it would push the
+# remote-tracking refs verbatim (littering the seed with refs/remotes/*) and
+# carry any refs/pull/* an upstream mirror has.
 for VENDOR in $VENDOR_MIRRORS; do
     VENDOR_DIR="$(dirname "$SCRIPT_DIR")/$VENDOR"
     if [[ -d "$VENDOR_DIR/.git" ]]; then
         echo "💧 Updating vendor mirror '$VENDOR' in Seed Gitea..."
         ensure_gitea_repo "$VENDOR"
-        git -C "$VENDOR_DIR" push --force --prune "$GITEA_GIT_BASE/$GITEA_USER/$VENDOR.git" 'refs/heads/*:refs/heads/*'
-        git -C "$VENDOR_DIR" push --force --prune "$GITEA_GIT_BASE/$GITEA_USER/$VENDOR.git" 'refs/tags/*:refs/tags/*'
+        VENDOR_REMOTE="$(git -C "$VENDOR_DIR" remote | head -n1)"
+        git -C "$VENDOR_DIR" update-ref -d "refs/remotes/$VENDOR_REMOTE/HEAD" 2>/dev/null || true
+        git -C "$VENDOR_DIR" push --force --prune "$GITEA_GIT_BASE/$GITEA_USER/$VENDOR.git" \
+            "refs/remotes/$VENDOR_REMOTE/*:refs/heads/*" \
+            "refs/tags/*:refs/tags/*"
         echo "✅ Vendor mirror '$VENDOR' updated."
     else
         echo "⚠️  Vendor mirror '$VENDOR' not cloned at: $VENDOR_DIR"
