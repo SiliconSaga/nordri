@@ -21,7 +21,8 @@ Crossplane Compositions in Pipeline mode have a small, stable set of integration
 
 | Goal | Pattern | Gotcha |
 |------|---------|--------|
-| Offline-validate a Composition | `crossplane render <xr>.yaml <composition>.yaml <functions>.yaml --extra-resources=<envconfig>.yaml --include-function-results --include-context` | No cluster needed — fastest feedback loop. Pair with `crossplane beta validate <xrd>.yaml -` for schema. |
+| Offline-validate a Composition | `crossplane render <xr>.yaml <composition>.yaml <functions>.yaml --extra-resources=<envconfig>.yaml --include-function-results --include-context` | No cluster needed — fastest feedback loop. Pair with `crossplane beta validate <xrd>.yaml -` for schema. Render takes an **XR**, not a claim. CLI install: realm `docs/dev-setup.md`. Commit the fixtures (XR + functions + envconfig) under `tests/render/` so the check is repeatable — nidavellir has the reference layout. |
+| Stable names from a Helm `Release` | `values.fullnameOverride: <name>` | The Release MR's name includes the XR's random claim suffix (`myapp-v4ktr-...`), and the chart's workload/Service names inherit it. Any stable consumer-facing reference — a Service URL another component hardcodes, runbook commands, kuttl asserts — needs `fullnameOverride` (or chart equivalent) to pin the rendered names. |
 | Read EnvironmentConfig in template | `{{- $env := index .context "apiextensions.crossplane.io/environment" -}}` then `$env.data.<key>` | `function-environment-configs` writes the merged map under exactly that context key. |
 | Readiness from live status | `Object.spec.readiness: { policy: DeriveFromCelQuery, celQuery: object.status.availableReplicas >= 1 }` | provider-kubernetes evaluates the CEL against the **observed** object — CEL root variable is `object` (the observed resource). Requires `kubernetes.crossplane.io/v1alpha2` (v1alpha1 doesn't support it). |
 | Single-replica RWO Deployment | `strategy: { type: Recreate }` | Default RollingUpdate deadlocks on Multi-Attach. See Heimdall's `kube-prometheus-stack` skill → "Single-Replica RWO Workloads" and Heimdall's `alertmanager-config` for the same pattern. |
@@ -118,6 +119,8 @@ kubectl get composition <name> -o yaml | yq '.metadata.managedFields[].manager'
 - **Applying `ProviderConfig` before the Provider is `Healthy`** → `no matches for kind`. `kubectl wait --for=condition=Healthy providers.pkg.crossplane.io --all --timeout=120s` first.
 - **Default operator security context clashes** (Rancher Desktop, strict PSA) — `runAsNonRoot` errors. Override in the Composition manifest (e.g. `initContainer.containerSecurityContext.runAsNonRoot: false`).
 - **XRD v1 deprecation warning** — cosmetic; migrate to v2 when ready, v1 still works.
+- **Letting the XR suffix leak into Helm-chart workload names.** A `Release` named `{{ XR name }}-myapp` produces pods/Services like `myapp-v4ktr-...` that change whenever the claim is recreated. If anything references those names statically (ESO store URLs, HTTPRoute backendRefs, kuttl asserts, docs), set `fullnameOverride` in the chart values. Caught live in nidavellir's OpenBao composition — heimdall's suffixed workloads are the counter-example where nothing external cares.
+- **Helm values written for an older chart's image shape.** Charts periodically split `image.repository` into `registry` + `repository` (vault/openbao 0.28.x did). Re-setting the old combined form renders `quay.io/quay.io/...`. Check `helm show values` for the deployed chart version before carrying values forward.
 
 ## Implementation Sketch
 
