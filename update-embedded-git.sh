@@ -390,10 +390,27 @@ fi
 # refs/pull/* an upstream mirror has.
 for VENDOR in $VENDOR_MIRRORS; do
     VENDOR_DIR="$(dirname "$SCRIPT_DIR")/$VENDOR"
-    if [[ -d "$VENDOR_DIR/.git" ]]; then
+    # Plumbing check, not `-d .git`: a worktree or submodule has `.git` as a
+    # FILE, which a directory test would wrongly reject as "not cloned".
+    if git -C "$VENDOR_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
         echo "💧 Updating vendor mirror '$VENDOR' in Seed Gitea..."
         ensure_gitea_repo "$VENDOR"
-        VENDOR_REMOTE="$(git -C "$VENDOR_DIR" remote | head -n1)"
+        # Resolve the source remote robustly. `ws clone` names the remote after
+        # the org (not "origin"), so prefer the checked-out branch's tracking
+        # remote; fall back to the sole remote; warn-and-skip rather than guess
+        # if neither is determinable (picking head -n1 of several could push
+        # from the wrong refs/remotes/* namespace and clobber seed refs).
+        VENDOR_BRANCH="$(git -C "$VENDOR_DIR" symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
+        VENDOR_REMOTE=""
+        [[ -n "$VENDOR_BRANCH" ]] && VENDOR_REMOTE="$(git -C "$VENDOR_DIR" config "branch.$VENDOR_BRANCH.remote" 2>/dev/null || true)"
+        if [[ -z "$VENDOR_REMOTE" ]]; then
+            _vr_count="$(git -C "$VENDOR_DIR" remote | grep -c .)"
+            if [[ "$_vr_count" != "1" ]]; then
+                echo "⚠️  Vendor mirror '$VENDOR' has $_vr_count remotes and no tracked upstream — skipping (set a single remote or a tracking branch)." >&2
+                continue
+            fi
+            VENDOR_REMOTE="$(git -C "$VENDOR_DIR" remote)"
+        fi
         VENDOR_SEED="$GITEA_GIT_BASE/$GITEA_USER/$VENDOR.git"
         # Default branch (reliably a local head) + every non-default upstream
         # branch (remote-tracking, minus the HEAD symref), each mapped to a seed head.
