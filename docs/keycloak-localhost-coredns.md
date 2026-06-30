@@ -18,7 +18,7 @@ k3s ships CoreDNS with two import directives in its Corefile: `import /etc/cored
 
 Our `keycloak.override` key contains:
 
-```
+```text
 rewrite stop {
   name exact keycloak.localhost traefik.kube-system.svc.cluster.local
   answer auto
