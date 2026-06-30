@@ -157,6 +157,7 @@ Nordri exposes substrate patterns that downstream components (Heimdall, Mimir,
     *   **Multi-node homelab / production**: Longhorn (or another distributed storage like Rook-Ceph) is essential since `local-path` doesn't survive node loss. This is a future migration target.
     *   **GKE**: Uses its own CSI driver (Persistent Disk). Longhorn is not needed.
 
+*   **In-cluster `keycloak.localhost`**: On homelab a CoreDNS rewrite lets *pods* resolve `keycloak.localhost` to Traefik, so server-side OIDC flows (e.g. OpenBao's token exchange) can reach Keycloak at its homelab issuer. See **[Resolving keycloak.localhost inside the cluster](docs/keycloak-localhost-coredns.md)**.
 *   **Argonception**: Most YAML files in `apps/` are `kind: Application`. They tell Argo to sync *another* Helm chart (e.g., the official Traefik chart).
 *   **Namespaces**: Any "loose" manifest (like `ClusterIssuer`) applied by the App-of-Apps will default to the `argo` namespace unless explicitly namespaced in the file.
 *   **Values**: Environment-specific values (e.g., LoadBalancer vs NodePort) are injected via the `envs/` directory, which the App-of-Apps or individual Applications reference.

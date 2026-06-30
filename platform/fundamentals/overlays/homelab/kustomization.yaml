@@ -17,7 +17,10 @@ resources:
 
   # Homelab Specific Manifests
   - ../../manifests/cluster-identity-homelab.yaml
-  
+  # CoreDNS rewrite so the in-cluster OpenBao pod can resolve keycloak.localhost
+  # for the server-side OIDC token exchange (homelab-only; GKE uses real DNS).
+  - ../../manifests/coredns-custom-homelab.yaml
+
   # Exclusions
   # We do NOT include cert-manager.yaml here.
 
