@@ -78,7 +78,7 @@ HEIMDALL_DIR="${HEIMDALL_DIR:-$(dirname "$SCRIPT_DIR")/heimdall}"
 # git history and tags, so in-cluster ArgoCD apps can pin exact upstream
 # tags (e.g. keycloak-operator pins targetRevision "26.6.3"). Space-
 # separated list of component dir names under the workspace components/.
-VENDOR_MIRRORS="${VENDOR_MIRRORS:-keycloak-k8s-resources}"
+VENDOR_MIRRORS="${VENDOR_MIRRORS:-keycloak-k8s-resources kubicvalheim}"
 
 # Resolve Gitea admin credentials.
 #
@@ -293,6 +293,26 @@ if [[ -d "$NIDAVELLIR_DIR" ]]; then
     TEMP_DIRS+=("$NIDAVELLIR_HYDRATE")
     cp -r "$NIDAVELLIR_DIR/." "$NIDAVELLIR_HYDRATE/"
     rm -rf "$NIDAVELLIR_HYDRATE/.git"
+
+    # Per-target patching of the hydrated nidavellir tree (mirrors the nordri
+    # app-of-apps overlay sed above). Two cluster-specific rewrites:
+    #   1. Point the vegvisir app at the env overlay so the LetsEncrypt issuers +
+    #      the *.cmdbee.org wildcard cert only land on GKE; homelab keeps the
+    #      self-signed Gateway cert so its websecure listener programs.
+    #   2. Stamp a per-machine tailscale operator hostname so multiple homelab
+    #      clusters never collide on a single tailnet device name. Each Mac runs
+    #      exactly one cluster, so the host machine name is a stable unique id.
+    NID_MACHINE="$(scutil --get LocalHostName 2>/dev/null || hostname -s 2>/dev/null || hostname)"
+    NID_MACHINE="$(printf '%s' "$NID_MACHINE" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9-' '-' | sed 's/^-*//;s/-*$//')"
+    [[ -z "$NID_MACHINE" ]] && NID_MACHINE="local"
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        sed -i '' "s|path: vegvisir/manifests/overlays/homelab|path: vegvisir/manifests/overlays/$TARGET|g" "$NIDAVELLIR_HYDRATE/apps/vegvisir-app.yaml"
+        sed -i '' "s|tailscale-operator-MACHINE|tailscale-operator-$NID_MACHINE|g" "$NIDAVELLIR_HYDRATE/apps/tailscale-operator-app.yaml"
+    else
+        sed -i "s|path: vegvisir/manifests/overlays/homelab|path: vegvisir/manifests/overlays/$TARGET|g" "$NIDAVELLIR_HYDRATE/apps/vegvisir-app.yaml"
+        sed -i "s|tailscale-operator-MACHINE|tailscale-operator-$NID_MACHINE|g" "$NIDAVELLIR_HYDRATE/apps/tailscale-operator-app.yaml"
+    fi
+    echo "   Patched nidavellir for target '$TARGET' (tailscale hostname: tailscale-operator-$NID_MACHINE)."
 
     cd "$NIDAVELLIR_HYDRATE"
     git init
