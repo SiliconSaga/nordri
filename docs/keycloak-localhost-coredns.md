@@ -39,7 +39,7 @@ This rewrite is wrong on GKE, where `keycloak.cmdbee.org` has real public DNS an
 
 The manifest is part of the homelab fundamentals overlay, which the platform app-of-apps points ArgoCD at (path patched to `overlays/homelab` by `bootstrap.sh`). So a fresh homelab bootstrap recreates the `coredns-custom` ConfigMap automatically; there is nothing manual to remember on rebuild.
 
-A GitOps change to this ConfigMap applies **automatically** — CoreDNS's `reload` plugin (enabled in the Corefile) plus kubelet's ConfigMap→volume sync pick up drop-in changes within ~1–2 min, no restart needed (verified 2026-06-30: a second rewrite rule added via `kubectl apply` resolved from a pod without any restart). To *expedite* a change during hands-on work you can force it:
+A GitOps **change** to an existing `coredns-custom` drop-in applies automatically — CoreDNS's `reload` plugin (enabled in the Corefile) plus kubelet's ConfigMap→volume sync pick it up within ~1–2 min, no restart (verified 2026-06-30: a second rewrite rule added to the live CM via `kubectl apply` resolved from a pod without any restart). Two boundary cases still want a nudge: the **first-ever creation** of the ConfigMap on an already-running CoreDNS may need one restart to force the initial re-hash of the newly-populated drop-in, and a from-scratch bootstrap simply loads it at CoreDNS startup (nothing to do). Force any of these immediately with:
 
 ```bash
 kubectl -n kube-system rollout restart deploy/coredns
