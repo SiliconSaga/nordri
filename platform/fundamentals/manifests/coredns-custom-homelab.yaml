@@ -1,0 +1,64 @@
+# CoreDNS custom drop-in (HOMELAB ONLY) — make keycloak.localhost resolvable
+# from *inside* the cluster.
+#
+# ── Why this exists ────────────────────────────────────────────────────────
+# Keycloak runs in Hostname-v2 *dynamic* mode (keycloak/keycloak.yaml:
+# hostname.strict=false), so the OIDC issuer it advertises follows the request
+# host: `http://keycloak.localhost` on homelab, `https://keycloak.cmdbee.org`
+# on GKE. Browsers resolve `*.localhost` to 127.0.0.1 for free (RFC 6761), so
+# the browser leg of any OIDC login works without help.
+#
+# The problem is the SERVER leg. OpenBao's OIDC auth method (consumed by
+# leidangr's `scripts/dev-secrets` → `bao login -method=oidc`) derives ALL
+# endpoints from a single discovery document and validates the `iss` claim
+# strictly — it has no "discover here, redirect the browser there" split. So
+# every actor must agree on one issuer: `http://keycloak.localhost/realms/...`.
+# But the OpenBao *pod* does the authorization-code → token exchange
+# server-to-server, and cluster DNS has no record for `keycloak.localhost`
+# (it is a browser/RFC-6761 convention, not a real zone). Without this file the
+# token exchange fails with a DNS error and `bao login -method=oidc` never
+# completes. See docs/keycloak-localhost-coredns.md for the full write-up.
+#
+# ── What this does ─────────────────────────────────────────────────────────
+# k3s ships CoreDNS with `import /etc/coredns/custom/*.override` INSIDE the
+# `.:53 { … }` server block (and `*.server` at top level). The coredns
+# Deployment mounts the optional `coredns-custom` ConfigMap at that path, so a
+# key ending in `.override` is injected as directives within the server block —
+# no edit to the k3s-managed `coredns` ConfigMap (which k3s would revert).
+#
+# The rule rewrites the exact name `keycloak.localhost` to the in-cluster
+# Traefik Service, which already routes that Host to Keycloak via the
+# `keycloak-localhost` HTTPRoute. `answer auto` rewrites the response's owner
+# name back to `keycloak.localhost` so the caller's resolver (Go, in the
+# OpenBao pod) accepts the A record instead of discarding it as a name
+# mismatch. `exact` keeps the blast radius to this one name — no other
+# `*.localhost` is touched.
+#
+# ── Scope ──────────────────────────────────────────────────────────────────
+# Homelab only. This manifest is referenced solely from
+# overlays/homelab/kustomization.yaml. GKE uses real public DNS + TLS for
+# `keycloak.cmdbee.org`, so the rewrite would be wrong there.
+#
+# ── Verify ─────────────────────────────────────────────────────────────────
+#   kubectl -n openbao exec openbao-0 -- \
+#     nslookup keycloak.localhost
+#   # → resolves to the Traefik ClusterIP
+# CoreDNS picks up ConfigMap changes via its `reload` plugin, but imported
+# drop-ins are not always re-hashed; force it on first apply with:
+#   kubectl -n kube-system rollout restart deploy/coredns
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: coredns-custom
+  namespace: kube-system
+  annotations:
+    # Wave 4: before cluster-identity (wave 5) and everything that follows, so
+    # in-cluster name resolution is in place early. It is just a ConfigMap, but
+    # ordering it ahead of consumers keeps first-sync logs clean.
+    argocd.argoproj.io/sync-wave: "4"
+data:
+  keycloak.override: |
+    rewrite stop {
+      name exact keycloak.localhost traefik.kube-system.svc.cluster.local
+      answer auto
+    }
