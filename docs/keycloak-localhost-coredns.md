@@ -16,6 +16,8 @@ But the OpenBao **pod** performs the authorization-code → token exchange serve
 
 k3s ships CoreDNS with two import directives in its Corefile: `import /etc/coredns/custom/*.override` **inside** the `.:53 { … }` server block, and `import /etc/coredns/custom/*.server` at the top level. The CoreDNS Deployment mounts an **optional** ConfigMap named `coredns-custom` (in `kube-system`) at `/etc/coredns/custom`. Any data key ending in `.override` is injected as directives *within* the server block — so we never edit the k3s-managed `coredns` ConfigMap, which k3s would revert on restart.
 
+> **Distro portability:** the `coredns-custom` drop-in is a **k3s** convenience — it works on any k3s (Rancher Desktop, k3d, or a manual k3s under Orbstack, etc.). Non-k3s distros (Docker Desktop's built-in Kubernetes, kind) don't ship the `import` line or the optional CM, so they'd need a different CoreDNS patch. GKE needs none of this — it uses real public DNS.
+
 Our `keycloak.override` key contains:
 
 ```text
@@ -37,13 +39,13 @@ This rewrite is wrong on GKE, where `keycloak.cmdbee.org` has real public DNS an
 
 The manifest is part of the homelab fundamentals overlay, which the platform app-of-apps points ArgoCD at (path patched to `overlays/homelab` by `bootstrap.sh`). So a fresh homelab bootstrap recreates the `coredns-custom` ConfigMap automatically; there is nothing manual to remember on rebuild.
 
-CoreDNS does not always re-hash imported drop-ins on its own when the ConfigMap changes, so after a *change* to this file force a reload:
+A GitOps change to this ConfigMap applies **automatically** — CoreDNS's `reload` plugin (enabled in the Corefile) plus kubelet's ConfigMap→volume sync pick up drop-in changes within ~1–2 min, no restart needed (verified 2026-06-30: a second rewrite rule added via `kubectl apply` resolved from a pod without any restart). To *expedite* a change during hands-on work you can force it:
 
 ```bash
 kubectl -n kube-system rollout restart deploy/coredns
 ```
 
-(First-time creation on a running cluster also wants the restart; a from-scratch bootstrap starts CoreDNS after the ConfigMap exists, so it picks it up on boot.)
+Codifying an explicit expedite for the GitOps path (an ArgoCD PostSync hook or Stakater Reloader) is tracked in nordri#20.
 
 ## Verify
 
