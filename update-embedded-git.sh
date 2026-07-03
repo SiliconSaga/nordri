@@ -299,20 +299,38 @@ if [[ -d "$NIDAVELLIR_DIR" ]]; then
     #   1. Point the vegvisir app at the env overlay so the LetsEncrypt issuers +
     #      the *.cmdbee.org wildcard cert only land on GKE; homelab keeps the
     #      self-signed Gateway cert so its websecure listener programs.
-    #   2. Stamp a per-machine tailscale operator hostname so multiple homelab
-    #      clusters never collide on a single tailnet device name. Each Mac runs
-    #      exactly one cluster, so the host machine name is a stable unique id.
-    NID_MACHINE="$(scutil --get LocalHostName 2>/dev/null || hostname -s 2>/dev/null || hostname)"
-    NID_MACHINE="$(printf '%s' "$NID_MACHINE" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9-' '-' | sed 's/^-*//;s/-*$//')"
-    [[ -z "$NID_MACHINE" ]] && NID_MACHINE="local"
-    if [[ "$OSTYPE" == "darwin"* ]]; then
-        sed -i '' "s|path: vegvisir/manifests/overlays/homelab|path: vegvisir/manifests/overlays/$TARGET|g" "$NIDAVELLIR_HYDRATE/apps/vegvisir-app.yaml"
-        sed -i '' "s|tailscale-operator-MACHINE|tailscale-operator-$NID_MACHINE|g" "$NIDAVELLIR_HYDRATE/apps/tailscale-operator-app.yaml"
+    #   2. Stamp the tailscale operator hostname. GKE is a single shared cluster,
+    #      so it gets a stable `tailscale-operator-gke`; each homelab cluster is
+    #      per-machine (one cluster per Mac) so it gets `tailscale-operator-<machine>`
+    #      to avoid tailnet device-name collisions. The workstation name is a valid
+    #      identity only for homelab — deriving it on GKE would churn the device
+    #      name between hydrations run from different machines.
+    # Guard: these apps must exist in the hydrated tree; a missing path (e.g. a
+    # nidavellir apps/ rename) would otherwise abort with a bare `sed` error.
+    _nid_vegvisir_app="$NIDAVELLIR_HYDRATE/apps/vegvisir-app.yaml"
+    _nid_tailscale_app="$NIDAVELLIR_HYDRATE/apps/tailscale-operator-app.yaml"
+    for _nid_f in "$_nid_vegvisir_app" "$_nid_tailscale_app"; do
+        if [[ ! -f "$_nid_f" ]]; then
+            echo "❌ Expected nidavellir manifest missing: ${_nid_f#"$NIDAVELLIR_HYDRATE"/} — has apps/ been renamed? Cannot apply the per-target patch." >&2
+            exit 1
+        fi
+    done
+    if [[ "$TARGET" == "gke" ]]; then
+        TS_HOSTNAME="tailscale-operator-gke"
     else
-        sed -i "s|path: vegvisir/manifests/overlays/homelab|path: vegvisir/manifests/overlays/$TARGET|g" "$NIDAVELLIR_HYDRATE/apps/vegvisir-app.yaml"
-        sed -i "s|tailscale-operator-MACHINE|tailscale-operator-$NID_MACHINE|g" "$NIDAVELLIR_HYDRATE/apps/tailscale-operator-app.yaml"
+        NID_MACHINE="$(scutil --get LocalHostName 2>/dev/null || hostname -s 2>/dev/null || hostname)"
+        NID_MACHINE="$(printf '%s' "$NID_MACHINE" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9-' '-' | sed 's/^-*//;s/-*$//')"
+        [[ -z "$NID_MACHINE" ]] && NID_MACHINE="local"
+        TS_HOSTNAME="tailscale-operator-$NID_MACHINE"
     fi
-    echo "   Patched nidavellir for target '$TARGET' (tailscale hostname: tailscale-operator-$NID_MACHINE)."
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        sed -i '' "s|path: vegvisir/manifests/overlays/homelab|path: vegvisir/manifests/overlays/$TARGET|g" "$_nid_vegvisir_app"
+        sed -i '' "s|tailscale-operator-MACHINE|$TS_HOSTNAME|g" "$_nid_tailscale_app"
+    else
+        sed -i "s|path: vegvisir/manifests/overlays/homelab|path: vegvisir/manifests/overlays/$TARGET|g" "$_nid_vegvisir_app"
+        sed -i "s|tailscale-operator-MACHINE|$TS_HOSTNAME|g" "$_nid_tailscale_app"
+    fi
+    echo "   Patched nidavellir for target '$TARGET' (tailscale hostname: $TS_HOSTNAME)."
 
     cd "$NIDAVELLIR_HYDRATE"
     git init
