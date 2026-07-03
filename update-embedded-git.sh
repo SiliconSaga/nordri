@@ -78,7 +78,7 @@ HEIMDALL_DIR="${HEIMDALL_DIR:-$(dirname "$SCRIPT_DIR")/heimdall}"
 # git history and tags, so in-cluster ArgoCD apps can pin exact upstream
 # tags (e.g. keycloak-operator pins targetRevision "26.6.3"). Space-
 # separated list of component dir names under the workspace components/.
-VENDOR_MIRRORS="${VENDOR_MIRRORS:-keycloak-k8s-resources kubicvalheim}"
+VENDOR_MIRRORS="${VENDOR_MIRRORS:-keycloak-k8s-resources}"
 
 # Resolve Gitea admin credentials.
 #
