@@ -43,6 +43,7 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # Shared hydration libraries (extracted from the duplicated inline blocks).
 . "$SCRIPT_DIR/lib/gitea.sh"
+. "$SCRIPT_DIR/lib/hydrate.sh"
 . "$SCRIPT_DIR/lib/patch-nidavellir.sh"
 TARGET=$1
 
@@ -82,6 +83,8 @@ HEIMDALL_DIR="${HEIMDALL_DIR:-$(dirname "$SCRIPT_DIR")/heimdall}"
 # tags (e.g. keycloak-operator pins targetRevision "26.6.3"). Space-
 # separated list of component dir names under the workspace components/.
 VENDOR_MIRRORS="${VENDOR_MIRRORS:-keycloak-k8s-resources}"
+# Day-2 hydration commits are authored as "Nordri Update" (bootstrap uses the default).
+HYDRATE_COMMITTER="Nordri Update"
 
 # Resolve Gitea admin credentials.
 #
@@ -238,155 +241,15 @@ rm -rf $HYDRATE_DIR
 echo "✅ Nordri configuration updated."
 
 # Also push Nidavellir so ArgoCD picks up any changes there too.
-if [[ -d "$NIDAVELLIR_DIR" ]]; then
-    echo "💧 Updating Nidavellir in Seed Gitea..."
+hydrate_working_tree_repo "$NIDAVELLIR_DIR" "$NIDAVELLIR_GITEA_REPO" "Update for $TARGET" patch_nidavellir_tree
 
-    gitea_ensure_repo "$NIDAVELLIR_GITEA_REPO"
+hydrate_working_tree_repo "$MIMIR_DIR" "$MIMIR_GITEA_REPO" "Update for $TARGET"
 
-    NIDAVELLIR_HYDRATE=$(mktemp -d)
-    TEMP_DIRS+=("$NIDAVELLIR_HYDRATE")
-    cp -r "$NIDAVELLIR_DIR/." "$NIDAVELLIR_HYDRATE/"
-    rm -rf "$NIDAVELLIR_HYDRATE/.git"
+hydrate_working_tree_repo "$HEIMDALL_DIR" "$HEIMDALL_GITEA_REPO" "Update for $TARGET"
 
-    if ! TS_HOSTNAME="$(patch_nidavellir_tree "$NIDAVELLIR_HYDRATE" "$TARGET")"; then
-        exit 1
-    fi
-    echo "   Patched nidavellir for target '$TARGET' (tailscale hostname: $TS_HOSTNAME)."
-
-    cd "$NIDAVELLIR_HYDRATE"
-    git init
-    git config user.email "bootstrap@nordri.local"
-    git config user.name "Nordri Update"
-    git checkout -b main
-    git add .
-    git commit -m "Update for $TARGET"
-    git remote add origin "$GITEA_GIT_BASE/$GITEA_USER/$NIDAVELLIR_GITEA_REPO.git"
-    git push -u origin main --force
-    cd -
-    rm -rf "$NIDAVELLIR_HYDRATE"
-
-    echo "✅ Nidavellir updated."
-else
-    echo "⚠️  Nidavellir directory not found at: $NIDAVELLIR_DIR"
-    echo "   Set NIDAVELLIR_DIR env var or clone nidavellir as a sibling of this repo."
-fi
-
-if [[ -d "$MIMIR_DIR" ]]; then
-    echo "💧 Updating Mimir in Seed Gitea..."
-
-    gitea_ensure_repo "$MIMIR_GITEA_REPO"
-
-    MIMIR_HYDRATE=$(mktemp -d)
-    TEMP_DIRS+=("$MIMIR_HYDRATE")
-    cp -r "$MIMIR_DIR/." "$MIMIR_HYDRATE/"
-    rm -rf "$MIMIR_HYDRATE/.git"
-
-    cd "$MIMIR_HYDRATE"
-    git init
-    git config user.email "bootstrap@nordri.local"
-    git config user.name "Nordri Update"
-    git checkout -b main
-    git add .
-    git commit -m "Update for $TARGET"
-    git remote add origin "$GITEA_GIT_BASE/$GITEA_USER/$MIMIR_GITEA_REPO.git"
-    git push -u origin main --force
-    cd -
-    rm -rf "$MIMIR_HYDRATE"
-
-    echo "✅ Mimir updated."
-else
-    echo "⚠️  Mimir directory not found at: $MIMIR_DIR"
-    echo "   Set MIMIR_DIR env var or clone mimir as a sibling of this repo."
-fi
-
-if [[ -d "$HEIMDALL_DIR" ]]; then
-    echo "💧 Updating Heimdall in Seed Gitea..."
-
-    gitea_ensure_repo "$HEIMDALL_GITEA_REPO"
-
-    HEIMDALL_HYDRATE=$(mktemp -d)
-    TEMP_DIRS+=("$HEIMDALL_HYDRATE")
-    cp -r "$HEIMDALL_DIR/." "$HEIMDALL_HYDRATE/"
-    rm -rf "$HEIMDALL_HYDRATE/.git"
-
-    cd "$HEIMDALL_HYDRATE"
-    git init
-    git config user.email "bootstrap@nordri.local"
-    git config user.name "Nordri Update"
-    git checkout -b main
-    git add .
-    git commit -m "Update for $TARGET"
-    git remote add origin "$GITEA_GIT_BASE/$GITEA_USER/$HEIMDALL_GITEA_REPO.git"
-    git push -u origin main --force
-    cd -
-    rm -rf "$HEIMDALL_HYDRATE"
-
-    echo "✅ Heimdall updated."
-else
-    echo "⚠️  Heimdall directory not found at: $HEIMDALL_DIR"
-    echo "   Set HEIMDALL_DIR env var or clone heimdall as a sibling of this repo."
-fi
-
-# Vendor mirrors: mirror the local clone into the seed so an in-cluster app
-# can pin ANY upstream ref — a tag (as keycloak-operator does) OR a branch (a
-# future vendor might). A normal `ws clone` keeps only the default branch as a
-# local head (refs/heads/*) and the rest under refs/remotes/<remote>/*, so we
-# push both: the heads glob carries the default branch reliably, and a loop
-# adds every non-default upstream branch from the remote-tracking namespace
-# (skipping the HEAD symref so we never push a bogus refs/heads/HEAD).
-#
-# Heads are pushed WITHOUT --prune on purpose: pruning the heads namespace
-# would try to delete the seed's default branch whenever a branch name isn't
-# in the source set, which Gitea rejects ("default branch cannot be deleted")
-# and fails the whole hydration. Tags DO get --prune — they're the drift-prone
-# refs (a retracted tag should disappear) and tag pruning can't hit that trap.
-# A branch deleted upstream lingers in the ephemeral seed until the next clean
-# bootstrap; nothing pins a deleted branch, so that's acceptable.
-#
-# Reads as-fetched remote-tracking refs (no network at hydrate time) — refresh
-# a mirror with `ws pull <vendor>`. Not `git push --mirror`: from a non-bare
-# clone it pushes refs/remotes/* verbatim (littering the seed) and carries any
-# refs/pull/* an upstream mirror has.
-for VENDOR in $VENDOR_MIRRORS; do
-    VENDOR_DIR="$(dirname "$SCRIPT_DIR")/$VENDOR"
-    # Plumbing check, not `-d .git`: a worktree or submodule has `.git` as a
-    # FILE, which a directory test would wrongly reject as "not cloned".
-    if git -C "$VENDOR_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-        echo "💧 Updating vendor mirror '$VENDOR' in Seed Gitea..."
-        gitea_ensure_repo "$VENDOR"
-        # Resolve the source remote robustly. `ws clone` names the remote after
-        # the org (not "origin"), so prefer the checked-out branch's tracking
-        # remote; fall back to the sole remote; warn-and-skip rather than guess
-        # if neither is determinable (picking head -n1 of several could push
-        # from the wrong refs/remotes/* namespace and clobber seed refs).
-        VENDOR_BRANCH="$(git -C "$VENDOR_DIR" symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
-        VENDOR_REMOTE=""
-        [[ -n "$VENDOR_BRANCH" ]] && VENDOR_REMOTE="$(git -C "$VENDOR_DIR" config "branch.$VENDOR_BRANCH.remote" 2>/dev/null || true)"
-        if [[ -z "$VENDOR_REMOTE" ]]; then
-            _vr_count="$(git -C "$VENDOR_DIR" remote | grep -c .)"
-            if [[ "$_vr_count" != "1" ]]; then
-                echo "⚠️  Vendor mirror '$VENDOR' has $_vr_count remotes and no tracked upstream — skipping (set a single remote or a tracking branch)." >&2
-                continue
-            fi
-            VENDOR_REMOTE="$(git -C "$VENDOR_DIR" remote)"
-        fi
-        VENDOR_SEED="$GITEA_GIT_BASE/$GITEA_USER/$VENDOR.git"
-        # Default branch (reliably a local head) + every non-default upstream
-        # branch (remote-tracking, minus the HEAD symref), each mapped to a seed head.
-        VENDOR_REFSPECS=("+refs/heads/*:refs/heads/*")
-        while IFS= read -r _vref; do
-            _vbranch="${_vref#refs/remotes/$VENDOR_REMOTE/}"
-            [[ "$_vbranch" == "HEAD" ]] && continue
-            VENDOR_REFSPECS+=("+$_vref:refs/heads/$_vbranch")
-        done < <(git -C "$VENDOR_DIR" for-each-ref --format='%(refname)' "refs/remotes/$VENDOR_REMOTE")
-        git -C "$VENDOR_DIR" push --force "$VENDOR_SEED" "${VENDOR_REFSPECS[@]}"
-        git -C "$VENDOR_DIR" push --force --prune "$VENDOR_SEED" 'refs/tags/*:refs/tags/*'
-        echo "✅ Vendor mirror '$VENDOR' updated."
-    else
-        echo "⚠️  Vendor mirror '$VENDOR' not cloned at: $VENDOR_DIR"
-        echo "   Run 'ws clone $VENDOR' if apps on this cluster pin it."
-    fi
-done
+# Vendor mirrors: push real history + tags so in-cluster apps can pin exact
+# upstream refs. See lib/hydrate.sh for the heads-vs-tags prune rationale.
+hydrate_vendor_mirrors "$VENDOR_MIRRORS"
 
 echo "✅ Configuration Updated."
 echo "🔄 Triggering ArgoCD Sync (Root App)..."

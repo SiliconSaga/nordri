@@ -54,6 +54,7 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # Shared hydration libraries (extracted from the duplicated inline blocks).
 . "$SCRIPT_DIR/lib/gitea.sh"
+. "$SCRIPT_DIR/lib/hydrate.sh"
 . "$SCRIPT_DIR/lib/patch-nidavellir.sh"
 TARGET=$1
 # Capture explicit GITEA_PASS env input here without applying a default —
@@ -83,6 +84,13 @@ NIDAVELLIR_DIR="${NIDAVELLIR_DIR:-$(dirname "$SCRIPT_DIR")/nidavellir}"
 MIMIR_DIR="${MIMIR_DIR:-$(dirname "$SCRIPT_DIR")/mimir}"
 HEIMDALL_DIR="${HEIMDALL_DIR:-$(dirname "$SCRIPT_DIR")/heimdall}"
 INTERNAL_GITEA_URL="http://gitea-http.gitea.svc.cluster.local:3000"
+# Fresh-cluster bootstrap: repos are created with auto_init so ArgoCD can
+# resolve HEAD. The working-tree hydration helper reads this.
+HYDRATE_AUTO_INIT=true
+# Vendored upstream mirrors to push (real history + tags) so in-cluster apps can
+# pin exact upstream refs. Space-separated component dir names; same default as
+# update-embedded-git.sh.
+VENDOR_MIRRORS="${VENDOR_MIRRORS:-keycloak-k8s-resources}"
 
 if [[ -z "$TARGET" ]]; then
     echo "Usage: ./bootstrap.sh [gke|homelab]"
@@ -351,101 +359,20 @@ echo "✅ Nordri configuration hydrated to Seed Gitea."
 # Also push Nidavellir to Gitea so ArgoCD can manage Vegvísir (Gateway + TLS).
 # ArgoCD pulls from internal Gitea during bootstrap; can be swapped to GitHub later.
 # See nidavellir/vegvisir/README.md for the transition procedure.
-if [[ -d "$NIDAVELLIR_DIR" ]]; then
-    echo "💧 [Layer 2] Hydrating Nidavellir to Seed Gitea..."
-
-    gitea_ensure_repo "$NIDAVELLIR_GITEA_REPO" true
-
-    NIDAVELLIR_HYDRATE=$(mktemp -d)
-    TEMP_DIRS+=("$NIDAVELLIR_HYDRATE")
-    cp -r "$NIDAVELLIR_DIR/." "$NIDAVELLIR_HYDRATE/"
-    rm -rf "$NIDAVELLIR_HYDRATE/.git"  # Don't push source .git dir
-
-    if ! TS_HOSTNAME="$(patch_nidavellir_tree "$NIDAVELLIR_HYDRATE" "$TARGET")"; then
-        exit 1
-    fi
-    echo "   Patched nidavellir for target '$TARGET' (tailscale hostname: $TS_HOSTNAME)."
-
-    cd "$NIDAVELLIR_HYDRATE"
-    git init
-    git config user.email "bootstrap@nordri.local"
-    git config user.name "Nordri Bootstrap"
-    git checkout -b main
-    git add .
-    git commit -m "Hydration for $TARGET"
-    git remote add origin "$GITEA_GIT_BASE/$GITEA_USER/$NIDAVELLIR_GITEA_REPO.git"
-    git push -u origin main --force
-    cd -
-    rm -rf "$NIDAVELLIR_HYDRATE"
-
-    echo "✅ Nidavellir hydrated to Seed Gitea."
-else
-    echo "⚠️  Nidavellir directory not found at: $NIDAVELLIR_DIR"
-    echo "   Set NIDAVELLIR_DIR env var or clone nidavellir as a sibling of this repo."
-    echo "   Vegvísir (Gateway + TLS) will not be deployed until Nidavellir is available."
-fi
+hydrate_working_tree_repo "$NIDAVELLIR_DIR" "$NIDAVELLIR_GITEA_REPO" "Hydration for $TARGET" patch_nidavellir_tree
 
 # Also push Mimir to Gitea so ArgoCD can deploy data service operators + XRDs.
 # Mimir is referenced by nidavellir/apps/mimir-app.yaml (sync-wave 6).
-if [[ -d "$MIMIR_DIR" ]]; then
-    echo "💧 [Layer 2] Hydrating Mimir to Seed Gitea..."
-
-    gitea_ensure_repo "$MIMIR_GITEA_REPO" true
-
-    MIMIR_HYDRATE=$(mktemp -d)
-    TEMP_DIRS+=("$MIMIR_HYDRATE")
-    cp -r "$MIMIR_DIR/." "$MIMIR_HYDRATE/"
-    rm -rf "$MIMIR_HYDRATE/.git"  # Don't push source .git dir
-
-    cd "$MIMIR_HYDRATE"
-    git init
-    git config user.email "bootstrap@nordri.local"
-    git config user.name "Nordri Bootstrap"
-    git checkout -b main
-    git add .
-    git commit -m "Hydration for $TARGET"
-    git remote add origin "$GITEA_GIT_BASE/$GITEA_USER/$MIMIR_GITEA_REPO.git"
-    git push -u origin main --force
-    cd -
-    rm -rf "$MIMIR_HYDRATE"
-
-    echo "✅ Mimir hydrated to Seed Gitea."
-else
-    echo "⚠️  Mimir directory not found at: $MIMIR_DIR"
-    echo "   Set MIMIR_DIR env var or clone mimir as a sibling of this repo."
-    echo "   Data services will not be deployed until Mimir is available."
-fi
+hydrate_working_tree_repo "$MIMIR_DIR" "$MIMIR_GITEA_REPO" "Hydration for $TARGET"
 
 # Also push Heimdall to Gitea so ArgoCD can deploy the observability stack.
 # Heimdall is referenced by nidavellir/apps/heimdall-app.yaml (sync-wave 10).
-if [[ -d "$HEIMDALL_DIR" ]]; then
-    echo "💧 [Layer 2] Hydrating Heimdall to Seed Gitea..."
+hydrate_working_tree_repo "$HEIMDALL_DIR" "$HEIMDALL_GITEA_REPO" "Hydration for $TARGET"
 
-    gitea_ensure_repo "$HEIMDALL_GITEA_REPO" true
-
-    HEIMDALL_HYDRATE=$(mktemp -d)
-    TEMP_DIRS+=("$HEIMDALL_HYDRATE")
-    cp -r "$HEIMDALL_DIR/." "$HEIMDALL_HYDRATE/"
-    rm -rf "$HEIMDALL_HYDRATE/.git"  # Don't push source .git dir
-
-    cd "$HEIMDALL_HYDRATE"
-    git init
-    git config user.email "bootstrap@nordri.local"
-    git config user.name "Nordri Bootstrap"
-    git checkout -b main
-    git add .
-    git commit -m "Hydration for $TARGET"
-    git remote add origin "$GITEA_GIT_BASE/$GITEA_USER/$HEIMDALL_GITEA_REPO.git"
-    git push -u origin main --force
-    cd -
-    rm -rf "$HEIMDALL_HYDRATE"
-
-    echo "✅ Heimdall hydrated to Seed Gitea."
-else
-    echo "⚠️  Heimdall directory not found at: $HEIMDALL_DIR"
-    echo "   Set HEIMDALL_DIR env var or clone heimdall as a sibling of this repo."
-    echo "   Observability stack will not be deployed until Heimdall is available."
-fi
+# Vendor mirrors: push real history + tags so in-cluster apps can pin exact
+# upstream refs (e.g. keycloak-operator pins tag 26.6.3). Also run day-2 by
+# update-embedded-git.sh; running it here makes a fresh bootstrap reproducible.
+hydrate_vendor_mirrors "$VENDOR_MIRRORS"
 
 # --- Step 2.5: Install Crossplane Core (Layer 2.5) ---
 # Gateway API CRDs were installed here in earlier versions, but Traefik chart
