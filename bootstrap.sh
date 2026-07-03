@@ -52,7 +52,8 @@ set -e
 #               to ../<name> relative to this script.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-# Shared hydration library (extracted from the duplicated inline blocks).
+# Shared hydration libraries (extracted from the duplicated inline blocks).
+. "$SCRIPT_DIR/lib/gitea.sh"
 . "$SCRIPT_DIR/lib/patch-nidavellir.sh"
 TARGET=$1
 # Capture explicit GITEA_PASS env input here without applying a default —
@@ -224,19 +225,7 @@ kubectl create secret generic "$GITEA_CREDENTIALS_SECRET" \
 # percent-encode user/pass to handle special chars (@, :, /, #) without
 # corrupting the URL. API calls go through curl -u instead and just use
 # the credentials-less base URL.
-urlencode() { jq -rn --arg s "$1" '$s|@uri'; }
-GITEA_USER_ENC="$(urlencode "$GITEA_USER")"
-GITEA_PASS_ENC="$(urlencode "$GITEA_PASS")"
-GITEA_API_URL="${GITEA_SCHEME}://${GITEA_HOST}"
-GITEA_GIT_BASE="${GITEA_SCHEME}://${GITEA_USER_ENC}:${GITEA_PASS_ENC}@${GITEA_HOST}"
-GITEA_PROBE_URL="${GITEA_API_URL}/api/v1/version"
-
-# Probe the Gitea endpoint. Returns 0 if Gitea answers /api/v1/version
-# with HTTP 200. Used to confirm we're talking to actual Gitea, not just
-# any service that happens to be on this host:port.
-probe_gitea() {
-    curl -fsS --max-time 5 "$GITEA_PROBE_URL" >/dev/null 2>&1
-}
+gitea_build_urls
 
 # We use a simple configuration for the seed instance
 helm upgrade --install gitea gitea-charts/gitea \
@@ -319,47 +308,10 @@ else
     fi
 fi
 
-# Create a Gitea repo via API with retry. Gitea's ephemeral mode can fail on rapid
-# sequential repo creates (initRepository race). We check the response body for errors.
-create_gitea_repo() {
-    local repo_name=$1
-    local max_retries=5
-    for i in $(seq 1 $max_retries); do
-        # `-u user:pass` keeps credentials out of the URL so special chars
-        # in GITEA_PASS (@, :, /, #) can't corrupt URL parsing.
-        # `|| true` after the command substitution prevents `set -e` from
-        # killing the retry loop on transport-level curl failures (DNS,
-        # TCP refusal, TLS handshake) — those are exactly the cases the
-        # retry exists to cover.
-        # `auto_init: true` creates an initial commit on `main` and sets the
-        # repo's HEAD symbolic ref to it. Without auto-init, a fresh repo has
-        # no HEAD ref — our later `git push --force` creates `refs/heads/main`
-        # but HEAD remains unresolved, and ArgoCD apps using `targetRevision:
-        # HEAD` fail with `unable to resolve 'HEAD' to a commit SHA`. The
-        # force-push later in the script overwrites the auto-init commit.
-        RESPONSE=$(curl -s -u "$GITEA_USER:$GITEA_PASS" \
-          -X POST "$GITEA_API_URL/api/v1/user/repos" \
-          -H "Content-Type: application/json" \
-          -d "{\"name\": \"$repo_name\", \"private\": false, \"auto_init\": true, \"default_branch\": \"main\"}" || true)
-
-        # Check if response contains a valid repo (has "clone_url") or already-exists error
-        if echo "$RESPONSE" | grep -q '"clone_url"'; then
-            echo "   Created repo: $repo_name"
-            return 0
-        elif echo "$RESPONSE" | grep -q 'already exists'; then
-            echo "   Repo $repo_name already exists."
-            return 0
-        else
-            echo "   Repo creation attempt $i/$max_retries failed for $repo_name: $(echo "$RESPONSE" | head -c 120)"
-            sleep 5
-        fi
-    done
-    echo "❌ Failed to create repo $repo_name after $max_retries attempts."
-    return 1
-}
+# gitea_ensure_repo (create-if-missing; auto_init for fresh repos) lives in lib/gitea.sh.
 
 # Create all repos upfront (sequential with retry to avoid Gitea init races)
-create_gitea_repo "$GITEA_REPO_NAME"
+gitea_ensure_repo "$GITEA_REPO_NAME" true
 
 # Prepare the content
 # Copy platform shared files
@@ -402,7 +354,7 @@ echo "✅ Nordri configuration hydrated to Seed Gitea."
 if [[ -d "$NIDAVELLIR_DIR" ]]; then
     echo "💧 [Layer 2] Hydrating Nidavellir to Seed Gitea..."
 
-    create_gitea_repo "$NIDAVELLIR_GITEA_REPO"
+    gitea_ensure_repo "$NIDAVELLIR_GITEA_REPO" true
 
     NIDAVELLIR_HYDRATE=$(mktemp -d)
     TEMP_DIRS+=("$NIDAVELLIR_HYDRATE")
@@ -438,7 +390,7 @@ fi
 if [[ -d "$MIMIR_DIR" ]]; then
     echo "💧 [Layer 2] Hydrating Mimir to Seed Gitea..."
 
-    create_gitea_repo "$MIMIR_GITEA_REPO"
+    gitea_ensure_repo "$MIMIR_GITEA_REPO" true
 
     MIMIR_HYDRATE=$(mktemp -d)
     TEMP_DIRS+=("$MIMIR_HYDRATE")
@@ -469,7 +421,7 @@ fi
 if [[ -d "$HEIMDALL_DIR" ]]; then
     echo "💧 [Layer 2] Hydrating Heimdall to Seed Gitea..."
 
-    create_gitea_repo "$HEIMDALL_GITEA_REPO"
+    gitea_ensure_repo "$HEIMDALL_GITEA_REPO" true
 
     HEIMDALL_HYDRATE=$(mktemp -d)
     TEMP_DIRS+=("$HEIMDALL_HYDRATE")

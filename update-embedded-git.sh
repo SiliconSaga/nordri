@@ -41,7 +41,8 @@ set -e
 #               to ../<name> relative to this script.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-# Shared hydration library (extracted from the duplicated inline blocks).
+# Shared hydration libraries (extracted from the duplicated inline blocks).
+. "$SCRIPT_DIR/lib/gitea.sh"
 . "$SCRIPT_DIR/lib/patch-nidavellir.sh"
 TARGET=$1
 
@@ -128,58 +129,9 @@ fi
 # Build URL bases. `git remote add` requires creds embedded in the URL,
 # so we percent-encode user/pass to handle special chars (@, :, /, #).
 # API calls go through curl -u with the credentials-less base URL.
-urlencode() { jq -rn --arg s "$1" '$s|@uri'; }
-GITEA_USER_ENC="$(urlencode "$GITEA_USER")"
-GITEA_PASS_ENC="$(urlencode "$GITEA_PASS")"
-GITEA_API_URL="${GITEA_SCHEME}://${GITEA_HOST}"
-GITEA_GIT_BASE="${GITEA_SCHEME}://${GITEA_USER_ENC}:${GITEA_PASS_ENC}@${GITEA_HOST}"
-GITEA_PROBE_URL="${GITEA_API_URL}/api/v1/version"
+gitea_build_urls
 
-# Probe the Gitea endpoint for the current $GITEA_HOST. Returns 0 if Gitea
-# answers /api/v1/version with HTTP 200, non-zero otherwise. Avoids
-# silently sending credentials to a wrong endpoint or an unready ingress.
-probe_gitea() {
-    curl -fsS --max-time 5 "$GITEA_PROBE_URL" >/dev/null 2>&1
-}
-
-# Create a Gitea repo if it doesn't already exist. Treats 201 (Created)
-# and 409 (already exists) as success; anything else (DNS failure, auth
-# rejection, 5xx) retries up to 5x with a short backoff (matches
-# bootstrap.sh's create_gitea_repo — Seed Gitea can intermittently fail
-# sequential creates due to an `initRepository` race), then prints the
-# response body and fails the script.
-ensure_gitea_repo() {
-    local repo_name=$1
-    local max_retries=5
-    local i status response_file
-    for i in $(seq 1 $max_retries); do
-        response_file=$(mktemp)
-        # `-u user:pass` keeps credentials out of the URL so special chars
-        # in $GITEA_PASS can't corrupt URL parsing.
-        status=$(curl -sS -o "$response_file" -w "%{http_code}" \
-            -u "$GITEA_USER:$GITEA_PASS" \
-            -X POST "$GITEA_API_URL/api/v1/user/repos" \
-            -H "Content-Type: application/json" \
-            -d "{\"name\": \"$repo_name\", \"private\": false}") || true
-        case "$status" in
-            201|409)
-                rm -f "$response_file"
-                return 0
-                ;;
-        esac
-        if [[ $i -lt $max_retries ]]; then
-            echo "   Repo creation attempt $i/$max_retries for '$repo_name' returned HTTP $status; retrying in 5s..." >&2
-            rm -f "$response_file"
-            sleep 5
-            continue
-        fi
-        echo "❌ Failed to create or confirm Gitea repo '$repo_name' after $max_retries attempts (HTTP $status):" >&2
-        cat "$response_file" >&2
-        echo >&2
-        rm -f "$response_file"
-        return 1
-    done
-}
+# gitea_ensure_repo (create-if-missing; auto_init for fresh repos) lives in lib/gitea.sh.
 
 echo "🚀 Updating Nordri Configuration for target: $TARGET"
 
@@ -266,7 +218,7 @@ cp "$SCRIPT_DIR/platform/root-app.yaml" "$HYDRATE_DIR/"
 # didn't), `git push` would fail with a misleading "remote rejected"
 # error. ensure_gitea_repo treats 201/409 as success and retries
 # transport errors.
-ensure_gitea_repo "$GITEA_REPO_NAME"
+gitea_ensure_repo "$GITEA_REPO_NAME"
 
 # Push to Gitea
 cd $HYDRATE_DIR
@@ -289,7 +241,7 @@ echo "✅ Nordri configuration updated."
 if [[ -d "$NIDAVELLIR_DIR" ]]; then
     echo "💧 Updating Nidavellir in Seed Gitea..."
 
-    ensure_gitea_repo "$NIDAVELLIR_GITEA_REPO"
+    gitea_ensure_repo "$NIDAVELLIR_GITEA_REPO"
 
     NIDAVELLIR_HYDRATE=$(mktemp -d)
     TEMP_DIRS+=("$NIDAVELLIR_HYDRATE")
@@ -322,7 +274,7 @@ fi
 if [[ -d "$MIMIR_DIR" ]]; then
     echo "💧 Updating Mimir in Seed Gitea..."
 
-    ensure_gitea_repo "$MIMIR_GITEA_REPO"
+    gitea_ensure_repo "$MIMIR_GITEA_REPO"
 
     MIMIR_HYDRATE=$(mktemp -d)
     TEMP_DIRS+=("$MIMIR_HYDRATE")
@@ -350,7 +302,7 @@ fi
 if [[ -d "$HEIMDALL_DIR" ]]; then
     echo "💧 Updating Heimdall in Seed Gitea..."
 
-    ensure_gitea_repo "$HEIMDALL_GITEA_REPO"
+    gitea_ensure_repo "$HEIMDALL_GITEA_REPO"
 
     HEIMDALL_HYDRATE=$(mktemp -d)
     TEMP_DIRS+=("$HEIMDALL_HYDRATE")
@@ -401,7 +353,7 @@ for VENDOR in $VENDOR_MIRRORS; do
     # FILE, which a directory test would wrongly reject as "not cloned".
     if git -C "$VENDOR_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
         echo "💧 Updating vendor mirror '$VENDOR' in Seed Gitea..."
-        ensure_gitea_repo "$VENDOR"
+        gitea_ensure_repo "$VENDOR"
         # Resolve the source remote robustly. `ws clone` names the remote after
         # the org (not "origin"), so prefer the checked-out branch's tracking
         # remote; fall back to the sole remote; warn-and-skip rather than guess
