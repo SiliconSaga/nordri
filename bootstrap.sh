@@ -534,6 +534,16 @@ kubectl apply -f "$SCRIPT_DIR/platform/root-app.yaml" -n argo
 
 echo "✅ Root Application applied. ArgoCD is now syncing from the internal Seed Gitea."
 
+# Owning realm (optional): register a generic root-app pointing ArgoCD at the
+# hydrated realm repo. Templated from the realm arg so nordri commits no
+# realm-specific value. The realm's resources retry until the platform CRDs
+# (Keycloak operator, ESO) they depend on exist.
+if [[ -n "$REALM" ]]; then
+    echo "🔗 [Layer 4] Registering realm root-app for '$REALM'..."
+    sed "s|__REALM_REPO__|$REALM|g" "$SCRIPT_DIR/platform/argocd/realm-root-app.template.yaml" \
+        | kubectl apply -n argo -f -
+fi
+
 # --- GKE: Pre-create Velero namespace + dummy credentials ---
 # Velero's Helm chart requires the velero-credentials secret to exist before the pod
 # starts. ArgoCD begins syncing Velero immediately after the root app is applied, so

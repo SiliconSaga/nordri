@@ -1,0 +1,40 @@
+# Generic realm root-app. bootstrap.sh substitutes __REALM_REPO__ with the
+# owning realm's seed-Gitea repo name and applies it. nordri never commits a
+# realm-specific value — this file stays realm-agnostic.
+#
+# The seed repo holds the realm's cluster/ CONTENTS at its root (bootstrap
+# hydrates realms/<realm>/cluster/ into repo <realm>), so path is ".".
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: __REALM_REPO__
+  namespace: argo
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: 'http://gitea-http.gitea.svc.cluster.local:3000/nordri-admin/__REALM_REPO__.git'
+    targetRevision: HEAD
+    path: .
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argo
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    # The realm config (e.g. KeycloakRealmImport, ExternalSecret) depends on CRDs
+    # the platform installs (Keycloak operator, ESO). This is a SEPARATE
+    # Application from nidavellir's, so cross-app sync-waves don't order it —
+    # instead ArgoCD retries until those CRDs exist, and
+    # SkipDryRunOnMissingResource avoids a hard dry-run failure meanwhile.
+    syncOptions:
+      - CreateNamespace=true
+      - SkipDryRunOnMissingResource=true
+    retry:
+      limit: 10
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m
