@@ -93,12 +93,27 @@ HYDRATE_AUTO_INIT=true
 VENDOR_MIRRORS="${VENDOR_MIRRORS:-keycloak-k8s-resources}"
 
 if [[ -z "$TARGET" ]]; then
-    echo "Usage: ./bootstrap.sh [gke|homelab]"
+    echo "Usage: ./bootstrap.sh [gke|homelab] [realm]"
     exit 1
 fi
 
 if [[ "$TARGET" != "gke" && "$TARGET" != "homelab" ]]; then
     echo "Error: Target must be 'gke' or 'homelab'"
+    exit 1
+fi
+
+# Optional owning realm (arg 2): a realm whose cluster/ subtree carries
+# realm-owned in-cluster config (e.g. the siliconsaga keycloak realm-import).
+# Omit it for a generic demo-only stack. REALM_DIR overrides the default
+# <workspace>/realms/<realm> resolution (nordri lives at <workspace>/components/nordri).
+REALM="${2:-}"
+REALM_DIR="${REALM_DIR:-}"
+if [[ -n "$REALM" && -z "$REALM_DIR" ]]; then
+    REALM_DIR="$(dirname "$(dirname "$SCRIPT_DIR")")/realms/$REALM"
+fi
+if [[ -n "$REALM" && ! -d "$REALM_DIR/cluster" ]]; then
+    echo "❌ Owning realm '$REALM' has no cluster/ config at: $REALM_DIR/cluster" >&2
+    echo "   Pass a realm whose repo carries cluster/, set REALM_DIR, or omit the arg for demo-only." >&2
     exit 1
 fi
 
@@ -373,6 +388,13 @@ hydrate_working_tree_repo "$HEIMDALL_DIR" "$HEIMDALL_GITEA_REPO" "Hydration for 
 # upstream refs (e.g. keycloak-operator pins tag 26.6.3). Also run day-2 by
 # update-embedded-git.sh; running it here makes a fresh bootstrap reproducible.
 hydrate_vendor_mirrors "$VENDOR_MIRRORS"
+
+# Owning realm (optional): hydrate its cluster/ subtree so ArgoCD can sync
+# realm-owned config. The realm root-app that points ArgoCD at it is registered
+# after ArgoCD is installed (see the realm root-app step below).
+if [[ -n "$REALM_DIR" ]]; then
+    hydrate_working_tree_repo "$REALM_DIR/cluster" "$REALM" "Realm config for $TARGET"
+fi
 
 # --- Step 2.5: Install Crossplane Core (Layer 2.5) ---
 # Gateway API CRDs were installed here in earlier versions, but Traefik chart

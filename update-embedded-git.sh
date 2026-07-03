@@ -50,11 +50,25 @@ TARGET=$1
 # Validate args before anything that touches the cluster, so wrong inputs
 # fail with a usage message instead of an obscure k8s/credential error.
 if [[ -z "$TARGET" ]]; then
-    echo "Usage: ./update-embedded-git.sh [gke|homelab]"
+    echo "Usage: ./update-embedded-git.sh [gke|homelab] [realm]"
     exit 1
 fi
 if [[ "$TARGET" != "gke" && "$TARGET" != "homelab" ]]; then
     echo "Error: Target must be 'gke' or 'homelab'"
+    exit 1
+fi
+
+# Optional owning realm (arg 2): refresh its cluster/ subtree in the seed so
+# ArgoCD picks up realm-owned config changes. REALM_DIR overrides the default
+# <workspace>/realms/<realm> resolution. Omit for a demo-only stack.
+REALM="${2:-}"
+REALM_DIR="${REALM_DIR:-}"
+if [[ -n "$REALM" && -z "$REALM_DIR" ]]; then
+    REALM_DIR="$(dirname "$(dirname "$SCRIPT_DIR")")/realms/$REALM"
+fi
+if [[ -n "$REALM" && ! -d "$REALM_DIR/cluster" ]]; then
+    echo "❌ Owning realm '$REALM' has no cluster/ config at: $REALM_DIR/cluster" >&2
+    echo "   Pass a realm whose repo carries cluster/, set REALM_DIR, or omit the arg for demo-only." >&2
     exit 1
 fi
 
@@ -250,6 +264,12 @@ hydrate_working_tree_repo "$HEIMDALL_DIR" "$HEIMDALL_GITEA_REPO" "Update for $TA
 # Vendor mirrors: push real history + tags so in-cluster apps can pin exact
 # upstream refs. See lib/hydrate.sh for the heads-vs-tags prune rationale.
 hydrate_vendor_mirrors "$VENDOR_MIRRORS"
+
+# Owning realm (optional): refresh its cluster/ subtree so ArgoCD re-syncs
+# realm-owned config. (The realm root-app itself is registered by bootstrap.sh.)
+if [[ -n "$REALM_DIR" ]]; then
+    hydrate_working_tree_repo "$REALM_DIR/cluster" "$REALM" "Realm config for $TARGET"
+fi
 
 echo "✅ Configuration Updated."
 echo "🔄 Triggering ArgoCD Sync (Root App)..."
