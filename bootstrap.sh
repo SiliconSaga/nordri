@@ -407,6 +407,55 @@ if [[ -d "$NIDAVELLIR_DIR" ]]; then
     cp -r "$NIDAVELLIR_DIR/." "$NIDAVELLIR_HYDRATE/"
     rm -rf "$NIDAVELLIR_HYDRATE/.git"  # Don't push source .git dir
 
+    # Per-target patching of the hydrated nidavellir tree (mirrors the nordri
+    # app-of-apps overlay sed above). Two cluster-specific rewrites:
+    #   1. Point the vegvisir app at the env overlay so the LetsEncrypt issuers +
+    #      the *.cmdbee.org wildcard cert only land on GKE; homelab keeps the
+    #      self-signed Gateway cert so its websecure listener programs.
+    #   2. Stamp the tailscale operator hostname. GKE is a single shared cluster,
+    #      so it gets a stable `tailscale-operator-gke`; each homelab cluster is
+    #      per-machine (one cluster per Mac) so it gets `tailscale-operator-<machine>`
+    #      to avoid tailnet device-name collisions. The workstation name is a valid
+    #      identity only for homelab — deriving it on GKE would churn the device
+    #      name between hydrations run from different machines.
+    # Guard: these apps must exist in the hydrated tree; a missing path (e.g. a
+    # nidavellir apps/ rename) would otherwise abort with a bare `sed` error.
+    _nid_vegvisir_app="$NIDAVELLIR_HYDRATE/apps/vegvisir-app.yaml"
+    _nid_tailscale_app="$NIDAVELLIR_HYDRATE/apps/tailscale-operator-app.yaml"
+    for _nid_f in "$_nid_vegvisir_app" "$_nid_tailscale_app"; do
+        if [[ ! -f "$_nid_f" ]]; then
+            echo "❌ Expected nidavellir manifest missing: ${_nid_f#"$NIDAVELLIR_HYDRATE"/} — has apps/ been renamed? Cannot apply the per-target patch." >&2
+            exit 1
+        fi
+    done
+    if [[ "$TARGET" == "gke" ]]; then
+        TS_HOSTNAME="tailscale-operator-gke"
+    else
+        NID_MACHINE="$(scutil --get LocalHostName 2>/dev/null || hostname -s 2>/dev/null || hostname)"
+        NID_MACHINE="$(printf '%s' "$NID_MACHINE" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9-' '-' | sed 's/^-*//;s/-*$//')"
+        [[ -z "$NID_MACHINE" ]] && NID_MACHINE="local"
+        TS_HOSTNAME="tailscale-operator-$NID_MACHINE"
+    fi
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        sed -i '' "s|path: vegvisir/manifests/overlays/homelab|path: vegvisir/manifests/overlays/$TARGET|g" "$_nid_vegvisir_app"
+        sed -i '' "s|tailscale-operator-MACHINE|$TS_HOSTNAME|g" "$_nid_tailscale_app"
+    else
+        sed -i "s|path: vegvisir/manifests/overlays/homelab|path: vegvisir/manifests/overlays/$TARGET|g" "$_nid_vegvisir_app"
+        sed -i "s|tailscale-operator-MACHINE|$TS_HOSTNAME|g" "$_nid_tailscale_app"
+    fi
+    # Verify the substitutions took effect — sed exits 0 even when nothing
+    # matched, so a renamed placeholder upstream would silently push the wrong
+    # overlay path / an unstamped hostname (the exact failure modes this prevents).
+    if ! grep -q "path: vegvisir/manifests/overlays/$TARGET" "$_nid_vegvisir_app"; then
+        echo "❌ vegvisir overlay path not patched — the 'overlays/homelab' placeholder may have changed in nidavellir." >&2
+        exit 1
+    fi
+    if ! grep -q "$TS_HOSTNAME" "$_nid_tailscale_app"; then
+        echo "❌ tailscale operator hostname not stamped — the 'tailscale-operator-MACHINE' placeholder may have changed in nidavellir." >&2
+        exit 1
+    fi
+    echo "   Patched nidavellir for target '$TARGET' (tailscale hostname: $TS_HOSTNAME)."
+
     cd "$NIDAVELLIR_HYDRATE"
     git init
     git config user.email "bootstrap@nordri.local"
