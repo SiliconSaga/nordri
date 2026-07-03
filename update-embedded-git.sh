@@ -330,6 +330,17 @@ if [[ -d "$NIDAVELLIR_DIR" ]]; then
         sed -i "s|path: vegvisir/manifests/overlays/homelab|path: vegvisir/manifests/overlays/$TARGET|g" "$_nid_vegvisir_app"
         sed -i "s|tailscale-operator-MACHINE|$TS_HOSTNAME|g" "$_nid_tailscale_app"
     fi
+    # Verify the substitutions took effect — sed exits 0 even when nothing
+    # matched, so a renamed placeholder upstream would silently push the wrong
+    # overlay path / an unstamped hostname (the exact failure modes this prevents).
+    if ! grep -q "path: vegvisir/manifests/overlays/$TARGET" "$_nid_vegvisir_app"; then
+        echo "❌ vegvisir overlay path not patched — the 'overlays/homelab' placeholder may have changed in nidavellir." >&2
+        exit 1
+    fi
+    if ! grep -q "$TS_HOSTNAME" "$_nid_tailscale_app"; then
+        echo "❌ tailscale operator hostname not stamped — the 'tailscale-operator-MACHINE' placeholder may have changed in nidavellir." >&2
+        exit 1
+    fi
     echo "   Patched nidavellir for target '$TARGET' (tailscale hostname: $TS_HOSTNAME)."
 
     cd "$NIDAVELLIR_HYDRATE"
