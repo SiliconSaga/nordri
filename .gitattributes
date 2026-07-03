@@ -1,0 +1,5 @@
+# Shell scripts and the sourced lib/ must stay LF: bash (including Git Bash /
+# MSYS2 on Windows) fails to source or run scripts that carry CRLF line endings.
+# Without this, core.autocrlf=true converts *.sh to CRLF on checkout and breaks
+# bootstrap.sh / update-embedded-git.sh and everything they source from lib/.
+*.sh text eol=lf
