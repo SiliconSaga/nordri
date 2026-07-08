@@ -16,7 +16,9 @@ Provision the raw cluster before running any scripts.
 - **Homelab**: k3s/Rancher Desktop, pre-existing
 
 ### Layer 2 — The Seed (Gitea + Nidavellir hydration)
-`./bootstrap.sh [gke|homelab]`
+`./bootstrap.sh [gke|homelab] [realm]`
+
+The optional second arg names an **owning realm** whose `cluster/` subtree carries realm-owned in-cluster config (e.g. the SiliconSaga keycloak realm-import). When given, bootstrap hydrates `realms/<realm>/cluster/` into a seed-Gitea repo named `<realm>` and registers a generic ArgoCD realm root-app pointed at it (after ArgoCD is up — see Layer 3). Omit it for a generic demo-only stack. `REALM_DIR` overrides the default `<workspace>/realms/<realm>` resolution.
 
 - Installs **Gitea** (Helm, `gitea` namespace, ephemeral — no persistence)
 - **Resolves Gitea admin credentials** and persists them to the

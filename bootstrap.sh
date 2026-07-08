@@ -52,6 +52,10 @@ set -e
 #               to ../<name> relative to this script.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# Shared hydration libraries (extracted from the duplicated inline blocks).
+. "$SCRIPT_DIR/lib/gitea.sh"
+. "$SCRIPT_DIR/lib/hydrate.sh"
+. "$SCRIPT_DIR/lib/patch-nidavellir.sh"
 TARGET=$1
 # Capture explicit GITEA_PASS env input here without applying a default —
 # the resolver populates the value below. Username is fixed to
@@ -80,14 +84,42 @@ NIDAVELLIR_DIR="${NIDAVELLIR_DIR:-$(dirname "$SCRIPT_DIR")/nidavellir}"
 MIMIR_DIR="${MIMIR_DIR:-$(dirname "$SCRIPT_DIR")/mimir}"
 HEIMDALL_DIR="${HEIMDALL_DIR:-$(dirname "$SCRIPT_DIR")/heimdall}"
 INTERNAL_GITEA_URL="http://gitea-http.gitea.svc.cluster.local:3000"
+# Fresh-cluster bootstrap: repos are created with auto_init so ArgoCD can
+# resolve HEAD. The working-tree hydration helper reads this.
+HYDRATE_AUTO_INIT=true
+# Vendored upstream mirrors to push (real history + tags) so in-cluster apps can
+# pin exact upstream refs. Space-separated component dir names; same default as
+# update-embedded-git.sh.
+VENDOR_MIRRORS="${VENDOR_MIRRORS:-keycloak-k8s-resources}"
 
 if [[ -z "$TARGET" ]]; then
-    echo "Usage: ./bootstrap.sh [gke|homelab]"
+    echo "Usage: ./bootstrap.sh [gke|homelab] [realm]"
     exit 1
 fi
 
 if [[ "$TARGET" != "gke" && "$TARGET" != "homelab" ]]; then
     echo "Error: Target must be 'gke' or 'homelab'"
+    exit 1
+fi
+
+# Optional owning realm (arg 2): a realm whose cluster/ subtree carries
+# realm-owned in-cluster config (e.g. the siliconsaga keycloak realm-import).
+# Omit it for a generic demo-only stack. REALM_DIR overrides the default
+# <workspace>/realms/<realm> resolution (nordri lives at <workspace>/components/nordri).
+REALM="${2:-}"
+if [[ -n "$REALM" ]]; then
+    if [[ ! "$REALM" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]] || [[ ${#REALM} -gt 63 ]]; then
+        echo "❌ Realm '$REALM' must be a DNS-1123 label (lowercase alphanumeric and '-', max 63 chars) — it names a Gitea repo and a Kubernetes Application." >&2
+        exit 1
+    fi
+fi
+REALM_DIR="${REALM_DIR:-}"
+if [[ -n "$REALM" && -z "$REALM_DIR" ]]; then
+    REALM_DIR="$(dirname "$(dirname "$SCRIPT_DIR")")/realms/$REALM"
+fi
+if [[ -n "$REALM" && ! -d "$REALM_DIR/cluster" ]]; then
+    echo "❌ Owning realm '$REALM' has no cluster/ config at: $REALM_DIR/cluster" >&2
+    echo "   Pass a realm whose repo carries cluster/, set REALM_DIR, or omit the arg for demo-only." >&2
     exit 1
 fi
 
@@ -222,19 +254,7 @@ kubectl create secret generic "$GITEA_CREDENTIALS_SECRET" \
 # percent-encode user/pass to handle special chars (@, :, /, #) without
 # corrupting the URL. API calls go through curl -u instead and just use
 # the credentials-less base URL.
-urlencode() { jq -rn --arg s "$1" '$s|@uri'; }
-GITEA_USER_ENC="$(urlencode "$GITEA_USER")"
-GITEA_PASS_ENC="$(urlencode "$GITEA_PASS")"
-GITEA_API_URL="${GITEA_SCHEME}://${GITEA_HOST}"
-GITEA_GIT_BASE="${GITEA_SCHEME}://${GITEA_USER_ENC}:${GITEA_PASS_ENC}@${GITEA_HOST}"
-GITEA_PROBE_URL="${GITEA_API_URL}/api/v1/version"
-
-# Probe the Gitea endpoint. Returns 0 if Gitea answers /api/v1/version
-# with HTTP 200. Used to confirm we're talking to actual Gitea, not just
-# any service that happens to be on this host:port.
-probe_gitea() {
-    curl -fsS --max-time 5 "$GITEA_PROBE_URL" >/dev/null 2>&1
-}
+gitea_build_urls
 
 # We use a simple configuration for the seed instance
 helm upgrade --install gitea gitea-charts/gitea \
@@ -317,47 +337,10 @@ else
     fi
 fi
 
-# Create a Gitea repo via API with retry. Gitea's ephemeral mode can fail on rapid
-# sequential repo creates (initRepository race). We check the response body for errors.
-create_gitea_repo() {
-    local repo_name=$1
-    local max_retries=5
-    for i in $(seq 1 $max_retries); do
-        # `-u user:pass` keeps credentials out of the URL so special chars
-        # in GITEA_PASS (@, :, /, #) can't corrupt URL parsing.
-        # `|| true` after the command substitution prevents `set -e` from
-        # killing the retry loop on transport-level curl failures (DNS,
-        # TCP refusal, TLS handshake) — those are exactly the cases the
-        # retry exists to cover.
-        # `auto_init: true` creates an initial commit on `main` and sets the
-        # repo's HEAD symbolic ref to it. Without auto-init, a fresh repo has
-        # no HEAD ref — our later `git push --force` creates `refs/heads/main`
-        # but HEAD remains unresolved, and ArgoCD apps using `targetRevision:
-        # HEAD` fail with `unable to resolve 'HEAD' to a commit SHA`. The
-        # force-push later in the script overwrites the auto-init commit.
-        RESPONSE=$(curl -s -u "$GITEA_USER:$GITEA_PASS" \
-          -X POST "$GITEA_API_URL/api/v1/user/repos" \
-          -H "Content-Type: application/json" \
-          -d "{\"name\": \"$repo_name\", \"private\": false, \"auto_init\": true, \"default_branch\": \"main\"}" || true)
-
-        # Check if response contains a valid repo (has "clone_url") or already-exists error
-        if echo "$RESPONSE" | grep -q '"clone_url"'; then
-            echo "   Created repo: $repo_name"
-            return 0
-        elif echo "$RESPONSE" | grep -q 'already exists'; then
-            echo "   Repo $repo_name already exists."
-            return 0
-        else
-            echo "   Repo creation attempt $i/$max_retries failed for $repo_name: $(echo "$RESPONSE" | head -c 120)"
-            sleep 5
-        fi
-    done
-    echo "❌ Failed to create repo $repo_name after $max_retries attempts."
-    return 1
-}
+# gitea_ensure_repo (create-if-missing; auto_init for fresh repos) lives in lib/gitea.sh.
 
 # Create all repos upfront (sequential with retry to avoid Gitea init races)
-create_gitea_repo "$GITEA_REPO_NAME"
+gitea_ensure_repo "$GITEA_REPO_NAME" true
 
 # Prepare the content
 # Copy platform shared files
@@ -397,144 +380,26 @@ echo "✅ Nordri configuration hydrated to Seed Gitea."
 # Also push Nidavellir to Gitea so ArgoCD can manage Vegvísir (Gateway + TLS).
 # ArgoCD pulls from internal Gitea during bootstrap; can be swapped to GitHub later.
 # See nidavellir/vegvisir/README.md for the transition procedure.
-if [[ -d "$NIDAVELLIR_DIR" ]]; then
-    echo "💧 [Layer 2] Hydrating Nidavellir to Seed Gitea..."
-
-    create_gitea_repo "$NIDAVELLIR_GITEA_REPO"
-
-    NIDAVELLIR_HYDRATE=$(mktemp -d)
-    TEMP_DIRS+=("$NIDAVELLIR_HYDRATE")
-    cp -r "$NIDAVELLIR_DIR/." "$NIDAVELLIR_HYDRATE/"
-    rm -rf "$NIDAVELLIR_HYDRATE/.git"  # Don't push source .git dir
-
-    # Per-target patching of the hydrated nidavellir tree (mirrors the nordri
-    # app-of-apps overlay sed above). Two cluster-specific rewrites:
-    #   1. Point the vegvisir app at the env overlay so the LetsEncrypt issuers +
-    #      the *.cmdbee.org wildcard cert only land on GKE; homelab keeps the
-    #      self-signed Gateway cert so its websecure listener programs.
-    #   2. Stamp the tailscale operator hostname. GKE is a single shared cluster,
-    #      so it gets a stable `tailscale-operator-gke`; each homelab cluster is
-    #      per-machine (one cluster per Mac) so it gets `tailscale-operator-<machine>`
-    #      to avoid tailnet device-name collisions. The workstation name is a valid
-    #      identity only for homelab — deriving it on GKE would churn the device
-    #      name between hydrations run from different machines.
-    # Guard: these apps must exist in the hydrated tree; a missing path (e.g. a
-    # nidavellir apps/ rename) would otherwise abort with a bare `sed` error.
-    _nid_vegvisir_app="$NIDAVELLIR_HYDRATE/apps/vegvisir-app.yaml"
-    _nid_tailscale_app="$NIDAVELLIR_HYDRATE/apps/tailscale-operator-app.yaml"
-    for _nid_f in "$_nid_vegvisir_app" "$_nid_tailscale_app"; do
-        if [[ ! -f "$_nid_f" ]]; then
-            echo "❌ Expected nidavellir manifest missing: ${_nid_f#"$NIDAVELLIR_HYDRATE"/} — has apps/ been renamed? Cannot apply the per-target patch." >&2
-            exit 1
-        fi
-    done
-    if [[ "$TARGET" == "gke" ]]; then
-        TS_HOSTNAME="tailscale-operator-gke"
-    else
-        NID_MACHINE="$(scutil --get LocalHostName 2>/dev/null || hostname -s 2>/dev/null || hostname)"
-        NID_MACHINE="$(printf '%s' "$NID_MACHINE" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9-' '-' | sed 's/^-*//;s/-*$//')"
-        [[ -z "$NID_MACHINE" ]] && NID_MACHINE="local"
-        TS_HOSTNAME="tailscale-operator-$NID_MACHINE"
-    fi
-    if [[ "$OSTYPE" == "darwin"* ]]; then
-        sed -i '' "s|path: vegvisir/manifests/overlays/homelab|path: vegvisir/manifests/overlays/$TARGET|g" "$_nid_vegvisir_app"
-        sed -i '' "s|tailscale-operator-MACHINE|$TS_HOSTNAME|g" "$_nid_tailscale_app"
-    else
-        sed -i "s|path: vegvisir/manifests/overlays/homelab|path: vegvisir/manifests/overlays/$TARGET|g" "$_nid_vegvisir_app"
-        sed -i "s|tailscale-operator-MACHINE|$TS_HOSTNAME|g" "$_nid_tailscale_app"
-    fi
-    # Verify the substitutions took effect — sed exits 0 even when nothing
-    # matched, so a renamed placeholder upstream would silently push the wrong
-    # overlay path / an unstamped hostname (the exact failure modes this prevents).
-    if ! grep -q "path: vegvisir/manifests/overlays/$TARGET" "$_nid_vegvisir_app"; then
-        echo "❌ vegvisir overlay path not patched — the 'overlays/homelab' placeholder may have changed in nidavellir." >&2
-        exit 1
-    fi
-    if ! grep -q "$TS_HOSTNAME" "$_nid_tailscale_app"; then
-        echo "❌ tailscale operator hostname not stamped — the 'tailscale-operator-MACHINE' placeholder may have changed in nidavellir." >&2
-        exit 1
-    fi
-    echo "   Patched nidavellir for target '$TARGET' (tailscale hostname: $TS_HOSTNAME)."
-
-    cd "$NIDAVELLIR_HYDRATE"
-    git init
-    git config user.email "bootstrap@nordri.local"
-    git config user.name "Nordri Bootstrap"
-    git checkout -b main
-    git add .
-    git commit -m "Hydration for $TARGET"
-    git remote add origin "$GITEA_GIT_BASE/$GITEA_USER/$NIDAVELLIR_GITEA_REPO.git"
-    git push -u origin main --force
-    cd -
-    rm -rf "$NIDAVELLIR_HYDRATE"
-
-    echo "✅ Nidavellir hydrated to Seed Gitea."
-else
-    echo "⚠️  Nidavellir directory not found at: $NIDAVELLIR_DIR"
-    echo "   Set NIDAVELLIR_DIR env var or clone nidavellir as a sibling of this repo."
-    echo "   Vegvísir (Gateway + TLS) will not be deployed until Nidavellir is available."
-fi
+hydrate_working_tree_repo "$NIDAVELLIR_DIR" "$NIDAVELLIR_GITEA_REPO" "Hydration for $TARGET" patch_nidavellir_tree
 
 # Also push Mimir to Gitea so ArgoCD can deploy data service operators + XRDs.
 # Mimir is referenced by nidavellir/apps/mimir-app.yaml (sync-wave 6).
-if [[ -d "$MIMIR_DIR" ]]; then
-    echo "💧 [Layer 2] Hydrating Mimir to Seed Gitea..."
-
-    create_gitea_repo "$MIMIR_GITEA_REPO"
-
-    MIMIR_HYDRATE=$(mktemp -d)
-    TEMP_DIRS+=("$MIMIR_HYDRATE")
-    cp -r "$MIMIR_DIR/." "$MIMIR_HYDRATE/"
-    rm -rf "$MIMIR_HYDRATE/.git"  # Don't push source .git dir
-
-    cd "$MIMIR_HYDRATE"
-    git init
-    git config user.email "bootstrap@nordri.local"
-    git config user.name "Nordri Bootstrap"
-    git checkout -b main
-    git add .
-    git commit -m "Hydration for $TARGET"
-    git remote add origin "$GITEA_GIT_BASE/$GITEA_USER/$MIMIR_GITEA_REPO.git"
-    git push -u origin main --force
-    cd -
-    rm -rf "$MIMIR_HYDRATE"
-
-    echo "✅ Mimir hydrated to Seed Gitea."
-else
-    echo "⚠️  Mimir directory not found at: $MIMIR_DIR"
-    echo "   Set MIMIR_DIR env var or clone mimir as a sibling of this repo."
-    echo "   Data services will not be deployed until Mimir is available."
-fi
+hydrate_working_tree_repo "$MIMIR_DIR" "$MIMIR_GITEA_REPO" "Hydration for $TARGET"
 
 # Also push Heimdall to Gitea so ArgoCD can deploy the observability stack.
 # Heimdall is referenced by nidavellir/apps/heimdall-app.yaml (sync-wave 10).
-if [[ -d "$HEIMDALL_DIR" ]]; then
-    echo "💧 [Layer 2] Hydrating Heimdall to Seed Gitea..."
+hydrate_working_tree_repo "$HEIMDALL_DIR" "$HEIMDALL_GITEA_REPO" "Hydration for $TARGET"
 
-    create_gitea_repo "$HEIMDALL_GITEA_REPO"
+# Vendor mirrors: push real history + tags so in-cluster apps can pin exact
+# upstream refs (e.g. keycloak-operator pins tag 26.6.3). Also run day-2 by
+# update-embedded-git.sh; running it here makes a fresh bootstrap reproducible.
+hydrate_vendor_mirrors "$VENDOR_MIRRORS"
 
-    HEIMDALL_HYDRATE=$(mktemp -d)
-    TEMP_DIRS+=("$HEIMDALL_HYDRATE")
-    cp -r "$HEIMDALL_DIR/." "$HEIMDALL_HYDRATE/"
-    rm -rf "$HEIMDALL_HYDRATE/.git"  # Don't push source .git dir
-
-    cd "$HEIMDALL_HYDRATE"
-    git init
-    git config user.email "bootstrap@nordri.local"
-    git config user.name "Nordri Bootstrap"
-    git checkout -b main
-    git add .
-    git commit -m "Hydration for $TARGET"
-    git remote add origin "$GITEA_GIT_BASE/$GITEA_USER/$HEIMDALL_GITEA_REPO.git"
-    git push -u origin main --force
-    cd -
-    rm -rf "$HEIMDALL_HYDRATE"
-
-    echo "✅ Heimdall hydrated to Seed Gitea."
-else
-    echo "⚠️  Heimdall directory not found at: $HEIMDALL_DIR"
-    echo "   Set HEIMDALL_DIR env var or clone heimdall as a sibling of this repo."
-    echo "   Observability stack will not be deployed until Heimdall is available."
+# Owning realm (optional): hydrate its cluster/ subtree so ArgoCD can sync
+# realm-owned config. The realm root-app that points ArgoCD at it is registered
+# after ArgoCD is installed (see the realm root-app step below).
+if [[ -n "$REALM" ]]; then
+    hydrate_working_tree_repo "$REALM_DIR/cluster" "$REALM" "Realm config for $TARGET"
 fi
 
 # --- Step 2.5: Install Crossplane Core (Layer 2.5) ---
@@ -674,6 +539,16 @@ echo "🌱 [Layer 4] Applying Root Application..."
 kubectl apply -f "$SCRIPT_DIR/platform/root-app.yaml" -n argo
 
 echo "✅ Root Application applied. ArgoCD is now syncing from the internal Seed Gitea."
+
+# Owning realm (optional): register a generic root-app pointing ArgoCD at the
+# hydrated realm repo. Templated from the realm arg so nordri commits no
+# realm-specific value. The realm's resources retry until the platform CRDs
+# (Keycloak operator, ESO) they depend on exist.
+if [[ -n "$REALM" ]]; then
+    echo "🔗 [Layer 4] Registering realm root-app for '$REALM'..."
+    sed "s|__REALM_REPO__|$REALM|g" "$SCRIPT_DIR/platform/argocd/realm-root-app.template.yaml" \
+        | kubectl apply -n argo -f -
+fi
 
 # --- GKE: Pre-create Velero namespace + dummy credentials ---
 # Velero's Helm chart requires the velero-credentials secret to exist before the pod
