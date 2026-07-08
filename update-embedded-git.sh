@@ -62,6 +62,12 @@ fi
 # ArgoCD picks up realm-owned config changes. REALM_DIR overrides the default
 # <workspace>/realms/<realm> resolution. Omit for a demo-only stack.
 REALM="${2:-}"
+if [[ -n "$REALM" ]]; then
+    if [[ ! "$REALM" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]] || [[ ${#REALM} -gt 63 ]]; then
+        echo "❌ Realm '$REALM' must be a DNS-1123 label (lowercase alphanumeric and '-', max 63 chars) — it names a Gitea repo and a Kubernetes Application." >&2
+        exit 1
+    fi
+fi
 REALM_DIR="${REALM_DIR:-}"
 if [[ -n "$REALM" && -z "$REALM_DIR" ]]; then
     REALM_DIR="$(dirname "$(dirname "$SCRIPT_DIR")")/realms/$REALM"
@@ -99,6 +105,10 @@ HEIMDALL_DIR="${HEIMDALL_DIR:-$(dirname "$SCRIPT_DIR")/heimdall}"
 VENDOR_MIRRORS="${VENDOR_MIRRORS:-keycloak-k8s-resources}"
 # Day-2 hydration commits are authored as "Nordri Update" (bootstrap uses the default).
 HYDRATE_COMMITTER="Nordri Update"
+# Recreate lost seed repos with auto_init so Gitea has a resolvable HEAD (ArgoCD
+# targetRevision: HEAD). No-op for existing repos (409) — it only matters on the
+# rotation-recovery path this script is explicitly resilient to.
+HYDRATE_AUTO_INIT=true
 
 # Resolve Gitea admin credentials.
 #
@@ -233,9 +243,9 @@ cp "$SCRIPT_DIR/platform/root-app.yaml" "$HYDRATE_DIR/"
 # runs without persistence; if the pod ever rotates and the repo got lost
 # (we hit exactly this earlier — postgres survived but blob storage
 # didn't), `git push` would fail with a misleading "remote rejected"
-# error. ensure_gitea_repo treats 201/409 as success and retries
-# transport errors.
-gitea_ensure_repo "$GITEA_REPO_NAME"
+# error. gitea_ensure_repo treats 201/409 as success and retries transport
+# errors; auto_init (HYDRATE_AUTO_INIT) gives a recreated repo a resolvable HEAD.
+gitea_ensure_repo "$GITEA_REPO_NAME" "$HYDRATE_AUTO_INIT"
 
 # Push to Gitea
 cd $HYDRATE_DIR

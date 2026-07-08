@@ -107,6 +107,12 @@ fi
 # Omit it for a generic demo-only stack. REALM_DIR overrides the default
 # <workspace>/realms/<realm> resolution (nordri lives at <workspace>/components/nordri).
 REALM="${2:-}"
+if [[ -n "$REALM" ]]; then
+    if [[ ! "$REALM" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]] || [[ ${#REALM} -gt 63 ]]; then
+        echo "❌ Realm '$REALM' must be a DNS-1123 label (lowercase alphanumeric and '-', max 63 chars) — it names a Gitea repo and a Kubernetes Application." >&2
+        exit 1
+    fi
+fi
 REALM_DIR="${REALM_DIR:-}"
 if [[ -n "$REALM" && -z "$REALM_DIR" ]]; then
     REALM_DIR="$(dirname "$(dirname "$SCRIPT_DIR")")/realms/$REALM"

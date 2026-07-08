@@ -32,6 +32,10 @@ case "$mode" in
   test)
     echo "== syntax check =="
     syntax_check || exit 1
+    if ! command -v jq >/dev/null 2>&1; then
+      echo "❌ jq is required to run the unit tests (lib/gitea.sh uses it). Install jq and re-run." >&2
+      exit 1
+    fi
     echo "== unit tests =="
     fails=0
     for t in tests/unit/*.sh; do
