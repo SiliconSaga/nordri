@@ -18,6 +18,17 @@ patch_nidavellir_tree() {
     local vegvisir_app="$tree/apps/vegvisir-app.yaml"
     local tailscale_app="$tree/apps/tailscale-operator-app.yaml"
     local f ts_hostname machine
+    # Validate the caller-supplied target before any sed: an empty/unknown target
+    # would rewrite `overlays/homelab` → `overlays/<bad>` AND still pass the later
+    # verification (which greps the same substituted value), silently corrupting
+    # the manifest path.
+    case "$target" in
+        homelab|gke) ;;
+        *)
+            echo "❌ patch_nidavellir_tree: unknown target '$target' (expected homelab|gke)." >&2
+            return 1
+            ;;
+    esac
     # Guard: these apps must exist in the hydrated tree; a missing path (e.g. a
     # nidavellir apps/ rename) would otherwise abort with a bare `sed` error.
     for f in "$vegvisir_app" "$tailscale_app"; do

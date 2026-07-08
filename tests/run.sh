@@ -7,6 +7,7 @@
 # Usage: tests/run.sh [test|lint]   (default: test)
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1   # nordri repo root
+shopt -s nullglob   # an empty glob (e.g. lib/*.sh) drops out instead of passing the literal pattern
 
 mode="${1:-test}"
 shell_files=(bootstrap.sh update-embedded-git.sh lib/*.sh tests/unit/*.sh tests/run.sh)

@@ -392,7 +392,7 @@ hydrate_vendor_mirrors "$VENDOR_MIRRORS"
 # Owning realm (optional): hydrate its cluster/ subtree so ArgoCD can sync
 # realm-owned config. The realm root-app that points ArgoCD at it is registered
 # after ArgoCD is installed (see the realm root-app step below).
-if [[ -n "$REALM_DIR" ]]; then
+if [[ -n "$REALM" ]]; then
     hydrate_working_tree_repo "$REALM_DIR/cluster" "$REALM" "Realm config for $TARGET"
 fi
 

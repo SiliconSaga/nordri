@@ -267,7 +267,7 @@ hydrate_vendor_mirrors "$VENDOR_MIRRORS"
 
 # Owning realm (optional): refresh its cluster/ subtree so ArgoCD re-syncs
 # realm-owned config. (The realm root-app itself is registered by bootstrap.sh.)
-if [[ -n "$REALM_DIR" ]]; then
+if [[ -n "$REALM" ]]; then
     hydrate_working_tree_repo "$REALM_DIR/cluster" "$REALM" "Realm config for $TARGET"
 fi
 

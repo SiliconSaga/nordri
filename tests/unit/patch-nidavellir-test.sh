@@ -36,4 +36,10 @@ rm -f "$tree/apps/vegvisir-app.yaml"
 patch_nidavellir_tree "$tree" homelab >/dev/null 2>&1; rc=$?
 check "missing manifest returns non-zero" "[ $rc -ne 0 ]"
 
+# Empty/unknown target must fail fast (not silently corrupt the overlay path).
+printf 'path: vegvisir/manifests/overlays/homelab\n' > "$tree/apps/vegvisir-app.yaml"
+printf 'hostname: tailscale-operator-MACHINE\n'      > "$tree/apps/tailscale-operator-app.yaml"
+patch_nidavellir_tree "$tree" "" >/dev/null 2>&1; rc=$?
+check "empty target returns non-zero" "[ $rc -ne 0 ]"
+
 echo "---"; [ "$fails" -eq 0 ] && echo "ALL PASS" || { echo "$fails FAILED"; exit 1; }

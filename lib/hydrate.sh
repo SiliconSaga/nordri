@@ -88,7 +88,7 @@ hydrate_vendor_mirrors() {
             vendor_remote=""
             [[ -n "$vendor_branch" ]] && vendor_remote="$(git -C "$vendor_dir" config "branch.$vendor_branch.remote" 2>/dev/null || true)"
             if [[ -z "$vendor_remote" ]]; then
-                vr_count="$(git -C "$vendor_dir" remote | grep -c .)"
+                vr_count="$(git -C "$vendor_dir" remote | grep -c . || true)"
                 if [[ "$vr_count" != "1" ]]; then
                     echo "⚠️  Vendor mirror '$vendor' has $vr_count remotes and no tracked upstream — skipping (set a single remote or a tracking branch)." >&2
                     continue

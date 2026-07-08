@@ -38,11 +38,10 @@ gitea_ensure_repo() {
     local repo_name=$1 auto_init=${2:-false}
     local max_retries=5
     local i status response_file body
-    body="{\"name\": \"$repo_name\", \"private\": false"
-    if [[ "$auto_init" == "true" ]]; then
-        body="$body, \"auto_init\": true, \"default_branch\": \"main\""
-    fi
-    body="$body}"
+    # Build the body with jq so a repo name containing quotes/backslashes can't
+    # corrupt the JSON. auto_init ("true"/"false") is injected as a JSON boolean.
+    body=$(jq -n --arg name "$repo_name" --argjson auto_init "$auto_init" \
+        '{name: $name, private: false} + (if $auto_init then {auto_init: true, default_branch: "main"} else {} end)')
     for i in $(seq 1 $max_retries); do
         response_file=$(mktemp)
         # `-u user:pass` keeps credentials out of the URL so special chars in
