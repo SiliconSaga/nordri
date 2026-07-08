@@ -11,6 +11,12 @@ spec:
     repoURL: 'http://gitea-http.gitea.svc.cluster.local:3000/nordri-admin/nordri.git'
     targetRevision: HEAD
     path: platform/argocd # The App-of-Apps
+    directory:
+      # realm-root-app.template.yaml carries a __REALM_REPO__ placeholder and is
+      # rendered + applied directly by bootstrap.sh — it must never sync raw. An
+      # unrendered Application name fails RFC-1123 validation and breaks the
+      # whole app-of-apps sync (and everything downstream of it).
+      exclude: '*.template.yaml'
   destination:
     server: https://kubernetes.default.svc
     namespace: argo
