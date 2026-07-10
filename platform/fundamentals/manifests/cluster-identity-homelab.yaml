@@ -12,3 +12,5 @@ data:
   environment: homelab
   storageClass: local-path
   domain: homelab.local
+  harborRole: local
+  harborCentral: harbor.cmdbee.org
