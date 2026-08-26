@@ -12,7 +12,21 @@ resources:
   - ../../manifests/crossplane-configs.yaml
 
   # Homelab Specific Apps
-  - ../../apps/longhorn.yaml
+  #
+  # Longhorn RETIRED 2026-08-26. It never successfully provisioned a volume —
+  # every PV on this cluster is local-path — and after 48 days its CSI
+  # components were all crashlooping (54 restarts each), taking
+  # longhorn-manager and the driver-deployer with them.
+  #
+  # That was not merely idle: its validating webhook registers
+  # `failurePolicy: Fail` on persistentvolumeclaims, so with no healthy
+  # endpoints behind longhorn-admission-webhook, EVERY new PVC on the cluster
+  # failed to bind — a cluster-wide storage outage caused by a component that
+  # stored nothing. It surfaced when Mimir's shared PostgreSQL could not
+  # schedule.
+  #
+  # local-path remains the only storage class in use. Re-adding Longhorn is a
+  # deliberate decision, not a revert.
   - ../../apps/garage.yaml
 
   # Homelab Specific Manifests
@@ -27,5 +41,5 @@ resources:
   # Ingress Routes
   - ../../ingress/argocd.yaml
   - ../../ingress/gitea-homelab.yaml
-  - ../../ingress/longhorn.yaml
+  # longhorn.yaml removed with the app above — an ingress to a retired UI.
   - ../../ingress/garage.yaml
