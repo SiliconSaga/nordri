@@ -109,6 +109,47 @@ kubectl get composition <name> -o yaml | yq '.metadata.managedFields[].manager'
    kubectl delete compositionrevision <stale-name>
    ```
 
+## Adding an XRD Field and Using It in the Same Commit — ArgoCD Deadlock
+
+Adding a parameter to an XRD **and** setting it in a claim in one commit wedges any
+ArgoCD Application syncing both with `ServerSideApply=true`:
+
+```
+ComparisonError: Failed to compare desired state to live state: failed to calculate diff:
+error calculating structured merge diff: error building typed value from config resource:
+.spec.parameters.<newField>: field not declared in schema
+```
+
+**Why it deadlocks, and why waiting does not help.** ArgoCD's structured merge diff
+validates the claim against the schema of the **live** CRD — the one Crossplane
+generated from the XRD *currently in the cluster*. That schema has no `<newField>`, so
+the diff fails. A failed comparison aborts the whole sync, including the XRD in the
+same Application that would add the field. Nothing self-heals: the app reports
+`Unknown`, `status.sync.revision` advances to the new commit while
+`status.operationState` stays pinned to the last one that actually applied, and every
+other resource in that Application silently stops deploying too.
+
+**Fix — apply the XRD once, out of band:**
+
+```bash
+kubectl --context <ctx> apply -f <component>/crossplane/xrd.yaml
+# Crossplane regenerates the CRD with the new field; the diff then succeeds and
+# auto-sync takes over. Verify before assuming:
+kubectl get crd <plural>.<group> \
+  -o jsonpath='{.spec.versions[0].schema.openAPIV3Schema.properties.spec.properties.parameters.properties.<newField>}'
+```
+
+This is one of the rare cases where `kubectl apply` over a GitOps-managed resource is
+correct rather than the flapping mistake below — you are applying *the same content
+git already has*, purely to break the ordering cycle, not diverging from it.
+
+**Avoiding it.** Split across two merges (XRD first, then the claim that uses it), or
+give the new field a `default` and omit it from the claim until the XRD has landed
+everywhere. Note that a `default` in the XRD does **not** save you if the claim sets
+the field explicitly — the claim is what fails to type-check. This bites **every**
+cluster on the older XRD independently, so a fix verified on one environment says
+nothing about the others; expect to repeat it per cluster.
+
 ## Common Mistakes
 
 - **`kubectl apply` over a GitOps-managed Composition** → flapping war. Test through the git source instead.
@@ -119,6 +160,7 @@ kubectl get composition <name> -o yaml | yq '.metadata.managedFields[].manager'
 - **Applying `ProviderConfig` before the Provider is `Healthy`** → `no matches for kind`. `kubectl wait --for=condition=Healthy providers.pkg.crossplane.io --all --timeout=120s` first.
 - **Default operator security context clashes** (Rancher Desktop, strict PSA) — `runAsNonRoot` errors. Override in the Composition manifest (e.g. `initContainer.containerSecurityContext.runAsNonRoot: false`).
 - **XRD v1 deprecation warning** — cosmetic; migrate to v2 when ready, v1 still works.
+- **Adding an XRD field and setting it in a claim in the same commit** → ArgoCD `ComparisonError: field not declared in schema`, and the whole Application stops syncing. Apply the XRD out of band once. See the section above.
 - **Letting the XR suffix leak into Helm-chart workload names.** A `Release` named `{{ XR name }}-myapp` produces pods/Services like `myapp-v4ktr-...` that change whenever the claim is recreated. If anything references those names statically (ESO store URLs, HTTPRoute backendRefs, kuttl asserts, docs), set `fullnameOverride` in the chart values. Caught live in nidavellir's OpenBao composition — heimdall's suffixed workloads are the counter-example where nothing external cares.
 - **Helm values written for an older chart's image shape.** Charts periodically split `image.repository` into `registry` + `repository` (vault/openbao 0.28.x did). Re-setting the old combined form renders `quay.io/quay.io/...`. Check `helm show values` for the deployed chart version before carrying values forward.
 

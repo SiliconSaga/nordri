@@ -30,6 +30,7 @@ NOT for Grafana-managed alerting (`alerting-irm` in grafana/skills), Argo Rollou
 | Patch a Helm chart value that isn't in `values.yaml` | Kustomize `helmCharts` + JSON6902 `patches:`; ArgoCD needs `kustomize.buildOptions: --enable-helm` in `argocd-cm` | Helm-native overrides survive chart upgrades; structural patches break when the manifest tree shifts — prefer values if exposed. |
 | Force ArgoCD to re-read Git (webhook missed) | `kubectl annotate application <name> argocd.argoproj.io/refresh=hard --overwrite` | Plain `refresh` recomputes diff against cached manifests; `hard-refresh` re-clones. For "webhook missed" → `hard`. |
 | Per-resource sync option override | `argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true` annotation on the resource manifest | Fine-grained when only some resources in an App need a tweak. |
+| `ComparisonError: ... field not declared in schema` | Apply the CRD/XRD defining the field once, out of band, then let auto-sync resume | The *field*-level cousin of the CRD chicken-and-egg above. `ServerSideApply=true` diffs against the **live** schema, so a manifest using a field the live CRD lacks fails the diff — which aborts the entire sync, including the CRD/XRD in the same App that would add it. Nothing self-heals, and every other resource in the App stops deploying too. For Crossplane XRDs see `crossplane-compositions` → "Adding an XRD Field and Using It in the Same Commit". |
 
 ## "Test Through Git" — the One Rule
 
