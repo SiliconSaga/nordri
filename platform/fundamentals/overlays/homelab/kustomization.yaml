@@ -21,9 +21,25 @@ resources:
   # That was not merely idle: its validating webhook registers
   # `failurePolicy: Fail` on persistentvolumeclaims, so with no healthy
   # endpoints behind longhorn-admission-webhook, EVERY new PVC on the cluster
-  # failed to bind — a cluster-wide storage outage caused by a component that
-  # stored nothing. It surfaced when Mimir's shared PostgreSQL could not
-  # schedule.
+  # was REJECTED AT ADMISSION — the API server never persisted the object, so
+  # it did not reach Pending and never got as far as binding. That distinction
+  # matters when reading the symptom: you get a create-time error naming a
+  # webhook, not a PVC sitting unbound. A cluster-wide storage outage caused by
+  # a component that stored nothing, surfaced when Mimir's shared PostgreSQL
+  # could not schedule.
+  #
+  # ⚠ REMOVING THE APPLICATION DOES NOT REMOVE THE WEBHOOKS. They are
+  # cluster-scoped and outlive the release, so a cluster that already had
+  # Longhorn stays wedged until they are deleted by hand:
+  #
+  #   kubectl delete validatingwebhookconfiguration longhorn-webhook-validator
+  #   kubectl delete mutatingwebhookconfiguration  longhorn-webhook-mutator
+  #
+  # Done on homelab 2026-08-26, which is what unblocked PVC creation. Left as a
+  # documented step rather than a cleanup Job on purpose: this overlay no longer
+  # installs Longhorn at all, so a fresh cluster never creates those objects and
+  # a Job to delete them would be dead weight on every future bootstrap. The
+  # step only applies to a cluster that already had it.
   #
   # local-path remains the only storage class in use. Re-adding Longhorn is a
   # deliberate decision, not a revert.

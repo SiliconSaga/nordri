@@ -5,17 +5,6 @@
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
-  name: longhorn
-  namespace: argo
-status:
-  health:
-    status: Healthy
-  sync:
-    status: Synced
----
-apiVersion: argoproj.io/v1alpha1
-kind: Application
-metadata:
   name: garage
   namespace: argo
 status:
