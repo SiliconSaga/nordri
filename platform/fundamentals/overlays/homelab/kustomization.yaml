@@ -20,12 +20,27 @@ resources:
   #
   # That was not merely idle: its validating webhook registers
   # `failurePolicy: Fail` on persistentvolumeclaims, so with no healthy
-  # endpoints behind longhorn-admission-webhook, EVERY new PVC on the cluster
-  # was REJECTED AT ADMISSION — the API server never persisted the object, so
-  # it did not reach Pending and never got as far as binding. That distinction
-  # matters when reading the symptom: you get a create-time error naming a
-  # webhook, not a PVC sitting unbound. A cluster-wide storage outage caused by
-  # a component that stored nothing, surfaced when Mimir's shared PostgreSQL
+  # endpoints behind longhorn-admission-webhook, the API server failed every
+  # admission call it had to make about a PVC — a cluster-wide storage outage
+  # caused by a component that stored nothing.
+  #
+  # Both admission paths are affected, and they look nothing alike:
+  #
+  #   CREATE — a brand-new PVC is rejected outright. The object is never
+  #     persisted, so it does not appear at all, not even as Pending.
+  #
+  #   UPDATE — what we actually hit. local-path is WaitForFirstConsumer, so a
+  #     PVC sits Pending until a pod needs it, and the scheduler then patches
+  #     it with the selected node. That patch is an UPDATE, so it goes through
+  #     the same dead webhook and the pod never binds:
+  #
+  #       FailedScheduling: running PreBind plugin "VolumeBinding": failed
+  #         calling webhook "validator.longhorn.io": no endpoints available
+  #         for service "longhorn-admission-webhook"
+  #
+  # Worth knowing which you are looking at: an existing Pending PVC with a pod
+  # stuck in FailedScheduling is the UPDATE path, and grepping only for a
+  # create-time error will miss it. It surfaced when Mimir's shared PostgreSQL
   # could not schedule.
   #
   # ⚠ REMOVING THE APPLICATION DOES NOT REMOVE THE WEBHOOKS. They are
