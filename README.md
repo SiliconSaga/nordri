@@ -92,7 +92,6 @@ After bootstrapping, you can access the services:
 If you have deployed the IngressRoutes (Layer 4), you can access them at:
 *   **ArgoCD**: `http://argocd.localhost` (or loadbalancer IP)
 *   **Gitea**: `http://gitea.localhost`
-*   **Longhorn**: `http://longhorn.localhost`
 *   **Garage S3**: `http://s3.localhost` (S3 API Endpoint - Returns XML)
 *   **Garage Web**: `http://garage.localhost` (Static Site Hosting - **Returns 404 by default** until a bucket is configured for website hosting)
 
@@ -106,10 +105,6 @@ kubectl port-forward svc/argocd-server -n argo 8080:443
 # Gitea
 kubectl port-forward svc/gitea-http -n gitea 3000:3000
 # Access at http://localhost:3000
-
-# Longhorn
-kubectl port-forward svc/longhorn-frontend -n longhorn 8000:80
-# Access at http://localhost:8000
 
 # Garage S3
 kubectl port-forward svc/garage -n garage 3900:3900
@@ -128,7 +123,7 @@ We use a **Kustomize-based App-of-Apps** pattern to handle environment differenc
     /manifests     # Raw Kubernetes Resources (ClusterIssuers, Providers)
     /overlays      # Kustomize Overlays per Environment
       /gke         # Includes Apps specific to GKE (e.g., CertManager)
-      /homelab     # Includes Apps specific to Homelab (e.g., Garage, Longhorn)
+      /homelab     # Includes Apps specific to Homelab (e.g., Garage)
 ```
 
 ## How it Works
@@ -151,11 +146,9 @@ Nordri exposes substrate patterns that downstream components (Heimdall, Mimir,
 
 ## Important Notes
 
-*   **Storage Strategy**: The default `local-path` provisioner (built-in to k3d/k3s) is used for development. It is node-local and does **not replicate** across nodes.
-    *   **k3d (Docker)**: Longhorn is non-functional — k3d containers lack `iscsid`. Use `local-path` for development.
-    *   **Rancher Desktop**: The bootstrap script auto-installs `open-iscsi` in the VM, so Longhorn works here.
-    *   **Multi-node homelab / production**: Longhorn (or another distributed storage like Rook-Ceph) is essential since `local-path` doesn't survive node loss. This is a future migration target.
-    *   **GKE**: Uses its own CSI driver (Persistent Disk). Longhorn is not needed.
+*   **Storage Strategy**: `local-path` (built-in to k3d/k3s) is the only storage class in use on every target except GKE, which uses its own CSI driver (Persistent Disk). `local-path` is node-local and does **not replicate** across nodes.
+    *   **Longhorn was retired on 2026-08-26.** It had never provisioned a volume here, and its leftover admission webhook — `failurePolicy: Fail` on PVCs, with no healthy endpoint behind it — was rejecting every new PVC on the cluster at admission time. A cluster that once had it needs the webhook configurations deleted by hand; the homelab overlay carries the commands.
+    *   **Distributed storage remains an open need**, not a solved one: `local-path` does not survive node loss, so a multi-node homelab or production target still wants Longhorn, Rook-Ceph, or similar. Re-adding one is a deliberate decision to make with eyes open — including that k3d containers lack `iscsid`, so Longhorn cannot work there at all.
 
 *   **In-cluster `keycloak.localhost`**: On homelab a CoreDNS rewrite lets *pods* resolve `keycloak.localhost` to Traefik, so server-side OIDC flows (e.g. OpenBao's token exchange) can reach Keycloak at its homelab issuer. See **[Resolving keycloak.localhost inside the cluster](docs/keycloak-localhost-coredns.md)**.
 *   **Argonception**: Most YAML files in `apps/` are `kind: Application`. They tell Argo to sync *another* Helm chart (e.g., the official Traefik chart).

@@ -1,7 +1,7 @@
 # nordri/kuttl-test-homelab.yaml
 # Run: kubectl kuttl test --config kuttl-test-homelab.yaml
 # Covers: ArgoCD apps, Crossplane providers/functions, Velero (shared);
-#         Longhorn storage, Garage S3 (homelab-only)
+#         Garage S3 (homelab-only)
 apiVersion: kuttl.dev/v1beta1
 kind: TestSuite
 testDirs:

@@ -12,7 +12,52 @@ resources:
   - ../../manifests/crossplane-configs.yaml
 
   # Homelab Specific Apps
-  - ../../apps/longhorn.yaml
+  #
+  # Longhorn RETIRED 2026-08-26. It never successfully provisioned a volume —
+  # every PV on this cluster is local-path — and after 48 days its CSI
+  # components were all crashlooping (54 restarts each), taking
+  # longhorn-manager and the driver-deployer with them.
+  #
+  # That was not merely idle: its validating webhook registers
+  # `failurePolicy: Fail` on persistentvolumeclaims, so with no healthy
+  # endpoints behind longhorn-admission-webhook, the API server failed every
+  # admission call it had to make about a PVC — a cluster-wide storage outage
+  # caused by a component that stored nothing.
+  #
+  # Both admission paths are affected, and they look nothing alike:
+  #
+  #   CREATE — a brand-new PVC is rejected outright. The object is never
+  #     persisted, so it does not appear at all, not even as Pending.
+  #
+  #   UPDATE — what we actually hit. local-path is WaitForFirstConsumer, so a
+  #     PVC sits Pending until a pod needs it, and the scheduler then patches
+  #     it with the selected node. That patch is an UPDATE, so it goes through
+  #     the same dead webhook and the pod never binds:
+  #
+  #       FailedScheduling: running PreBind plugin "VolumeBinding": failed
+  #         calling webhook "validator.longhorn.io": no endpoints available
+  #         for service "longhorn-admission-webhook"
+  #
+  # Worth knowing which you are looking at: an existing Pending PVC with a pod
+  # stuck in FailedScheduling is the UPDATE path, and grepping only for a
+  # create-time error will miss it. It surfaced when Mimir's shared PostgreSQL
+  # could not schedule.
+  #
+  # ⚠ REMOVING THE APPLICATION DOES NOT REMOVE THE WEBHOOKS. They are
+  # cluster-scoped and outlive the release, so a cluster that already had
+  # Longhorn stays wedged until they are deleted by hand:
+  #
+  #   kubectl delete validatingwebhookconfiguration longhorn-webhook-validator
+  #   kubectl delete mutatingwebhookconfiguration  longhorn-webhook-mutator
+  #
+  # Done on homelab 2026-08-26, which is what unblocked PVC creation. Left as a
+  # documented step rather than a cleanup Job on purpose: this overlay no longer
+  # installs Longhorn at all, so a fresh cluster never creates those objects and
+  # a Job to delete them would be dead weight on every future bootstrap. The
+  # step only applies to a cluster that already had it.
+  #
+  # local-path remains the only storage class in use. Re-adding Longhorn is a
+  # deliberate decision, not a revert.
   - ../../apps/garage.yaml
 
   # Homelab Specific Manifests
@@ -27,5 +72,5 @@ resources:
   # Ingress Routes
   - ../../ingress/argocd.yaml
   - ../../ingress/gitea-homelab.yaml
-  - ../../ingress/longhorn.yaml
+  # longhorn.yaml removed with the app above — an ingress to a retired UI.
   - ../../ingress/garage.yaml

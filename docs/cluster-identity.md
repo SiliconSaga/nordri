@@ -42,7 +42,7 @@ data:
 Per-environment definitions live in
 `platform/fundamentals/manifests/cluster-identity-{homelab,gke}.yaml`. Each
 overlay's `kustomization.yaml` includes only its own (the same file pattern as
-`longhorn`/`garage` for homelab-only apps). The resource name is identical in
+`garage` for homelab-only apps). The resource name is identical in
 both — only the values differ — so compositions stay environment-agnostic.
 
 ## How a composition consumes it

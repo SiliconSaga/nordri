@@ -77,8 +77,11 @@ ArgoCD syncs the Nordri app-of-apps. Components vary by target:
 | Traefik (adopted by ArgoCD) | ✅ | ✅ |
 | Crossplane (adopted by ArgoCD) | ✅ | ✅ |
 | Velero | ✅ (placeholder creds) | ✅ (Garage S3) |
-| Longhorn | ❌ | ✅ |
 | Garage S3 | ❌ | ✅ |
+
+Longhorn was a homelab component until 2026-08-26 and is retired — see the
+homelab overlay for why, including the manual webhook cleanup a cluster that
+already had it still needs. `local-path` is the only storage class in use.
 
 cert-manager is **not** a Nordri Layer 4 component. It is deployed by
 Vegvísir (Nidavellir Tier 2) via ArgoCD sync-waves after Nordri stabilises.

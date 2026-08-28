@@ -1,6 +1,7 @@
 # Nordri — Cluster Substrate (Tier 1)
 
-Nordri is the foundation layer: Traefik, Crossplane, Velero, Longhorn, Garage S3.
+Nordri is the foundation layer: Traefik, Crossplane, Velero, Garage S3.
+(Longhorn was retired 2026-08-26 — storage is `local-path`.)
 ArgoCD is bootstrapped here and deploys everything above via `nidavellir-apps.yaml`.
 
 **Full agent context:** [`yggdrasil/CLAUDE.md`](../yggdrasil/CLAUDE.md) and

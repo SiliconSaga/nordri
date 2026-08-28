@@ -138,7 +138,11 @@ echo "🚀 Bootstrapping Nordri for target: $TARGET"
 # and `rdctl shell` would target the wrong machine.
 if [[ "$TARGET" == "homelab" ]] && command -v rdctl &> /dev/null; then
     echo "🔍 Detected Rancher Desktop (rdctl). Checking for required VM dependencies..."
-    # Check for iscsiadm (required for Longhorn)
+    # Check for iscsiadm. Added for Longhorn, which was retired 2026-08-26, so
+    # nothing we deploy needs it today. Kept because any distributed storage we
+    # adopt later (Longhorn, Rook-Ceph) will want it, and installing it is cheap
+    # and idempotent — but it is a preflight for a future component, not a
+    # current one.
     if ! rdctl shell which iscsiadm >/dev/null 2>&1; then
         echo "⚠️  'iscsiadm' missing in Rancher Desktop VM. Installing open-iscsi..."
         # `rdctl shell` invokes commands via nsenter, not a shell — so compound

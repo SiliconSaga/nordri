@@ -19,7 +19,7 @@ Shared test cases (both targets): `tests/e2e/shared/argocd`, `tests/e2e/shared/c
 
 GKE-only: `tests/e2e/gke/gateway` (Gateway API — homelab uses IngressRoutes instead)
 
-Homelab-only: `tests/e2e/homelab/longhorn`, `tests/e2e/homelab/garage`
+Homelab-only: `tests/e2e/homelab/garage`
 
 ### Nidavellir (routing layer)
 
@@ -74,8 +74,6 @@ nordri/
         gateway/
           00-assert.yaml       # Gateway Accepted+Programmed=True (GKE/Nidavellir only)
       homelab/
-        longhorn/
-          00-assert.yaml       # longhorn-manager DaemonSet + longhorn-ui Deployment
         garage/
           00-assert.yaml       # Garage StatefulSet readyReplicas=1
 
@@ -113,7 +111,7 @@ Run with `kubectl kuttl test --test-dir tests/e2e/shared tests/e2e/gke`
 
 **Option B — single dir with skip conditions:**
 Use `00-assert.yaml` conditions that naturally pass/fail based on what's installed.
-For example, a Longhorn assert will simply not find the namespace on GKE and fail,
+For example, a Garage assert will simply not find the namespace on GKE and fail,
 so homelab-only tests live in a separate `homelab/` subdir that's excluded for GKE runs.
 
 Recommendation: **Option B** with a `shared/`, `gke/`, and `homelab/` split under
@@ -178,7 +176,7 @@ status:
 
 ### Homelab-only
 
-**Longhorn pods healthy, Garage pod healthy** (existing validate.py logic, ported).
+**Garage pod healthy** (existing validate.py logic, ported).
 
 ### Domain-dependent (whoami e2e — requires DNS + flagged optional)
 
@@ -206,8 +204,10 @@ kuttl. Two homelab-specific checks it performed are not yet ported to kuttl:
 
 - **Ingress connectivity** (`argocd.localhost`, `gitea.localhost`, etc.) —
   could be added as `02-http.yaml` steps in each homelab test case
-- **Longhorn PVC binding smoke test** — creates a temporary PVC to verify the
-  storage class actually provisions; could be a `TestStep` with `kubectl apply`
+- **PVC binding smoke test** — creates a temporary PVC to verify the default
+  storage class actually provisions. Worth more than it looks: a retired
+  Longhorn left admission webhooks behind that rejected every PVC on the
+  cluster, and nothing in the suite noticed; could be a `TestStep` with `kubectl apply`
   + assert on PVC `status.phase: Bound`
 
 These are nice-to-have rather than critical; the ArgoCD Synced+Healthy and
