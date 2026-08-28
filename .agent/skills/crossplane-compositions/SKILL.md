@@ -109,6 +109,65 @@ kubectl get composition <name> -o yaml | yq '.metadata.managedFields[].manager'
    kubectl delete compositionrevision <stale-name>
    ```
 
+## Adding an XRD Field and Using It in the Same Commit — ArgoCD Deadlock
+
+Adding a parameter to an XRD **and** setting it in a claim in one commit wedges any
+ArgoCD Application syncing both with `ServerSideApply=true`:
+
+```text
+ComparisonError: Failed to compare desired state to live state: failed to calculate diff:
+error calculating structured merge diff: error building typed value from config resource:
+.spec.parameters.<newField>: field not declared in schema
+```
+
+**Why it deadlocks, and why waiting does not help.** ArgoCD's structured merge diff
+validates the claim against the schema of the **live** CRD — the one Crossplane
+generated from the XRD *currently in the cluster*. That schema has no `<newField>`, so
+the diff fails. A failed comparison aborts the whole sync, including the XRD in the
+same Application that would add the field. Nothing self-heals: the app reports
+`Unknown`, `status.sync.revision` advances to the new commit while
+`status.operationState` stays pinned to the last one that actually applied, and every
+other resource in that Application silently stops deploying too.
+
+**Fix — apply the XRD once, out of band:**
+
+```bash
+kubectl --context <ctx> apply -f <component>/crossplane/xrd.yaml
+
+# Crossplane regenerates the CRD with the new field; the diff then succeeds and
+# auto-sync takes over. Verify before assuming — and verify the CLAIM:
+kubectl --context <ctx> explain <claim-kind>.spec.parameters.<newField>
+```
+
+Three things about that check, each of which has produced a false "it worked":
+
+- **`--context` on the verify, not just the apply.** Reading the field back from
+  whichever context happens to be current tells you nothing about the cluster you
+  just repaired. Easy to miss because the apply above is explicit about it.
+- **The claim kind, not the composite.** An XRD that declares `claimNames`
+  produces *two* CRDs — `<claimNames.plural>.<group>` for the claim and
+  `<names.plural>.<group>` (conventionally `x`-prefixed) for the composite. The
+  deadlock is ArgoCD validating a *claim*, so the claim CRD is the one that has
+  to have the field. `kubectl explain` takes the kind and resolves this for you.
+- **`explain` rather than a jsonpath into `.spec.versions[0]`.** Index 0 is
+  whichever version happens to be listed first, which is not necessarily the one
+  the claim is served at; on a multi-version XRD that reads the wrong schema and
+  reports a missing field that is present, or vice versa. `explain` resolves the
+  served version itself, prints the field's type and description on success, and
+  exits non-zero with `field "<newField>" does not exist` on failure — so it
+  works in a script without parsing an empty string as either answer.
+
+This is one of the rare cases where `kubectl apply` over a GitOps-managed resource is
+correct rather than the flapping mistake below — you are applying *the same content
+git already has*, purely to break the ordering cycle, not diverging from it.
+
+**Avoiding it.** Split across two merges (XRD first, then the claim that uses it), or
+give the new field a `default` and omit it from the claim until the XRD has landed
+everywhere. Note that a `default` in the XRD does **not** save you if the claim sets
+the field explicitly — the claim is what fails to type-check. This bites **every**
+cluster on the older XRD independently, so a fix verified on one environment says
+nothing about the others; expect to repeat it per cluster.
+
 ## Common Mistakes
 
 - **`kubectl apply` over a GitOps-managed Composition** → flapping war. Test through the git source instead.
@@ -119,6 +178,7 @@ kubectl get composition <name> -o yaml | yq '.metadata.managedFields[].manager'
 - **Applying `ProviderConfig` before the Provider is `Healthy`** → `no matches for kind`. `kubectl wait --for=condition=Healthy providers.pkg.crossplane.io --all --timeout=120s` first.
 - **Default operator security context clashes** (Rancher Desktop, strict PSA) — `runAsNonRoot` errors. Override in the Composition manifest (e.g. `initContainer.containerSecurityContext.runAsNonRoot: false`).
 - **XRD v1 deprecation warning** — cosmetic; migrate to v2 when ready, v1 still works.
+- **Adding an XRD field and setting it in a claim in the same commit** → ArgoCD `ComparisonError: field not declared in schema`, and the whole Application stops syncing. Apply the XRD out of band once. See the section above.
 - **Letting the XR suffix leak into Helm-chart workload names.** A `Release` named `{{ XR name }}-myapp` produces pods/Services like `myapp-v4ktr-...` that change whenever the claim is recreated. If anything references those names statically (ESO store URLs, HTTPRoute backendRefs, kuttl asserts, docs), set `fullnameOverride` in the chart values. Caught live in nidavellir's OpenBao composition — heimdall's suffixed workloads are the counter-example where nothing external cares.
 - **Helm values written for an older chart's image shape.** Charts periodically split `image.repository` into `registry` + `repository` (vault/openbao 0.28.x did). Re-setting the old combined form renders `quay.io/quay.io/...`. Check `helm show values` for the deployed chart version before carrying values forward.
 
