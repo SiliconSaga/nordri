@@ -114,7 +114,7 @@ kubectl get composition <name> -o yaml | yq '.metadata.managedFields[].manager'
 Adding a parameter to an XRD **and** setting it in a claim in one commit wedges any
 ArgoCD Application syncing both with `ServerSideApply=true`:
 
-```
+```text
 ComparisonError: Failed to compare desired state to live state: failed to calculate diff:
 error calculating structured merge diff: error building typed value from config resource:
 .spec.parameters.<newField>: field not declared in schema
@@ -133,11 +133,29 @@ other resource in that Application silently stops deploying too.
 
 ```bash
 kubectl --context <ctx> apply -f <component>/crossplane/xrd.yaml
+
 # Crossplane regenerates the CRD with the new field; the diff then succeeds and
-# auto-sync takes over. Verify before assuming:
-kubectl get crd <plural>.<group> \
-  -o jsonpath='{.spec.versions[0].schema.openAPIV3Schema.properties.spec.properties.parameters.properties.<newField>}'
+# auto-sync takes over. Verify before assuming — and verify the CLAIM:
+kubectl --context <ctx> explain <claim-kind>.spec.parameters.<newField>
 ```
+
+Three things about that check, each of which has produced a false "it worked":
+
+- **`--context` on the verify, not just the apply.** Reading the field back from
+  whichever context happens to be current tells you nothing about the cluster you
+  just repaired. Easy to miss because the apply above is explicit about it.
+- **The claim kind, not the composite.** An XRD that declares `claimNames`
+  produces *two* CRDs — `<claimNames.plural>.<group>` for the claim and
+  `<names.plural>.<group>` (conventionally `x`-prefixed) for the composite. The
+  deadlock is ArgoCD validating a *claim*, so the claim CRD is the one that has
+  to have the field. `kubectl explain` takes the kind and resolves this for you.
+- **`explain` rather than a jsonpath into `.spec.versions[0]`.** Index 0 is
+  whichever version happens to be listed first, which is not necessarily the one
+  the claim is served at; on a multi-version XRD that reads the wrong schema and
+  reports a missing field that is present, or vice versa. `explain` resolves the
+  served version itself, prints the field's type and description on success, and
+  exits non-zero with `field "<newField>" does not exist` on failure — so it
+  works in a script without parsing an empty string as either answer.
 
 This is one of the rare cases where `kubectl apply` over a GitOps-managed resource is
 correct rather than the flapping mistake below — you are applying *the same content
