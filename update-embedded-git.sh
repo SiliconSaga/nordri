@@ -45,6 +45,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$SCRIPT_DIR/lib/gitea.sh"
 . "$SCRIPT_DIR/lib/hydrate.sh"
 . "$SCRIPT_DIR/lib/patch-nidavellir.sh"
+. "$SCRIPT_DIR/lib/patch-velero.sh"
 TARGET=$1
 
 # Validate args before anything that touches the cluster, so wrong inputs
@@ -235,6 +236,13 @@ if [[ "$OSTYPE" == "darwin"* ]]; then
 else
     sed -i "s|path: platform/fundamentals|path: platform/fundamentals/overlays/$TARGET|g" $HYDRATE_DIR/platform/argocd/app-of-apps.yaml
 fi
+
+# Stamp the GCP project into the Velero Application (GKE only; no-op for
+# homelab). This MUST run here as well as in bootstrap.sh: this is the day-2
+# path, so skipping it would push a manifest still carrying the literal
+# placeholder and leave Velero pointed at a bucket that does not exist —
+# healthy-looking and storing nothing. See lib/patch-velero.sh.
+patch_velero_tree "$HYDRATE_DIR" "$TARGET" || exit 1
 
 # Copy the root application (optional, but good for completeness)
 cp "$SCRIPT_DIR/platform/root-app.yaml" "$HYDRATE_DIR/"

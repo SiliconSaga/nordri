@@ -84,6 +84,32 @@ If a second cluster ever backs up into this bucket, give each a distinct
 `bootstrap.sh gke` then substitutes `$GCP_PROJECT` into the Application at hydration
 time and fails closed if it is unset or if any placeholder survives.
 
+## Rehydrating an existing cluster
+
+`./update-embedded-git.sh gke` is the day-2 path and is the one to use for a
+config change; `bootstrap.sh` is for a cluster that does not have Gitea/ArgoCD yet.
+Both stamp the project through the same `lib/patch-velero.sh`, so neither can push
+an unsubstituted manifest.
+
+Three things worth knowing before running it:
+
+- **It pushes your local working tree, on whatever branch it is checked out.**
+  `nordri`, `nidavellir`, `mimir` and `heimdall` are each hydrated from their
+  sibling checkout, so an unmerged branch in any of them goes to the cluster.
+  Check with `git -C ../<component> branch --show-current` first.
+- **Identical content is a no-op.** Each hydration is a fresh orphan commit, so the
+  SHA always changes, but ArgoCD compares rendered manifests against live state
+  rather than revisions — no diff means no sync and nothing restarts.
+- **Velero itself is the exception, by design.** This change alters its Application
+  (plugin image, GCS backend, schedule, ServiceMonitor), so ArgoCD will re-sync it
+  and the Velero pod will restart once. That is the intended effect. The Application
+  keeps the name `velero` across the file rename, so it is updated in place rather
+  than pruned and recreated.
+
+`GCP_PROJECT` is required only for `gke`. The `homelab` target returns before the
+check, and on `gke` a configured `gcloud config set project` satisfies it without
+an export.
+
 ## Verifying — do not skip this
 
 An install that looks healthy is exactly what was wrong before, so check the two

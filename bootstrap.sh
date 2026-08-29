@@ -56,6 +56,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$SCRIPT_DIR/lib/gitea.sh"
 . "$SCRIPT_DIR/lib/hydrate.sh"
 . "$SCRIPT_DIR/lib/patch-nidavellir.sh"
+. "$SCRIPT_DIR/lib/patch-velero.sh"
 TARGET=$1
 # Capture explicit GITEA_PASS env input here without applying a default —
 # the resolver populates the value below. Username is fixed to
@@ -361,40 +362,11 @@ else
   sed -i "s|path: platform/fundamentals|path: platform/fundamentals/overlays/$TARGET|g" "$HYDRATE_DIR/platform/argocd/app-of-apps.yaml"
 fi
 
-# GKE: substitute the GCP project into the Velero Application. Committing a bare
-# `__GCP_PROJECT__` keeps the repo free of any one project's identity; the value
-# only ever exists in the hydrated copy pushed to the Seed Gitea.
-#
-# Fails closed. A silent miss here yields a Velero that points at the bucket
-# `__GCP_PROJECT__-velero` and a service account that cannot exist, and it would
-# look installed and healthy while storing nothing — the exact failure this
-# whole change is fixing.
-if [[ "$TARGET" == "gke" ]]; then
-    VELERO_APP="$HYDRATE_DIR/platform/fundamentals/apps/velero-gke.yaml"
-    if [[ ! -f "$VELERO_APP" ]]; then
-        echo "❌ Expected $VELERO_APP to exist for GKE hydration." >&2
-        exit 1
-    fi
-    if [[ -z "${GCP_PROJECT:-}" ]]; then
-        GCP_PROJECT="$(gcloud config get-value project 2>/dev/null || true)"
-    fi
-    if [[ -z "$GCP_PROJECT" || "$GCP_PROJECT" == "(unset)" ]]; then
-        echo "❌ GCP_PROJECT is not set and gcloud has no default project." >&2
-        echo "   Velero on GKE needs it for the GCS bucket and the Workload Identity binding." >&2
-        echo "   export GCP_PROJECT=<your-project-id>  (or: gcloud config set project <id>)" >&2
-        exit 1
-    fi
-    if [[ "$OSTYPE" == "darwin"* ]]; then
-        sed -i '' "s|__GCP_PROJECT__|$GCP_PROJECT|g" "$VELERO_APP"
-    else
-        sed -i "s|__GCP_PROJECT__|$GCP_PROJECT|g" "$VELERO_APP"
-    fi
-    if grep -q '__GCP_PROJECT__' "$VELERO_APP"; then
-        echo "❌ Velero project substitution left placeholders in $VELERO_APP." >&2
-        exit 1
-    fi
-    echo "   Velero GKE Application pinned to project: $GCP_PROJECT"
-fi
+# Stamp the GCP project into the Velero Application (GKE only; no-op for
+# homelab). Committing a bare placeholder keeps the repo free of any one
+# project's identity — the value exists only in the hydrated copy pushed to the
+# Seed Gitea. Shared with update-embedded-git.sh; see lib/patch-velero.sh.
+patch_velero_tree "$HYDRATE_DIR" "$TARGET" || exit 1
 
 # Copy the root application
 cp "$SCRIPT_DIR/platform/root-app.yaml" "$HYDRATE_DIR/"
