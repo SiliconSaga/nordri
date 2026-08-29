@@ -112,6 +112,13 @@ velero-setup)
     WI_POOL="$(gcloud container clusters describe "$CLUSTER_NAME" \
         --project="$GCP_PROJECT" --zone="$GCP_ZONE" \
         --format='value(workloadIdentityConfig.workloadPool)' 2>/dev/null || true)"
+    # Read the cluster's real location rather than reusing GCP_ZONE: a regional
+    # cluster's location is the region, and the IAM condition below embeds it. A
+    # wrong location yields a condition that never matches, so Velero would fail
+    # to authenticate — quietly, at backup time.
+    CLUSTER_LOCATION="$(gcloud container clusters describe "$CLUSTER_NAME" \
+        --project="$GCP_PROJECT" --zone="$GCP_ZONE" \
+        --format='value(location)' 2>/dev/null || true)"
     if [[ -z "$WI_POOL" ]]; then
         echo "❌ Workload Identity is not enabled on cluster '$CLUSTER_NAME'."
         echo "   Velero on GKE authenticates through it. Enable with:"
@@ -204,19 +211,52 @@ compute.zones.get,iam.serviceAccounts.signBlob"
         echo "       --role=roles/compute.storageAdmin --condition=None"
     fi
 
-    # The Workload Identity pool is PROJECT-level, not per-cluster: the member
-    # below is `<project>.svc.id.goog[velero/velero]`, which every cluster in this
-    # project matches. So this identity — and the bucket — are shared by all of
-    # them, and `delete` must not remove either (see the delete action).
+    # ── Workload Identity binding, scoped to THIS cluster ──
     #
-    # That sharing is fine while one cluster backs up. If a second one is ever
-    # added, give each its own BackupStorageLocation `prefix` so their backups do
-    # not interleave in one bucket path.
-    echo "🔗 Binding the Kubernetes SA velero/velero to $VELERO_SA..."
+    # The WI pool is PROJECT-level: the member `<project>.svc.id.goog[velero/velero]`
+    # matches a `velero/velero` ServiceAccount in EVERY cluster in the project.
+    # GKE calls this identity sameness, and unconditioned it means any cluster
+    # here that happens to run a pod as velero/velero can impersonate this
+    # account and read or write the whole backup bucket.
+    #
+    # The IAM condition pins the binding to one cluster by its provider id, so
+    # the KSA name can stay `velero/velero` (no manifest change, no per-cluster
+    # rename). The location comes from the cluster itself rather than GCP_ZONE,
+    # since a regional cluster's location is its region.
+    #
+    # Still NOT deleted by the delete action: several clusters may hold separate
+    # conditional bindings on this one service account, so removing it would
+    # break the others.
+    if [[ -z "$CLUSTER_LOCATION" ]]; then
+        echo "❌ Could not read the location of cluster '$CLUSTER_NAME'." >&2
+        echo "   Needed to scope the Workload Identity binding to this cluster." >&2
+        exit 1
+    fi
+    VELERO_WI_PROVIDER="https://container.googleapis.com/v1/projects/${GCP_PROJECT}/locations/${CLUSTER_LOCATION}/clusters/${CLUSTER_NAME}"
+    echo "🔗 Binding velero/velero to $VELERO_SA, scoped to $CLUSTER_NAME..."
     gcloud iam service-accounts add-iam-policy-binding "$VELERO_SA" \
         --project="$GCP_PROJECT" \
         --role=roles/iam.workloadIdentityUser \
-        --member="serviceAccount:${GCP_PROJECT}.svc.id.goog[velero/velero]" >/dev/null
+        --member="serviceAccount:${GCP_PROJECT}.svc.id.goog[velero/velero]" \
+        --condition="expression=request.auth.claims.google.providerId=='${VELERO_WI_PROVIDER}',title=restrict-to-${CLUSTER_NAME}" >/dev/null
+
+    # An earlier run of this script created the same binding WITHOUT a condition.
+    # That unconditioned binding still grants every cluster in the project, and
+    # IAM evaluates bindings as a union — so leaving it in place makes the
+    # condition above decorative. Report it rather than removing it silently.
+    if gcloud iam service-accounts get-iam-policy "$VELERO_SA" \
+        --project="$GCP_PROJECT" \
+        --flatten="bindings[].members" \
+        --filter="bindings.role=roles/iam.workloadIdentityUser AND NOT bindings.condition.title:restrict-to-" \
+        --format="value(bindings.members)" 2>/dev/null | grep -q .; then
+        echo "⚠️  An UNCONDITIONED workloadIdentityUser binding still exists on ${VELERO_SA}."
+        echo "   IAM unions bindings, so it grants every cluster in the project and"
+        echo "   makes the cluster-scoped condition above ineffective. Remove it:"
+        echo "     gcloud iam service-accounts remove-iam-policy-binding $VELERO_SA \\"
+        echo "       --project=$GCP_PROJECT --role=roles/iam.workloadIdentityUser \\"
+        echo "       --member='serviceAccount:${GCP_PROJECT}.svc.id.goog[velero/velero]' \\"
+        echo "       --condition=None"
+    fi
 
     echo ""
     echo "✅ Velero storage ready."

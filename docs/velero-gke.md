@@ -78,24 +78,34 @@ project; deleting the bucket would discard the backups that exist precisely to
 survive a cluster's loss. Both are left with the manual commands printed, to run
 only after confirming nothing else uses them.
 
-**The consequence to understand:** any cluster in this project that runs a pod as
-`velero/velero` can impersonate this service account and read or write the backup
-bucket. With one backing-up cluster that is a non-issue; it stops being one the
-moment a second, less-trusted cluster exists in the same project.
+GKE calls this **identity sameness**: unconditioned, any cluster in the project
+running a pod as `velero/velero` could impersonate this service account and read or
+write the whole backup bucket.
 
-Making the identity cluster-specific is deliberately not done yet, because the
-mechanism is a rename rather than a policy tweak: the Workload Identity member is
-`<project>.svc.id.goog[<namespace>/<ksa>]`, with no cluster component available to
-condition on, so uniqueness has to come from the KSA name. Concretely, per cluster:
+`velero-setup` closes that with an **IAM condition** on the
+`roles/iam.workloadIdentityUser` binding, pinning it to one cluster's provider id:
 
-1. set `serviceAccount.server.name: velero-<cluster>` in the Velero Helm values,
-2. bind `<project>.svc.id.goog[velero/velero-<cluster>]` instead,
-3. give each its own GSA, so `delete` can safely remove one again.
+```
+request.auth.claims.google.providerId ==
+  'https://container.googleapis.com/v1/projects/<project>/locations/<location>/clusters/<cluster>'
+```
 
-That needs the cluster name threaded through hydration, which today knows only the
-project. Worth doing when a second cluster appears — and at that point also give
-each a distinct `BackupStorageLocation` `prefix`, so their backups do not interleave
-in one bucket path.
+The KSA stays `velero/velero`, so no manifest change and no per-cluster rename are
+needed. The location is read from the cluster itself rather than from `GCP_ZONE`,
+because a regional cluster's location is its region and a wrong value produces a
+condition that never matches — which fails at backup time, not at setup time.
+
+**If you ran an earlier version of this script**, it created the same binding with
+no condition. IAM evaluates bindings as a union, so that one still grants every
+cluster and makes the condition ineffective. `velero-setup` detects it and prints
+the `remove-iam-policy-binding --condition=None` command; it does not remove it for
+you, since revoking an IAM binding is not something a setup command should do
+unannounced.
+
+The service account is still not deleted on teardown: several clusters may hold
+separate conditional bindings on it. If a second cluster ever backs up into this
+bucket, give each a distinct `BackupStorageLocation` `prefix` so their backups do
+not interleave in one path.
 
 `bootstrap.sh gke` then substitutes `$GCP_PROJECT` into the Application at hydration
 time and fails closed if it is unset or if any placeholder survives.
