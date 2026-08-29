@@ -78,8 +78,24 @@ project; deleting the bucket would discard the backups that exist precisely to
 survive a cluster's loss. Both are left with the manual commands printed, to run
 only after confirming nothing else uses them.
 
-If a second cluster ever backs up into this bucket, give each a distinct
-`BackupStorageLocation` `prefix` so their backups do not interleave.
+**The consequence to understand:** any cluster in this project that runs a pod as
+`velero/velero` can impersonate this service account and read or write the backup
+bucket. With one backing-up cluster that is a non-issue; it stops being one the
+moment a second, less-trusted cluster exists in the same project.
+
+Making the identity cluster-specific is deliberately not done yet, because the
+mechanism is a rename rather than a policy tweak: the Workload Identity member is
+`<project>.svc.id.goog[<namespace>/<ksa>]`, with no cluster component available to
+condition on, so uniqueness has to come from the KSA name. Concretely, per cluster:
+
+1. set `serviceAccount.server.name: velero-<cluster>` in the Velero Helm values,
+2. bind `<project>.svc.id.goog[velero/velero-<cluster>]` instead,
+3. give each its own GSA, so `delete` can safely remove one again.
+
+That needs the cluster name threaded through hydration, which today knows only the
+project. Worth doing when a second cluster appears — and at that point also give
+each a distinct `BackupStorageLocation` `prefix`, so their backups do not interleave
+in one bucket path.
 
 `bootstrap.sh gke` then substitutes `$GCP_PROJECT` into the Application at hydration
 time and fails closed if it is unset or if any placeholder survives.
@@ -122,6 +138,29 @@ kubectl -n velero get backupstoragelocation default
 velero backup create verify-$(date +%s) --include-namespaces velero --wait
 velero backup get
 ```
+
+That first backup is an **object-storage smoke test only**. The `velero` namespace
+holds no PVC, so it exercises the bucket, the credentials and the plugin — and
+touches none of the `compute.*` snapshot permissions, which are the newest and
+therefore likeliest part of the IAM setup to be wrong.
+
+To exercise those, back up a namespace that actually has a bound PVC and confirm a
+snapshot was taken:
+
+```bash
+# Pick a namespace with a bound PVC.
+kubectl get pvc -A
+
+velero backup create verify-snap-$(date +%s) \
+  --include-namespaces <ns-with-a-pvc> --snapshot-volumes --wait
+
+# "Volume snapshots: N of N completed successfully" — 0 completed, or the
+# section missing entirely, means the custom role is not in effect.
+velero backup describe verify-snap-<...> --details
+```
+
+`backup describe` needs `iam.serviceAccounts.signBlob`, so a permissions error at
+this step points at the custom role rather than at the backup itself.
 
 If the location is `Unavailable`, read the reason before guessing — it distinguishes
 a missing bucket from a credential problem from a plugin mismatch:
