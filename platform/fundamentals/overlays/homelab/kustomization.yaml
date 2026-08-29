@@ -5,7 +5,6 @@ resources:
   # Shared Apps
   - ../../apps/traefik.yaml
   - ../../apps/crossplane.yaml
-  - ../../apps/velero.yaml
 
   # Shared Manifests
   - ../../manifests/crossplane-providers.yaml
@@ -59,6 +58,9 @@ resources:
   # local-path remains the only storage class in use. Re-adding Longhorn is a
   # deliberate decision, not a revert.
   - ../../apps/garage.yaml
+  # Velero is environment-specific — see the header in velero-homelab.yaml.
+  # This one needs Garage above, so it must stay paired with it.
+  - ../../apps/velero-homelab.yaml
 
   # Homelab Specific Manifests
   - ../../manifests/cluster-identity-homelab.yaml

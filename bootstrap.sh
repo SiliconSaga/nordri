@@ -361,6 +361,41 @@ else
   sed -i "s|path: platform/fundamentals|path: platform/fundamentals/overlays/$TARGET|g" "$HYDRATE_DIR/platform/argocd/app-of-apps.yaml"
 fi
 
+# GKE: substitute the GCP project into the Velero Application. Committing a bare
+# `__GCP_PROJECT__` keeps the repo free of any one project's identity; the value
+# only ever exists in the hydrated copy pushed to the Seed Gitea.
+#
+# Fails closed. A silent miss here yields a Velero that points at the bucket
+# `__GCP_PROJECT__-velero` and a service account that cannot exist, and it would
+# look installed and healthy while storing nothing — the exact failure this
+# whole change is fixing.
+if [[ "$TARGET" == "gke" ]]; then
+    VELERO_APP="$HYDRATE_DIR/platform/fundamentals/apps/velero-gke.yaml"
+    if [[ ! -f "$VELERO_APP" ]]; then
+        echo "❌ Expected $VELERO_APP to exist for GKE hydration." >&2
+        exit 1
+    fi
+    if [[ -z "${GCP_PROJECT:-}" ]]; then
+        GCP_PROJECT="$(gcloud config get-value project 2>/dev/null || true)"
+    fi
+    if [[ -z "$GCP_PROJECT" || "$GCP_PROJECT" == "(unset)" ]]; then
+        echo "❌ GCP_PROJECT is not set and gcloud has no default project." >&2
+        echo "   Velero on GKE needs it for the GCS bucket and the Workload Identity binding." >&2
+        echo "   export GCP_PROJECT=<your-project-id>  (or: gcloud config set project <id>)" >&2
+        exit 1
+    fi
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        sed -i '' "s|__GCP_PROJECT__|$GCP_PROJECT|g" "$VELERO_APP"
+    else
+        sed -i "s|__GCP_PROJECT__|$GCP_PROJECT|g" "$VELERO_APP"
+    fi
+    if grep -q '__GCP_PROJECT__' "$VELERO_APP"; then
+        echo "❌ Velero project substitution left placeholders in $VELERO_APP." >&2
+        exit 1
+    fi
+    echo "   Velero GKE Application pinned to project: $GCP_PROJECT"
+fi
+
 # Copy the root application
 cp "$SCRIPT_DIR/platform/root-app.yaml" "$HYDRATE_DIR/"
 
@@ -554,23 +589,25 @@ if [[ -n "$REALM" ]]; then
         | kubectl apply -n argo -f -
 fi
 
-# --- GKE: Pre-create Velero namespace + dummy credentials ---
-# Velero's Helm chart requires the velero-credentials secret to exist before the pod
-# starts. ArgoCD begins syncing Velero immediately after the root app is applied, so
-# we create a placeholder secret now to prevent a CrashLoopBackOff.
+# --- GKE: Velero readiness check ---
+# No credentials Secret is created here any more. GKE Velero authenticates via
+# Workload Identity (`credentials.useSecret: false`), so the placeholder Secret
+# that used to live here — created solely to stop a CrashLoopBackOff while the
+# real config was a TODO — is gone. If an old one is still on the cluster from a
+# previous bootstrap, remove it: it is inert but misleading.
 #
-# TODO: Replace this block with proper GCS + Workload Identity setup.
-# When done, no secret will be needed at all (useSecret: false in velero-gke.yaml).
-# See docs/velero-gke.md for the full implementation plan.
+# The GCS bucket and IAM bindings are a one-time, cluster-independent setup:
+#   ./gke-provision.sh velero-setup
+# Run it before or after bootstrap; Velero reports its BackupStorageLocation
+# Unavailable until it exists.
 if [[ "$TARGET" == "gke" ]]; then
-    echo "🔑 [GKE] Pre-creating Velero namespace and placeholder credentials..."
-    kubectl create namespace velero --dry-run=client -o yaml | kubectl apply -f -
-    kubectl create secret generic velero-credentials -n velero \
-      --from-literal=cloud="[default]
-aws_access_key_id=PLACEHOLDER
-aws_secret_access_key=PLACEHOLDER" \
-      --dry-run=client -o yaml | kubectl apply -f -
-    echo "✅ Velero placeholder credentials created (temporary — see docs/velero-gke.md)."
+    if kubectl get secret velero-credentials -n velero >/dev/null 2>&1; then
+        echo "⚠️  A leftover 'velero-credentials' Secret exists in namespace velero."
+        echo "   Workload Identity does not use it. Remove it to avoid confusion:"
+        echo "     kubectl delete secret velero-credentials -n velero"
+    fi
+    echo "ℹ️  [GKE] Velero uses Workload Identity — no credentials Secret needed."
+    echo "   One-time GCS + IAM setup (idempotent): ./gke-provision.sh velero-setup"
 fi
 
 # --- Step 5: Initialize Garage S3 + Velero Credentials (Layer 5) ---

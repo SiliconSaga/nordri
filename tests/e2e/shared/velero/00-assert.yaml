@@ -1,8 +1,17 @@
 # tests/e2e/shared/velero/00-assert.yaml
-# Assert Velero deployment is running on both GKE and homelab.
-# GKE: placeholder GCS credentials (real config is a TODO — see docs/velero-gke.md).
-# Homelab: real Garage S3 credentials — full backup functionality expected.
-# A CrashLoopBackOff on either target means missing/invalid credentials.
+# Assert the Velero deployment is running on both GKE and homelab.
+#
+# GKE: GCP plugin + GCS + Workload Identity (no Secret).
+# Homelab: AWS plugin + Garage S3 credentials.
+# A CrashLoopBackOff on homelab means missing/invalid credentials; on GKE it
+# means the Workload Identity annotation or the plugin init container is wrong.
+#
+# NOTE what this does NOT prove. A ready Deployment says the pod started, not
+# that it can reach its backup store — Velero ran healthy on GKE for a long time
+# against a Garage endpoint that did not resolve there, storing nothing. The
+# check that matters is the BackupStorageLocation phase, which needs the bucket
+# and IAM from `./gke-provision.sh velero-setup` and so cannot be asserted from
+# a bare cluster bootstrap. See docs/velero-gke.md for the manual verification.
 apiVersion: apps/v1
 kind: Deployment
 metadata:

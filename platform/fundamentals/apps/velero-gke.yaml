@@ -1,0 +1,100 @@
+# Velero for GKE — native GCP plugin, GCS backend, Workload Identity.
+#
+# Homelab uses velero-homelab.yaml instead (AWS plugin against in-cluster Garage).
+# See docs/velero-gke.md for the design and the one-time GCS/IAM setup, which is
+# `./gke-provision.sh velero-setup`.
+#
+# The GCP project placeholder below is substituted at hydration time by bootstrap.sh,
+# the same way app-of-apps.yaml gets its overlay path, so nothing project-specific is
+# committed. bootstrap fails closed if the value is unset or any placeholder survives.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: velero
+  namespace: argo
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: 'https://vmware-tanzu.github.io/helm-charts'
+    chart: velero
+    targetRevision: 11.3.1 # Corresponds to Velero v1.17.1
+    helm:
+      values: |
+        # No kubectl image pin here, unlike homelab: that workaround exists for
+        # Bitnami's image policy affecting the AWS plugin helper, and the GCP
+        # plugin does not use that image.
+        initContainers:
+          - name: velero-plugin-for-gcp
+            image: velero/velero-plugin-for-gcp:v1.11.0
+            volumeMounts:
+              - mountPath: /target
+                name: plugins
+        serviceAccount:
+          server:
+            annotations:
+              iam.gke.io/gcp-service-account: velero@__GCP_PROJECT__.iam.gserviceaccount.com
+        configuration:
+          backupStorageLocation:
+            - name: default
+              provider: gcp
+              bucket: __GCP_PROJECT__-velero
+              config:
+                project: __GCP_PROJECT__
+          volumeSnapshotLocation:
+            - name: default
+              provider: gcp
+              config:
+                project: __GCP_PROJECT__
+        # Workload Identity: the pod authenticates via GKE's metadata server, so
+        # there is no Secret to create, rotate, or leak.
+        credentials:
+          useSecret: false
+
+        # A Velero install with no Schedule takes no backups. That is not a
+        # hypothetical failure here — Velero has been installed on this cluster
+        # and storing nothing, and the only reason anyone noticed is that
+        # somebody went looking. Ship the schedule with the install.
+        schedules:
+          daily-full:
+            disabled: false
+            # Velero evaluates cron in the CONTROLLER's timezone, which is UTC.
+            # 06:00 UTC is 02:00 US/Eastern in EDT (03:00 in EST) — deliberately
+            # overnight local. The same UTC-vs-local trap already bit the Valheim
+            # Jenkins jobs, where "nightly 03:30" ran at 23:30 Eastern.
+            schedule: "0 6 * * *"
+            useOwnerReferencesInBackup: false
+            template:
+              # 30 days of daily backups. Storage is cheap next to the thing this
+              # protects against; three PVs have already been lost to a Delete
+              # reclaim policy.
+              ttl: "720h"
+              # GCP persistent-disk snapshots for every PVC in scope.
+              #
+              # IMPORTANT: a snapshot of a LIVE database volume is crash-consistent,
+              # not transaction-consistent — it is a disaster-recovery net, never a
+              # substitute for the engine's own backup (PXC xtrabackup, pgBackRest).
+              # Restore those from their own backups; use this to get the cluster
+              # and its non-database volumes back.
+              snapshotVolumes: true
+              includedNamespaces:
+                - '*'
+              excludedNamespaces:
+                # Recreated by bootstrap/ArgoCD, and large or churny enough that
+                # backing them up costs more than it returns.
+                - kube-system
+                - kube-public
+                - kube-node-lease
+                - gmp-system
+                - gmp-public
+                - velero
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: velero
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
