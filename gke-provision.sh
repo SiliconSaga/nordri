@@ -86,12 +86,22 @@ velero-setup)
     # rather than a step inside `create`: the long-lived production cluster was not
     # made by this script, and this needs to run against it too. Every step is
     # idempotent, so re-running is safe and is the way to repair drift.
-    VELERO_BUCKET="${VELERO_BUCKET:-${GCP_PROJECT}-velero}"
+    # Bucket name is NOT overridable. velero-gke.yaml derives it from the project
+    # at hydration time, so a VELERO_BUCKET override here would create one bucket
+    # and leave Velero reading from another — silently, which is this whole
+    # change's failure mode. One derivation, one source of truth.
+    VELERO_BUCKET="${GCP_PROJECT}-velero"
     VELERO_SA="velero@${GCP_PROJECT}.iam.gserviceaccount.com"
+    VELERO_ROLE="velero.server"
+
+    # Buckets live in a REGION or multi-region, never a zone. GCP_ZONE is a zone
+    # (us-central1-a), so strip the trailing -<letter> to get its region.
+    # `gcloud storage buckets create --location=us-central1-a` is rejected.
+    VELERO_BUCKET_LOCATION="${VELERO_BUCKET_LOCATION:-${GCP_ZONE%-*}}"
 
     echo ""
     echo "🪣 Setting up Velero backup storage..."
-    echo "   Bucket:          gs://${VELERO_BUCKET}"
+    echo "   Bucket:          gs://${VELERO_BUCKET} (${VELERO_BUCKET_LOCATION})"
     echo "   Service account: ${VELERO_SA}"
     echo ""
 
@@ -118,7 +128,7 @@ velero-setup)
     else
         gcloud storage buckets create "gs://${VELERO_BUCKET}" \
             --project="$GCP_PROJECT" \
-            --location="$GCP_ZONE" \
+            --location="$VELERO_BUCKET_LOCATION" \
             --uniform-bucket-level-access
         echo "   ✅ Bucket created."
     fi
@@ -140,13 +150,68 @@ velero-setup)
         --member="serviceAccount:${VELERO_SA}" \
         --role=roles/storage.objectAdmin >/dev/null
 
-    # Disk snapshots are inherently project-scoped; there is no per-disk role.
-    echo "🔐 Granting persistent-disk snapshot access (project-scoped)..."
+    # A custom role rather than roles/compute.storageAdmin, which grants full
+    # control of every disk and image in the project — far past taking snapshots.
+    # These are the permissions the GCP plugin documents for its `velero.server`
+    # role, minus the storage.objects.* entries, which are granted bucket-scoped
+    # above instead of project-wide.
+    #
+    # iam.serviceAccounts.signBlob is REQUIRED, not optional hardening: Velero
+    # signs URLs with it, and without it `velero backup logs`, `backup download`
+    # and `backup describe` all fail — including the verification steps in
+    # docs/velero-gke.md.
+    VELERO_ROLE_PERMS="compute.disks.get,compute.disks.create,compute.disks.createSnapshot,\
+compute.projects.get,compute.snapshots.get,compute.snapshots.create,\
+compute.snapshots.useReadOnly,compute.snapshots.delete,compute.snapshots.setLabels,\
+compute.zones.get,iam.serviceAccounts.signBlob"
+
+    echo "🔐 Ensuring custom role ${VELERO_ROLE} (least privilege for snapshots)..."
+    if gcloud iam roles describe "$VELERO_ROLE" --project="$GCP_PROJECT" >/dev/null 2>&1; then
+        # Update rather than skip: re-running is how permission drift is repaired,
+        # and the permission list here is the source of truth.
+        gcloud iam roles update "$VELERO_ROLE" \
+            --project="$GCP_PROJECT" \
+            --permissions="$VELERO_ROLE_PERMS" \
+            --quiet >/dev/null
+        echo "   ✅ Custom role updated."
+    else
+        gcloud iam roles create "$VELERO_ROLE" \
+            --project="$GCP_PROJECT" \
+            --title="Velero server" \
+            --description="Least-privilege permissions for Velero disk snapshots and signed URLs." \
+            --permissions="$VELERO_ROLE_PERMS" \
+            --quiet >/dev/null
+        echo "   ✅ Custom role created."
+    fi
+
+    echo "🔐 Granting ${VELERO_ROLE} to the service account..."
     gcloud projects add-iam-policy-binding "$GCP_PROJECT" \
         --member="serviceAccount:${VELERO_SA}" \
-        --role=roles/compute.storageAdmin \
+        --role="projects/${GCP_PROJECT}/roles/${VELERO_ROLE}" \
         --condition=None >/dev/null
 
+    # If an earlier run of this script granted the broad role, say so rather than
+    # revoking silently — removing an IAM binding someone may have come to depend
+    # on is not something a setup command should do unannounced.
+    if gcloud projects get-iam-policy "$GCP_PROJECT" \
+        --flatten="bindings[].members" \
+        --filter="bindings.role=roles/compute.storageAdmin AND bindings.members:${VELERO_SA}" \
+        --format="value(bindings.role)" 2>/dev/null | grep -q .; then
+        echo "⚠️  ${VELERO_SA} still holds the broad roles/compute.storageAdmin from an"
+        echo "   earlier setup. The custom role above replaces it. Revoke with:"
+        echo "     gcloud projects remove-iam-policy-binding $GCP_PROJECT \\"
+        echo "       --member=serviceAccount:${VELERO_SA} \\"
+        echo "       --role=roles/compute.storageAdmin --condition=None"
+    fi
+
+    # The Workload Identity pool is PROJECT-level, not per-cluster: the member
+    # below is `<project>.svc.id.goog[velero/velero]`, which every cluster in this
+    # project matches. So this identity — and the bucket — are shared by all of
+    # them, and `delete` must not remove either (see the delete action).
+    #
+    # That sharing is fine while one cluster backs up. If a second one is ever
+    # added, give each its own BackupStorageLocation `prefix` so their backups do
+    # not interleave in one bucket path.
     echo "🔗 Binding the Kubernetes SA velero/velero to $VELERO_SA..."
     gcloud iam service-accounts add-iam-policy-binding "$VELERO_SA" \
         --project="$GCP_PROJECT" \
@@ -189,18 +254,26 @@ delete)
         --quiet
     echo "✅ Cluster deleted."
 
-    # The Velero service account is cluster-scoped in practice (its Workload
-    # Identity binding names this cluster's pool), so it goes with the cluster.
-    echo "🧹 Removing the Velero service account..."
-    gcloud iam service-accounts delete "velero@${GCP_PROJECT}.iam.gserviceaccount.com" \
-        --project="$GCP_PROJECT" --quiet 2>/dev/null || true
-
-    # The BUCKET is deliberately kept. Backups whose only purpose is surviving the
-    # loss of a cluster must not be deleted along with it — that would make this
-    # command the single most destructive thing in the repo. Delete it by hand if
-    # you genuinely mean to discard backup history:
-    #   gcloud storage rm -r gs://${GCP_PROJECT}-velero
-    echo "ℹ️  Backup bucket gs://${GCP_PROJECT}-velero was KEPT (backups outlive clusters)."
+    # Neither the Velero service account NOR the bucket is deleted here, and both
+    # omissions are deliberate.
+    #
+    # The service account is PROJECT-scoped, not cluster-scoped: the Workload
+    # Identity pool is `<project>.svc.id.goog`, so every cluster in this project
+    # binds the same `velero/velero` identity. Deleting it on one cluster's
+    # teardown would silently break Velero on every other cluster in the project.
+    #
+    # The bucket holds backups whose entire purpose is outliving the loss of a
+    # cluster. Deleting it here would make this command the most destructive
+    # thing in the repo.
+    echo ""
+    echo "ℹ️  Velero resources were KEPT — both are project-scoped, not cluster-scoped:"
+    echo "     gs://${GCP_PROJECT}-velero            (backups outlive clusters)"
+    echo "     velero@${GCP_PROJECT}.iam.gserviceaccount.com  (shared by all clusters in this project)"
+    echo ""
+    echo "   Remove them by hand ONLY if no other cluster in this project uses Velero:"
+    echo "     gcloud iam service-accounts delete velero@${GCP_PROJECT}.iam.gserviceaccount.com"
+    echo "     gcloud iam roles delete velero.server --project=$GCP_PROJECT"
+    echo "     gcloud storage rm -r gs://${GCP_PROJECT}-velero   # discards backup history"
     ;;
 
 *)

@@ -27,7 +27,12 @@ spec:
         # plugin does not use that image.
         initContainers:
           - name: velero-plugin-for-gcp
-            image: velero/velero-plugin-for-gcp:v1.11.0
+            # Plugin minor tracks Velero minor: v1.13.x ↔ Velero v1.17.x, per the
+            # plugin's compatibility matrix. Chart 11.3.1 is appVersion 1.17.1
+            # (confirmed with `helm show chart`), so this must stay on v1.13.x —
+            # bump chart and plugin together. The v1.11.0 this inherited from the
+            # design doc pairs with Velero 1.15, two minors behind the chart.
+            image: velero/velero-plugin-for-gcp:v1.13.2
             volumeMounts:
               - mountPath: /target
                 name: plugins
@@ -52,6 +57,17 @@ spec:
         credentials:
           useSecret: false
 
+        # Without this the metrics port is exposed but nothing scrapes it, and
+        # the heimdall alerts on velero_backup_* would evaluate against a metric
+        # that never appears — silently never firing. Heimdall's Prometheus sets
+        # serviceMonitorSelectorNilUsesHelmValues: false, so its selector is
+        # empty and matches every ServiceMonitor cluster-wide; no `release:`
+        # label is needed here.
+        metrics:
+          enabled: true
+          serviceMonitor:
+            enabled: true
+
         # A Velero install with no Schedule takes no backups. That is not a
         # hypothetical failure here — Velero has been installed on this cluster
         # and storing nothing, and the only reason anyone noticed is that
@@ -60,9 +76,10 @@ spec:
           daily-full:
             disabled: false
             # Velero evaluates cron in the CONTROLLER's timezone, which is UTC.
-            # 06:00 UTC is 02:00 US/Eastern in EDT (03:00 in EST) — deliberately
-            # overnight local. The same UTC-vs-local trap already bit the Valheim
-            # Jenkins jobs, where "nightly 03:30" ran at 23:30 Eastern.
+            # 06:00 UTC is 02:00 US/Eastern under EDT and 01:00 under EST —
+            # overnight local either way, which is the point. The same
+            # UTC-vs-local trap already bit the Valheim Jenkins jobs, where
+            # "nightly 03:30" actually ran at 23:30 Eastern.
             schedule: "0 6 * * *"
             useOwnerReferencesInBackup: false
             template:
