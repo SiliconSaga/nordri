@@ -40,14 +40,25 @@ long-lived production cluster was not created by `gke-provision.sh`, so this is 
 standalone action rather than a step inside `create`:
 
 ```bash
-export GCP_PROJECT="your-project-id"   # or rely on: gcloud config set project ...
+# Export it even if `gcloud config set project` is already done — the
+# verification commands further down interpolate ${GCP_PROJECT}, and an unset
+# value silently targets gs://-velero rather than failing.
+export GCP_PROJECT="${GCP_PROJECT:-$(gcloud config get-value project)}"
+
+# Only needed if the cluster is not in $GCP_ZONE — a REGIONAL cluster must be
+# addressed by its region. Find it with:
+#   gcloud container clusters list --project="$GCP_PROJECT" --format='table(name,location)'
+# export GKE_CLUSTER_LOCATION=us-central1
+
 ./gke-provision.sh velero-setup
 ```
 
-It verifies Workload Identity is enabled (failing loudly if not, because the IAM
-binding is silently useless without it), creates `gs://<project>-velero` in the
-region derived from `$GCP_ZONE` — buckets take a region, never a zone — creates the
-`velero` service account, and binds the Kubernetes SA `velero/velero` to it.
+It locates the cluster and reads its Workload Identity pool in one call, failing
+with the cluster list if the location is wrong and separately if Workload Identity
+is off — the binding is silently useless without it. Then it creates
+`gs://<project>-velero` in the cluster's own region (buckets take a region or
+multi-region, never a zone), creates the `velero` service account, and binds the
+Kubernetes SA `velero/velero` to it.
 
 Permissions are split deliberately:
 

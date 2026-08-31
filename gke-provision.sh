@@ -94,40 +94,66 @@ velero-setup)
     VELERO_SA="velero@${GCP_PROJECT}.iam.gserviceaccount.com"
     VELERO_ROLE="velero.server"
 
-    # Buckets live in a REGION or multi-region, never a zone. GCP_ZONE is a zone
-    # (us-central1-a), so strip the trailing -<letter> to get its region.
-    # `gcloud storage buckets create --location=us-central1-a` is rejected.
-    VELERO_BUCKET_LOCATION="${VELERO_BUCKET_LOCATION:-${GCP_ZONE%-*}}"
-
     echo ""
     echo "🪣 Setting up Velero backup storage..."
-    echo "   Bucket:          gs://${VELERO_BUCKET} (${VELERO_BUCKET_LOCATION})"
     echo "   Service account: ${VELERO_SA}"
     echo ""
 
-    # Workload Identity must be on for the SA binding to mean anything. Without
-    # it the binding is accepted and simply never used, and Velero fails to
-    # authenticate at backup time rather than at install time — a silent gap.
-    echo "🔍 Verifying Workload Identity is enabled on $CLUSTER_NAME..."
-    WI_POOL="$(gcloud container clusters describe "$CLUSTER_NAME" \
-        --project="$GCP_PROJECT" --zone="$GCP_ZONE" \
-        --format='value(workloadIdentityConfig.workloadPool)' 2>/dev/null || true)"
-    # Read the cluster's real location rather than reusing GCP_ZONE: a regional
-    # cluster's location is the region, and the IAM condition below embeds it. A
-    # wrong location yields a condition that never matches, so Velero would fail
-    # to authenticate — quietly, at backup time.
-    CLUSTER_LOCATION="$(gcloud container clusters describe "$CLUSTER_NAME" \
-        --project="$GCP_PROJECT" --zone="$GCP_ZONE" \
-        --format='value(location)' 2>/dev/null || true)"
+    # `--location` rather than `--zone`, because a REGIONAL cluster cannot be
+    # addressed by zone: describe fails outright. The production cluster was not
+    # created by this script and may well be regional, so defaulting to
+    # GCP_ZONE and swallowing the error would have reported "Workload Identity
+    # is not enabled" for a cluster that simply was not found — the wrong cause,
+    # which is the failure mode this whole branch keeps trying to remove.
+    #
+    # GKE_CLUSTER_LOCATION overrides; GCP_ZONE remains the default so the
+    # create-then-setup path on a zonal cluster needs no extra variable.
+    CLUSTER_LOCATION="${GKE_CLUSTER_LOCATION:-$GCP_ZONE}"
+
+    # One describe, two values, and the failure is NOT swallowed. This is both
+    # the existence check and the Workload Identity check, so a bad location, a
+    # missing cluster and a genuine WI-disabled cluster each report themselves.
+    echo "🔍 Locating cluster $CLUSTER_NAME in $CLUSTER_LOCATION..."
+    if ! CLUSTER_INFO="$(gcloud container clusters describe "$CLUSTER_NAME" \
+        --project="$GCP_PROJECT" --location="$CLUSTER_LOCATION" \
+        --format='value(workloadIdentityConfig.workloadPool,location)')"; then
+        echo "❌ Could not describe cluster '$CLUSTER_NAME' at location '$CLUSTER_LOCATION'." >&2
+        echo "   A regional cluster must be addressed by its REGION, a zonal one by its zone." >&2
+        echo "   List them with:" >&2
+        echo "     gcloud container clusters list --project=$GCP_PROJECT --format='table(name,location)'" >&2
+        echo "   Then re-run with:  GKE_CLUSTER_LOCATION=<location> $0 velero-setup" >&2
+        exit 1
+    fi
+    WI_POOL="$(printf '%s' "$CLUSTER_INFO" | awk '{print $1}')"
+    # Prefer the location gcloud reports over the one we asked with — they match
+    # today, but the reported value is what the IAM condition must embed.
+    CLUSTER_LOCATION="$(printf '%s' "$CLUSTER_INFO" | awk '{print $2}')"
+
     if [[ -z "$WI_POOL" ]]; then
         echo "❌ Workload Identity is not enabled on cluster '$CLUSTER_NAME'."
         echo "   Velero on GKE authenticates through it. Enable with:"
         echo "     gcloud container clusters update $CLUSTER_NAME \\"
-        echo "       --project=$GCP_PROJECT --zone=$GCP_ZONE \\"
+        echo "       --project=$GCP_PROJECT --location=$CLUSTER_LOCATION \\"
         echo "       --workload-pool=${GCP_PROJECT}.svc.id.goog"
         exit 1
     fi
-    echo "   ✅ Workload pool: $WI_POOL"
+    echo "   ✅ Workload pool: $WI_POOL  (location: $CLUSTER_LOCATION)"
+
+    # Buckets take a REGION or multi-region, never a zone, so a zonal cluster's
+    # location has to be reduced to its region. Derived from the cluster rather
+    # than from GCP_ZONE so the bucket lands beside the data it backs up.
+    #
+    # The reduction is conditional on purpose: `${loc%-*}` applied blindly turns
+    # the REGION `us-central1` into `us`, which is a valid multi-region and would
+    # therefore be accepted — silently placing the bucket on another continent's
+    # billing footprint instead of erroring. Only strip when the value actually
+    # looks like a zone (trailing -<letter>).
+    if [[ "$CLUSTER_LOCATION" =~ ^(.*)-[a-z]$ ]]; then
+        VELERO_BUCKET_LOCATION="${VELERO_BUCKET_LOCATION:-${BASH_REMATCH[1]}}"
+    else
+        VELERO_BUCKET_LOCATION="${VELERO_BUCKET_LOCATION:-$CLUSTER_LOCATION}"
+    fi
+    echo "   Bucket:          gs://${VELERO_BUCKET} (${VELERO_BUCKET_LOCATION})"
 
     echo "🪣 Creating bucket (skipped if it already exists)..."
     if gcloud storage buckets describe "gs://${VELERO_BUCKET}" --project="$GCP_PROJECT" >/dev/null 2>&1; then
@@ -244,11 +270,29 @@ compute.zones.get,iam.serviceAccounts.signBlob"
     # That unconditioned binding still grants every cluster in the project, and
     # IAM evaluates bindings as a union — so leaving it in place makes the
     # condition above decorative. Report it rather than removing it silently.
-    if gcloud iam service-accounts get-iam-policy "$VELERO_SA" \
-        --project="$GCP_PROJECT" \
-        --flatten="bindings[].members" \
-        --filter="bindings.role=roles/iam.workloadIdentityUser AND NOT bindings.condition.title:restrict-to-" \
-        --format="value(bindings.members)" 2>/dev/null | grep -q .; then
+    # Match the EXACT principal, not just the role. The earlier filter keyed on
+    # role plus "condition title does not contain restrict-to-", which would also
+    # match some other member, or another cluster's differently-titled condition,
+    # and then print a removal command for a binding that does not exist.
+    #
+    # gcloud's filter language cannot express "this member AND no condition at
+    # all", so the policy is read as JSON and matched with jq. jq is optional
+    # here: the check is advisory, so a machine without it gets a note rather
+    # than a failure.
+    VELERO_WI_MEMBER="serviceAccount:${GCP_PROJECT}.svc.id.goog[velero/velero]"
+    if ! command -v jq >/dev/null 2>&1; then
+        echo "ℹ️  jq not found — skipping the check for a leftover unconditioned binding."
+        echo "   Inspect manually: gcloud iam service-accounts get-iam-policy $VELERO_SA"
+    elif gcloud iam service-accounts get-iam-policy "$VELERO_SA" \
+        --project="$GCP_PROJECT" --format=json 2>/dev/null \
+        | jq -e --arg m "$VELERO_WI_MEMBER" '
+            .bindings // []
+            | map(select(
+                .role == "roles/iam.workloadIdentityUser"
+                and (has("condition") | not)
+                and (.members // [] | index($m))
+              ))
+            | length > 0' >/dev/null; then
         echo "⚠️  An UNCONDITIONED workloadIdentityUser binding still exists on ${VELERO_SA}."
         echo "   IAM unions bindings, so it grants every cluster in the project and"
         echo "   makes the cluster-scoped condition above ineffective. Remove it:"
