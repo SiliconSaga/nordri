@@ -40,7 +40,7 @@ long-lived production cluster was not created by `gke-provision.sh`, so this is 
 standalone action rather than a step inside `create`:
 
 ```bash
-export GCP_PROJECT=<your-project-id>
+export GCP_PROJECT="your-project-id"   # or rely on: gcloud config set project ...
 ./gke-provision.sh velero-setup
 ```
 
@@ -161,12 +161,18 @@ snapshot was taken:
 # Pick a namespace with a bound PVC.
 kubectl get pvc -A
 
-velero backup create verify-snap-$(date +%s) \
-  --include-namespaces <ns-with-a-pvc> --snapshot-volumes --wait
+# Set this to the namespace you picked; the rest is copy-pasteable as-is.
+# Quoted, because an unquoted <placeholder> is a shell redirection — bash tries
+# to open a file by that name and fails before velero is ever invoked.
+NAMESPACE="CHANGE-ME"
+BACKUP_NAME="verify-snap-$(date +%s)"
+
+velero backup create "$BACKUP_NAME" \
+  --include-namespaces "$NAMESPACE" --snapshot-volumes --wait
 
 # "Volume snapshots: N of N completed successfully" — 0 completed, or the
 # section missing entirely, means the custom role is not in effect.
-velero backup describe verify-snap-<...> --details
+velero backup describe "$BACKUP_NAME" --details
 ```
 
 `backup describe` needs `iam.serviceAccounts.signBlob`, so a permissions error at
