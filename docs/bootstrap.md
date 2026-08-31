@@ -205,7 +205,7 @@ preserves the existing admin user on upgrade. The supported flow:
      --dry-run=client -o yaml | kubectl apply -f -
    ```
 
-   Or run `GITEA_PASS=<new> ./bootstrap.sh <target>` once — same effect.
+   Or run `GITEA_PASS="new-password" ./bootstrap.sh gke` once — same effect.
 
 This is a temporary state — the longer-term plan is to drive Gitea
 credentials through OpenBAO once it ships in Nidavellir.
