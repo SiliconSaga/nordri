@@ -106,6 +106,27 @@ spec:
                 - gmp-system
                 - gmp-public
                 - velero
+                # ── ark: excluded until its volume layout is fixed ──
+                # 161Gi provisioned across three per-map PVCs (island 100Gi,
+                # fjordur 30Gi, lost 30Gi) — by far the largest claim on the
+                # cluster, and almost all of it is the ARK server INSTALL rather
+                # than world saves. The game files are persisted so a pod roll
+                # does not re-download tens of GB, and the saves sit somewhere
+                # inside that same volume.
+                #
+                # Backing that up means paying to snapshot a game install that
+                # Steam can re-fetch, in order to protect a save file that is a
+                # rounding error beside it. Evidence: the fjordur snapshot of a
+                # 30Gi disk stored 10.85 GB, which is install-shaped, not
+                # save-shaped.
+                #
+                # No ARK server is running today, and Fjordur has an off-cluster
+                # copy. The right fix is splitting install from saves the way
+                # Valheim now does (separate valheim-game / valheim-data /
+                # valheim-backups PVCs), then backing up only the save volume.
+                # Re-include per-namespace once that lands — not before, or the
+                # first full backup bakes in the cost this avoids.
+                - ark
   destination:
     server: https://kubernetes.default.svc
     namespace: velero
