@@ -497,7 +497,7 @@ commands:
 
 Prerequisite: DNS must be pointing at the cluster LB IP. If not:
 ```bash
-NAMECHEAP_API_USER=<user> NAMECHEAP_API_KEY=<key> \
+NAMECHEAP_API_USER="your-api-user" NAMECHEAP_API_KEY="your-api-key" \
   ./scripts/update-dns-namecheap.sh cmdbee.org \
   $(kubectl get svc traefik -n kube-system -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
 ```

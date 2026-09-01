@@ -1,3 +1,13 @@
+# Velero for HOMELAB only — AWS plugin against the in-cluster Garage S3.
+#
+# GKE uses velero-gke.yaml instead (GCP plugin, GCS, Workload Identity). The two
+# environments cannot share one Application: the plugin, provider, backend URL and
+# auth model all differ, and the endpoint below is a Service that only exists in the
+# homelab overlay. This file was previously included by BOTH overlays, which left
+# GKE's Velero pointed at `garage.garage.svc.cluster.local` — a name that does not
+# resolve there — so it ran without ever being able to store a backup.
+#
+# Keep the pairing explicit: each overlay includes exactly one of these two files.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
@@ -31,9 +41,8 @@ spec:
                 # We set region to "garage" just to satisfy SDK validation - may need to revisit later or use a real region?
                 region: garage
                 s3ForcePathStyle: true
-                # We use the internal service DNS for whichever storage provider we have (Garage)
-                # In GKE, this URL is overridden to https://storage.googleapis.com
-                s3Url: http://garage.garage.svc.cluster.local:3900  
+                # Internal service DNS for Garage. Homelab-only — see the header.
+                s3Url: http://garage.garage.svc.cluster.local:3900
           volumeSnapshotLocation:
             - name: default
               provider: aws

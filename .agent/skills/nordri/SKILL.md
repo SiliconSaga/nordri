@@ -27,8 +27,9 @@ For the layer-by-layer specifics (which layer installs what, version pins, Garag
 These are bootstrap decisions that aren't self-evident from the script:
 
 - **Traefik chart pinned to `38.x` / app `3.6.5` deliberately.** Chart 38+ bundles the Gateway API CRDs (avoiding a field-manager conflict a separate CRD apply used to cause). App `3.7.x` reintroduces a Gateway-provider cert regression. Don't bump blindly — verify upstream resolution first.
-- **Velero credentials on GKE are a placeholder.** The bootstrap pre-creates a `velero-credentials` Secret to prevent CrashLoopBackOff during initial ArgoCD sync (Velero needs a Secret to start). Until GKE Velero is wired for **GCS + Workload Identity** (see `docs/velero-gke.md`), Velero is non-functional on GKE — but bootstrap is clean.
-- **Garage init is homelab-only.** GKE's Velero target will be GCS via Workload Identity (keyless), not S3-via-Garage. Don't try to run the homelab Garage init flow on GKE.
+- **Velero is per-environment, and must stay that way.** `apps/velero-gke.yaml` (GCP plugin, GCS, Workload Identity) and `apps/velero-homelab.yaml` (AWS plugin, Garage) are separate files, each included by exactly one overlay. A single shared file used to be included by both, which left GKE's Velero pointed at a Garage Service that does not resolve there — installed, healthy, and storing nothing. Adding either file to the other overlay recreates that. GKE needs the one-time `./gke-provision.sh velero-setup` (idempotent; runs against existing clusters).
+- **Garage init is homelab-only.** GKE's Velero target is GCS via Workload Identity (keyless), not S3-via-Garage. Don't try to run the homelab Garage init flow on GKE.
+- **A Velero install without a `Schedule` backs nothing up.** The GKE Application ships a `daily-full` schedule in its Helm values for that reason. Velero cron is evaluated in the controller's timezone (UTC), not local — the same trap that made the Valheim "nightly 03:30" job run at 23:30 Eastern.
 - **Seed-Gitea is ephemeral by design.** Uses the chart's bundled Postgres + Valkey with `persistence.enabled=false` — it exists only to break the chicken-and-egg of "ArgoCD needs a Git source, but GitHub can't reach the cluster API during bootstrap." Day-2 plan to graduate to persistent Forgejo lives realm-side under `realms/realm-siliconsaga/docs/plans/`.
 - **ArgoCD namespace is `argo`, not `argocd`.** Reserved to avoid colliding with legacy installations on the same cluster.
 
@@ -45,7 +46,7 @@ In-repo (run from the nordri checkout):
 - `bootstrap.sh` — source of truth for layer sequence, version pins, and Garage init flow. Inline comments explain *why* each layer exists.
 - `platform/fundamentals/manifests/crossplane-providers.yaml` — provider + function versions.
 - `platform/root-app.yaml` — the entry point ArgoCD adopts.
-- `docs/velero-gke.md` — Velero on GKE TODO (GCS + Workload Identity).
+- `docs/velero-gke.md` — Velero on GKE (GCS + Workload Identity), including how to verify a backup actually landed rather than trusting a healthy-looking install.
 
 Cross-repo (yggdrasil workspace — requires `ws clone`, or follow the GitHub links below):
 

@@ -5,8 +5,14 @@ resources:
   # Shared Apps
   - ../../apps/traefik.yaml
   - ../../apps/crossplane.yaml
-  - ../../apps/velero.yaml
-  
+
+  # GKE Specific Apps
+  # Velero is environment-specific, not shared: GCP plugin + GCS + Workload
+  # Identity here, AWS plugin + Garage on homelab. Including the homelab file
+  # here (as this overlay used to) points Velero at a Garage Service that does
+  # not exist on GKE, so it runs and stores nothing.
+  - ../../apps/velero-gke.yaml
+
   # Shared Manifests
   - ../../manifests/crossplane-providers.yaml
   - ../../manifests/crossplane-configs.yaml

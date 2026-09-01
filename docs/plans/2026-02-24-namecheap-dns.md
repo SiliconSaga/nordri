@@ -415,8 +415,8 @@ grep -n "DNS_UPDATED\|MANUAL STEPS" bootstrap.sh
 **Step 3: Live test with real credentials against a running cluster**
 
 ```bash
-export NAMECHEAP_API_USER=<real-user>
-export NAMECHEAP_API_KEY=<real-key>
+export NAMECHEAP_API_USER="your-api-user"
+export NAMECHEAP_API_KEY="your-api-key"
 ./scripts/update-dns-namecheap.sh cmdbee.org $(kubectl get svc traefik -n kube-system \
     -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
 # Expected: ✅ DNS updated successfully ...
