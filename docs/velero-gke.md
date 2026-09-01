@@ -249,6 +249,30 @@ Exclusions fall into three groups, and only the first is automatic:
 most for `heimdall`: it is excluded because it holds telemetry, so anything
 non-reconstructible landing there would be silently unprotected.
 
+### An included namespace does not mean every volume is snapshotted
+
+Namespace scope and volume scope are two separate filters, and the second is easy to
+miss. The `velero-volume-policy` ConfigMap skips **any PVC labelled
+`backup.siliconsaga.org/content: reconstructible`**, wherever it lives — the
+namespace being in scope does not save it.
+
+Volume policies are the *final* filter in Velero's pipeline, ranking above
+`snapshotVolumes: true`, so a matching `skip` wins. Its object still gets backed up;
+only the disk contents are skipped, which is what lets a restore recreate an empty
+PVC that the workload then refills from upstream.
+
+Carrying the label today: `valheim-game` in `kubicvalheim`, `valheim-twinhenge` and
+`valheim-valheim3` — the SteamCMD install, ~1.76 GB each, refetchable. Find them all
+with:
+
+```bash
+kubectl get pvc -A -l backup.siliconsaga.org/content=reconstructible
+```
+
+Apply it to any volume that is a cache of something an upstream source can rebuild.
+Do **not** apply it to anything authored in the cluster, because there is no second
+copy — the skip is silent and a restore would hand back an empty volume.
+
 Sizing as of 2026-09-01: 686 Gi provisioned across 46 PVCs, 117.7 GB actually used.
 After the two exclusions above, roughly 100 GB — dominated by `artifactory`
 (46.1 GB) and `jenkins` (32.5 GB). Measure it yourself with the kubelet stats
