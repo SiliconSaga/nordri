@@ -68,6 +68,37 @@ spec:
           serviceMonitor:
             enabled: true
 
+        # ── Per-volume selection ──
+        # excludedNamespaces is all-or-nothing: a namespace in scope has EVERY
+        # PVC in it snapshotted. That is the wrong granularity whenever a
+        # workload splits durable state from a cache it can refetch — Valheim
+        # keeps its world on valheim-data and the SteamCMD install on
+        # valheim-game, and without this policy backing up the world would
+        # snapshot the install beside it (~1.76 GB x 3 instances, protecting
+        # ~0.5 GB of world).
+        #
+        # Matching on a LABEL rather than a name keeps this generic: any volume
+        # whose contents can be re-fetched from upstream carries
+        # backup.siliconsaga.org/content=reconstructible and is skipped, with no
+        # entry here per workload. ARK's install volumes are the next candidate,
+        # and are the reason this exists now rather than later — the ark
+        # namespace cannot be re-included until per-volume selection works.
+        #
+        # The chart names this ConfigMap `velero-<key>` in the release
+        # namespace, which is what the schedule's resourcePolicy refers to.
+        configMaps:
+          volume-policy:
+            data:
+              # Single key; Velero reads the whole file as the policy document.
+              policy.yaml: |
+                version: v1
+                volumePolicies:
+                  - conditions:
+                      pvcLabels:
+                        backup.siliconsaga.org/content: reconstructible
+                    action:
+                      type: skip
+
         # A Velero install with no Schedule takes no backups. That is not a
         # hypothetical failure here — Velero has been installed on this cluster
         # and storing nothing, and the only reason anyone noticed is that
@@ -95,6 +126,12 @@ spec:
               # Restore those from their own backups; use this to get the cluster
               # and its non-database volumes back.
               snapshotVolumes: true
+              # Applies the volume-policy ConfigMap above. Volume policies are
+              # the FINAL filter — a matching `skip` overrides snapshotVolumes
+              # for that volume only, leaving every other PVC in scope.
+              resourcePolicy:
+                kind: configmap
+                name: velero-volume-policy
               includedNamespaces:
                 - '*'
               excludedNamespaces:
@@ -106,6 +143,55 @@ spec:
                 - gmp-system
                 - gmp-public
                 - velero
+                # ── ark: excluded until its volume layout is fixed ──
+                # 161Gi provisioned across four bound PVCs — the three per-map
+                # claims (island 100Gi, fjordur 30Gi, lost 30Gi) plus
+                # ark-shared-pv-claim at 1Gi. By far the largest claim on the
+                # cluster, and almost all of it is the ARK server INSTALL rather
+                # than world saves. The game files are persisted so a pod roll
+                # does not re-download tens of GB, and the saves sit somewhere
+                # inside that same volume.
+                #
+                # Backing that up means paying to snapshot a game install that
+                # Steam can re-fetch, in order to protect a save file that is a
+                # rounding error beside it. Evidence: the fjordur snapshot of a
+                # 30Gi disk stored 10.85 GB, which is install-shaped, not
+                # save-shaped.
+                #
+                # No ARK server is running today, and Fjordur has an off-cluster
+                # copy.
+                #
+                # RE-INCLUSION TAKES TWO CHANGES, NOT ONE. Splitting install from
+                # saves the way Valheim now does (separate game / data / backups
+                # PVCs) is necessary but not sufficient: with snapshotVolumes
+                # true, putting `ark` back here would snapshot EVERY PVC in the
+                # namespace, install volume included, and the split would have
+                # bought nothing. Selecting one volume needs a Velero
+                # VolumePolicy (v1.17 resource policies: `skip` / `snapshot`
+                # actions matched per volume), which this install does not
+                # configure yet. Do both, in that order, or leave the namespace
+                # excluded — the first full backup is what sets the stored
+                # baseline.
+                - ark
+                # ── heimdall: telemetry, deliberately not protected ──
+                # Third-largest at 21.5 GB used, and 19.7 GB of that is the two
+                # Prometheus TSDBs. It is the worst possible shape for a daily
+                # snapshot: unlike Artifactory's mostly-static blobs a TSDB
+                # rewrites continuously, so it would dominate every incremental
+                # forever rather than only the first full backup.
+                #
+                # What that buys is nothing anyone wants. Retention is 7 days,
+                # so a restore recovers a week of metrics that have already aged
+                # out of usefulness, and every object in this namespace —
+                # dashboards, rules, datasources — is generated by the Crossplane
+                # composition in the heimdall repo and rebuilt by ArgoCD.
+                #
+                # Excluded on the explicit judgement that losing telemetry
+                # history is acceptable and will stay acceptable well past the
+                # point where several other parts of the platform have matured.
+                # Revisit only if Prometheus ever holds something not
+                # reconstructible from git.
+                - heimdall
   destination:
     server: https://kubernetes.default.svc
     namespace: velero

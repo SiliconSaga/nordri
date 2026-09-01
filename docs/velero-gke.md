@@ -233,14 +233,60 @@ gcloud storage ls gs://${GCP_PROJECT}-velero/backups/
 ## What this does and does not cover
 
 **Covers:** Kubernetes object state in every namespace *except* the ones the
-schedule excludes — `kube-system`, `kube-public`, `kube-node-lease`, `gmp-system`,
-`gmp-public`, `velero` — plus GCP persistent-disk snapshots for PVCs in scope. This
-is the net for losing a cluster, a namespace, or a PV, including the
-Delete-reclaim-policy losses that have already happened three times.
+schedule excludes, plus GCP persistent-disk snapshots for PVCs in scope. This is the
+net for losing a cluster, a namespace, or a PV, including the Delete-reclaim-policy
+losses that have already happened three times.
 
-The exclusions are cluster-managed or self-referential rather than valuable: they
-are recreated by GKE, by bootstrap, or by ArgoCD. If you add a workload to one of
-them, it is not being backed up.
+Exclusions fall into three groups, and only the first is automatic:
+
+| Excluded | Why |
+|---|---|
+| `kube-system`, `kube-public`, `kube-node-lease`, `gmp-system`, `gmp-public`, `velero` | Cluster-managed or self-referential — recreated by GKE, bootstrap, or ArgoCD. |
+| `ark` | 161Gi that is overwhelmingly game *install*, not saves. Needs a volume split **and** a Velero VolumePolicy before it can come back — see the comment in `velero-gke.yaml`. |
+| `heimdall` | 21.5 GB of mostly Prometheus TSDB. Rewrites continuously, so it would dominate every daily incremental to protect 7-day-retention telemetry that is rebuilt from git. Accepted loss. |
+
+**If you add a workload to any of these, it is not being backed up.** That matters
+most for `heimdall`: it is excluded because it holds telemetry, so anything
+non-reconstructible landing there would be silently unprotected.
+
+### An included namespace does not mean every volume is snapshotted
+
+Namespace scope and volume scope are two separate filters, and the second is easy to
+miss. The `velero-volume-policy` ConfigMap skips **any PVC labelled
+`backup.siliconsaga.org/content: reconstructible`**, wherever it lives — the
+namespace being in scope does not save it.
+
+Volume policies are the *final* filter in Velero's pipeline, ranking above
+`snapshotVolumes: true`, so a matching `skip` wins. Its object still gets backed up;
+only the disk contents are skipped, which is what lets a restore recreate an empty
+PVC that the workload then refills from upstream.
+
+Carrying the label today: `valheim-game` in `kubicvalheim`, `valheim-twinhenge` and
+`valheim-valheim3` — the SteamCMD install, ~1.76 GB each, refetchable. Find them all
+with:
+
+```bash
+kubectl get pvc -A -l backup.siliconsaga.org/content=reconstructible
+```
+
+Apply it to any volume that is a cache of something an upstream source can rebuild.
+Do **not** apply it to anything authored in the cluster, because there is no second
+copy — the skip is silent and a restore would hand back an empty volume.
+
+Sizing as of 2026-09-01: 686 Gi provisioned across 46 PVCs, 117.7 GB actually used.
+After the two exclusions above, roughly 100 GB — dominated by `artifactory`
+(46.1 GB) and `jenkins` (32.5 GB). Measure it yourself with the kubelet stats
+summary, which is a read and needs no port-forward:
+
+```bash
+kubectl get --raw "/api/v1/nodes/$NODE/proxy/stats/summary" \
+  | jq -r '.pods[]? | .podRef.namespace as $ns | (.volume // [])[]
+           | select(.pvcRef != null)
+           | [$ns, .pvcRef.name, .usedBytes] | @tsv'
+```
+
+An unmounted PVC reports nothing there but is still snapshotted from its PV, so a
+zero is not the same as free.
 
 **Does not cover databases properly.** A snapshot of a live MySQL or Postgres volume
 is *crash-consistent*, not transaction-consistent: restoring it is equivalent to
