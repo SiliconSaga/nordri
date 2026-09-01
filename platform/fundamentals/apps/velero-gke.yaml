@@ -68,6 +68,37 @@ spec:
           serviceMonitor:
             enabled: true
 
+        # ── Per-volume selection ──
+        # excludedNamespaces is all-or-nothing: a namespace in scope has EVERY
+        # PVC in it snapshotted. That is the wrong granularity whenever a
+        # workload splits durable state from a cache it can refetch — Valheim
+        # keeps its world on valheim-data and the SteamCMD install on
+        # valheim-game, and without this policy backing up the world would
+        # snapshot the install beside it (~1.76 GB x 3 instances, protecting
+        # ~0.5 GB of world).
+        #
+        # Matching on a LABEL rather than a name keeps this generic: any volume
+        # whose contents can be re-fetched from upstream carries
+        # backup.siliconsaga.org/content=reconstructible and is skipped, with no
+        # entry here per workload. ARK's install volumes are the next candidate,
+        # and are the reason this exists now rather than later — the ark
+        # namespace cannot be re-included until per-volume selection works.
+        #
+        # The chart names this ConfigMap `velero-<key>` in the release
+        # namespace, which is what the schedule's resourcePolicy refers to.
+        configMaps:
+          volume-policy:
+            data:
+              # Single key; Velero reads the whole file as the policy document.
+              policy.yaml: |
+                version: v1
+                volumePolicies:
+                  - conditions:
+                      pvcLabels:
+                        backup.siliconsaga.org/content: reconstructible
+                    action:
+                      type: skip
+
         # A Velero install with no Schedule takes no backups. That is not a
         # hypothetical failure here — Velero has been installed on this cluster
         # and storing nothing, and the only reason anyone noticed is that
@@ -95,6 +126,12 @@ spec:
               # Restore those from their own backups; use this to get the cluster
               # and its non-database volumes back.
               snapshotVolumes: true
+              # Applies the volume-policy ConfigMap above. Volume policies are
+              # the FINAL filter — a matching `skip` overrides snapshotVolumes
+              # for that volume only, leaving every other PVC in scope.
+              resourcePolicy:
+                kind: configmap
+                name: velero-volume-policy
               includedNamespaces:
                 - '*'
               excludedNamespaces:
