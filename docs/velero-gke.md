@@ -43,15 +43,34 @@ standalone action rather than a step inside `create`:
 # Export it even if `gcloud config set project` is already done — the
 # verification commands further down interpolate ${GCP_PROJECT}, and an unset
 # value silently targets gs://-velero rather than failing.
-export GCP_PROJECT="${GCP_PROJECT:-$(gcloud config get-value project)}"
+#
+# Note `gcloud config get-value` prints the literal "(unset)" rather than
+# nothing when no project is configured, so check for it explicitly: an
+# unchecked value gives you a bucket named "(unset)-velero".
+GCP_PROJECT="${GCP_PROJECT:-$(gcloud config get-value project 2>/dev/null)}"
+if [[ -z "$GCP_PROJECT" || "$GCP_PROJECT" == "(unset)" ]]; then
+  echo "No GCP project configured. Run: gcloud config set project PROJECT_ID" >&2
+  return 1 2>/dev/null || exit 1
+fi
+export GCP_PROJECT
+echo "Using project: $GCP_PROJECT"   # confirm this is the one you expect
 
-# Only needed if the cluster is not in $GCP_ZONE — a REGIONAL cluster must be
-# addressed by its region. Find it with:
+# The script's defaults are for a scratch cluster (nordri-test, $GCP_ZONE), so
+# an existing cluster needs all three named. Find yours with:
 #   gcloud container clusters list --project="$GCP_PROJECT" --format='table(name,location)'
-# export GKE_CLUSTER_LOCATION=us-central1
+export GKE_CLUSTER_NAME=ttf-cluster
+export GKE_CLUSTER_LOCATION=us-east1-d
 
 ./gke-provision.sh velero-setup
 ```
+
+For the SiliconSaga platform cluster as of 2026-08-31, those values are
+`teralivekubernetes` / `ttf-cluster` / `us-east1-d`, and Workload Identity is
+already enabled (`teralivekubernetes.svc.id.goog`). None of the three match the
+script's defaults, and a workstation's `gcloud config` may well point somewhere
+else entirely — **echo the project before running and confirm it is the one you
+mean**, because every name derived from it (the bucket, the service account, the
+IAM member) inherits the mistake silently.
 
 It locates the cluster and reads its Workload Identity pool in one call, failing
 with the cluster list if the location is wrong and separately if Workload Identity

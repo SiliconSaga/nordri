@@ -22,9 +22,21 @@
 
 set -e
 
+# `gcloud config get-value` prints the literal string "(unset)" — on stdout, not
+# stderr — when a property has no value. It is NOT empty, so a plain -z check
+# lets it through, and the value then propagates into everything derived from it:
+# a bucket named `(unset)-velero`, an IAM member `(unset).svc.id.goog[...]`.
+# Normalise it to empty so the guards below actually guard.
+gcloud_config_value() {
+    local v
+    v="$(gcloud config get-value "$1" 2>/dev/null)" || return 0
+    [[ "$v" == "(unset)" ]] && return 0
+    printf '%s' "$v"
+}
+
 CLUSTER_NAME="${GKE_CLUSTER_NAME:-nordri-test}"
-GCP_PROJECT="${GCP_PROJECT:-$(gcloud config get-value project 2>/dev/null)}"
-GCP_ZONE="${GCP_ZONE:-$(gcloud config get-value compute/zone 2>/dev/null)}"
+GCP_PROJECT="${GCP_PROJECT:-$(gcloud_config_value project)}"
+GCP_ZONE="${GCP_ZONE:-$(gcloud_config_value compute/zone)}"
 NODE_COUNT="${GKE_NODE_COUNT:-3}"
 MACHINE_TYPE="${GKE_MACHINE_TYPE:-e2-standard-2}"
 DISK_TYPE="${GKE_DISK_TYPE:-pd-standard}"
@@ -124,10 +136,18 @@ velero-setup)
         echo "   Then re-run with:  GKE_CLUSTER_LOCATION=<location> $0 velero-setup" >&2
         exit 1
     fi
-    WI_POOL="$(printf '%s' "$CLUSTER_INFO" | awk '{print $1}')"
+    # `cut -f`, NOT awk. `value(a,b)` emits the two fields TAB-separated, and
+    # when Workload Identity is disabled the first field is empty — so the line
+    # begins with a tab. awk splits on runs of whitespace and discards leading
+    # blanks, so `$1` would be the LOCATION and `$2` empty: WI_POOL would come
+    # back non-empty, the "is Workload Identity on?" check would pass on a
+    # cluster where it is off, and CLUSTER_LOCATION would be empty going into
+    # the IAM condition. Exactly inverted. cut is tab-delimited and keeps empty
+    # fields, so the disabled case stays visible.
+    WI_POOL="$(printf '%s' "$CLUSTER_INFO" | cut -f1)"
     # Prefer the location gcloud reports over the one we asked with — they match
     # today, but the reported value is what the IAM condition must embed.
-    CLUSTER_LOCATION="$(printf '%s' "$CLUSTER_INFO" | awk '{print $2}')"
+    CLUSTER_LOCATION="$(printf '%s' "$CLUSTER_INFO" | cut -f2)"
 
     if [[ -z "$WI_POOL" ]]; then
         echo "❌ Workload Identity is not enabled on cluster '$CLUSTER_NAME'."
