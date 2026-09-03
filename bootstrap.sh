@@ -158,10 +158,36 @@ fi
 # --- Step 1: Install Seed Gitea (Layer 2) ---
 # This is the SEED instance — intentionally minimal and ephemeral. It exists solely
 # to host the Nordri + Nidavellir repos so ArgoCD has a GitOps source during bootstrap.
-# It runs with persistence.enabled=false and uses the chart's bundled Postgres + Valkey.
+#
+# It runs SQLite with in-memory cache/session and a level queue, and that is a
+# deliberate downgrade from what this script used to install.
+#
+# `persistence.enabled=false` only disables GITEA's own volume. The chart's
+# subchart defaults are `postgresql-ha.enabled=true` and
+# `valkey-cluster.enabled=true`, so an install that set nothing else quietly
+# brought up EIGHT pods for a disposable seed: a 3-replica Postgres with pgpool
+# and a 3-node Valkey cluster. Measured on the SiliconSaga cluster 2026-09-03:
+# 1300m of CPU requests — more than Artifactory itself asks for, ~11% of the
+# whole cluster — plus 54Gi of PVCs, none of which `persistence.enabled=false`
+# touches. On a cluster sitting at ~94% CPU requests that is real money.
+#
+# ⚠ Disabling the subcharts is NOT sufficient on its own. The chart's helper
+# only ever auto-sets DB_TYPE=postgres; with both Postgres options off and no
+# explicit DB_TYPE, Gitea comes up with no database configured. The four
+# gitea.config settings below are required alongside the four `enabled=false`
+# flags, and this combination is what the chart's own README documents for an
+# ephemeral install.
+#
+# ⚠ Do NOT try to thin this by scaling replicas instead. Valkey runs in CLUSTER
+# mode, which shards 16384 hash slots across its masters — scaling it to 1 leaves
+# ~2/3 of the slots unreachable and the cluster reports `cluster_state:fail`.
+# (Postgres is repmgr primary/standby and does scale down safely; Valkey does
+# not. They look alike and are not.) Turn cluster mode off, do not shrink it.
 #
 # TODO: After Mimir is stable, harden Gitea into a proper platform component:
 #   - See nidavellir/docs/platform-gitea.md for design notes.
+#   - Forgejo is the intended path for persistent GitOps; this seed should stay
+#     disposable rather than growing into the durable thing.
 echo "📦 [Layer 2] Installing Seed Gitea..."
 helm repo add gitea-charts https://dl.gitea.io/charts/ >/dev/null 2>&1
 helm repo update
@@ -267,6 +293,14 @@ helm upgrade --install gitea gitea-charts/gitea \
   --set-string gitea.admin.username="$GITEA_USER" \
   --set-string gitea.admin.password="$GITEA_PASS" \
   --set persistence.enabled=false \
+  --set postgresql-ha.enabled=false \
+  --set postgresql.enabled=false \
+  --set valkey-cluster.enabled=false \
+  --set valkey.enabled=false \
+  --set gitea.config.database.DB_TYPE=sqlite3 \
+  --set gitea.config.session.PROVIDER=memory \
+  --set gitea.config.cache.ADAPTER=memory \
+  --set gitea.config.queue.TYPE=level \
   --set containerSecurityContext.runAsUser=1000 \
   --set containerSecurityContext.runAsGroup=1000 \
   --set podSecurityContext.fsGroup=1000 \
