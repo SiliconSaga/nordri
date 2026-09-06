@@ -53,7 +53,10 @@ retry_gcloud() {
             printf '%s\n' "$out" >&2
             return 1
         fi
-        printf "   ⏳ attempt %d/%d failed, retrying in %ds...\n" "$n" "$attempts" "$delay"
+        # stderr, not stdout: every call site sends stdout to /dev/null to
+        # suppress gcloud's own chatter, which would swallow this line too and
+        # make a run that retried five times look identical to one that did not.
+        printf "   ⏳ attempt %d/%d failed, retrying in %ds...\n" "$n" "$attempts" "$delay" >&2
         sleep "$delay"
         n=$(( n + 1 ))
     done
@@ -306,13 +309,13 @@ compute.zones.get,iam.serviceAccounts.signBlob"
     # ── Workload Identity binding, scoped to THIS cluster ──
     #
     # The WI pool is PROJECT-level: the member `<project>.svc.id.goog[velero/velero-server]`
-    # matches a `velero/velero` ServiceAccount in EVERY cluster in the project.
-    # GKE calls this identity sameness, and unconditioned it means any cluster
-    # here that happens to run a pod as velero/velero can impersonate this
-    # account and read or write the whole backup bucket.
+    # matches a `velero/velero-server` ServiceAccount in EVERY cluster in the
+    # project. GKE calls this identity sameness, and unconditioned it means any
+    # cluster here that happens to run a pod as velero/velero-server can
+    # impersonate this account and read or write the whole backup bucket.
     #
     # The IAM condition pins the binding to one cluster by its provider id, so
-    # the KSA name can stay `velero/velero` (no manifest change, no per-cluster
+    # the KSA name can stay `velero/velero-server` (no manifest change, no per-cluster
     # rename). The location comes from the cluster itself rather than GCP_ZONE,
     # since a regional cluster's location is its region.
     #
@@ -399,6 +402,7 @@ compute.zones.get,iam.serviceAccounts.signBlob"
             .bindings // []
             | map(select(
                 .role == "roles/iam.workloadIdentityUser"
+                and (.condition == null)
                 and (.members // [] | index($m))
               ))
             | length > 0' >/dev/null; then
@@ -409,6 +413,29 @@ compute.zones.get,iam.serviceAccounts.signBlob"
         echo "       --project=$GCP_PROJECT --role=roles/iam.workloadIdentityUser \\"
         echo "       --member='serviceAccount:${GCP_PROJECT}.svc.id.goog[velero/velero]' \\"
         echo "       --condition=None"
+    fi
+
+    # Deliberately only the UNCONDITIONED stale binding above. gcloud removes a
+    # binding by exact (member, role, condition) triple, so the --condition=None
+    # command printed there does not touch a CONDITIONED velero/velero binding —
+    # advising it for one would print a command that reports success-shaped
+    # output while removing nothing. Earlier script versions created a
+    # conditioned velero/velero binding too; it is equally dead, but removing it
+    # needs its exact condition expression, so it is surfaced as an inspection
+    # pointer rather than a copy-paste command that would not work.
+    if command -v jq >/dev/null 2>&1 && gcloud iam service-accounts get-iam-policy "$VELERO_SA" \
+        --project="$GCP_PROJECT" --format=json 2>/dev/null \
+        | jq -e --arg m "$VELERO_WI_STALE_MEMBER" '
+            .bindings // []
+            | map(select(
+                .role == "roles/iam.workloadIdentityUser"
+                and (.condition != null)
+                and (.members // [] | index($m))
+              ))
+            | length > 0' >/dev/null; then
+        echo "ℹ️  A CONDITIONED workloadIdentityUser binding for velero/velero also exists."
+        echo "   Also dead (wrong KSA name), but removing it needs its exact condition:"
+        echo "     gcloud iam service-accounts get-iam-policy $VELERO_SA --project=$GCP_PROJECT"
     fi
 
     echo ""
