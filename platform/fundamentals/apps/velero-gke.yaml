@@ -22,9 +22,51 @@ spec:
     targetRevision: 11.3.1 # Corresponds to Velero v1.17.1
     helm:
       values: |
-        # No kubectl image pin here, unlike homelab: that workaround exists for
-        # Bitnami's image policy affecting the AWS plugin helper, and the GCP
-        # plugin does not use that image.
+        # ── CRD upgrade hook: OFF, deliberately ──
+        # The chart ships a pre-install/pre-upgrade Job that re-applies Velero's
+        # CRDs. It runs on EVERY sync, including a values-only change, and it is
+        # a hard gate: ArgoCD blocks the whole sync on "waiting for completion of
+        # hook batch/Job/velero-upgrade-crds" and will not converge if the Job
+        # cannot start.
+        #
+        # It has nothing to do here. All 13 Velero CRDs have been installed on
+        # this cluster since 2026-03-21, and the chart version is not moving —
+        # this repo pins targetRevision 11.3.1 and the previous Application
+        # pinned the same. So the hook was re-applying identical CRDs while
+        # standing between us and every future configuration change.
+        #
+        # It also breaks: the Job's init container pulls
+        # docker.io/bitnamilegacy/kubectl:<tag>, and the tag defaults to the
+        # CLUSTER's Kubernetes version. This cluster is 1.35 and that repo has no
+        # 1.35 tag, so the Job sat in ImagePullBackOff and the sync stalled
+        # behind it. The kubectl pin below is the belt to this braces — either
+        # alone fixes today's failure, and both together mean a chart bump does
+        # not resurrect it.
+        #
+        # ⚠ THE TRADE: with this false, bumping `targetRevision` no longer
+        # upgrades CRDs. A chart bump that changes them needs a manual step
+        # first:
+        #     velero install --crds-only --dry-run -o yaml | kubectl apply -f -
+        # See docs/velero-gke.md. Re-enable this instead if that ever becomes
+        # routine enough to be worth the coupling.
+        upgradeCRDs: false
+
+        # The kubectl pin is REQUIRED here too, not an AWS-plugin quirk.
+        #
+        # This was briefly removed on the reasoning that the pin was only for the
+        # AWS plugin helper. It is not: the chart's `upgrade-crds` hook Job runs
+        # an init container from `docker.io/bitnamilegacy/kubectl:<tag>`, and the
+        # default tag tracks the CLUSTER's Kubernetes version. This cluster is on
+        # 1.35, and `bitnamilegacy/kubectl:1.35` does not exist — Bitnami moved
+        # their images and the legacy repo stopped gaining tags — so the hook
+        # died with ImagePullBackOff and the whole sync stalled behind it.
+        #
+        # 1.32.2 is the last tag confirmed present in that repo. kubectl is only
+        # used to `apply` CRDs here, and the client-vs-server skew that implies
+        # is harmless for that. Re-check this if the hook ever fails again.
+        kubectl:
+          image:
+            tag: "1.32.2"
         initContainers:
           - name: velero-plugin-for-gcp
             # Plugin minor tracks Velero minor: v1.13.x ↔ Velero v1.17.x, per the
@@ -45,12 +87,34 @@ spec:
             - name: default
               provider: gcp
               bucket: __GCP_PROJECT__-velero
+              # NO `config.project` here. The GCP OBJECT STORE plugin rejects it:
+              #   config has invalid keys [project]; valid keys are
+              #   [kmsKeyName serviceAccount credentialsFile storeEndpoint
+              #    universeDomain bucket prefix caCert]
+              # and the BackupStorageLocation goes Unavailable, which stops every
+              # backup. The bucket already identifies the project, so nothing is
+              # lost by omitting it.
+              #
+              # It IS valid on the volumeSnapshotLocation below — that plugin
+              # talks to the Compute API and needs to know which project's disks
+              # to snapshot. Same provider name, two different plugins, two
+              # different config schemas. Carried here from the original design
+              # doc and only caught when the BSL failed validation live.
               config:
-                project: __GCP_PROJECT__
+                # REQUIRED under Workload Identity, and the reason the custom
+                # role carries iam.serviceAccounts.signBlob. With a key file the
+                # plugin signs URLs locally; with WI there is no key, so it asks
+                # IAM to sign as this account and therefore has to be told which
+                # account that is. Omitting it fails validation outright:
+                #   serviceAccount is expected to be provided as an item in
+                #   BackupStorageLocation's config
+                # Same identity as the ServiceAccount annotation above.
+                serviceAccount: velero@__GCP_PROJECT__.iam.gserviceaccount.com
           volumeSnapshotLocation:
             - name: default
               provider: gcp
               config:
+                # Valid and required here, unlike above.
                 project: __GCP_PROJECT__
         # Workload Identity: the pod authenticates via GKE's metadata server, so
         # there is no Secret to create, rotate, or leak.

@@ -77,7 +77,10 @@ with the cluster list if the location is wrong and separately if Workload Identi
 is off — the binding is silently useless without it. Then it creates
 `gs://<project>-velero` in the cluster's own region (buckets take a region or
 multi-region, never a zone), creates the `velero` service account, and binds the
-Kubernetes SA `velero/velero` to it.
+Kubernetes SA `velero/velero-server` to it — note the `-server` suffix, which the
+chart's `serverServiceAccount` helper appends to the release name. Binding plain
+`velero/velero` targets a ServiceAccount that does not exist, and fails later as
+an unavailable BackupStorageLocation rather than as anything about identity.
 
 Permissions are split deliberately:
 
@@ -99,7 +102,7 @@ rather than removing the binding silently.
 ### Scope: these resources are project-level, not cluster-level
 
 The Workload Identity pool is `<project>.svc.id.goog`, so the member
-`<project>.svc.id.goog[velero/velero]` matches **every** cluster in the project.
+`<project>.svc.id.goog[velero/velero-server]` matches **every** cluster in the project.
 The service account and the bucket are therefore shared by all of them.
 
 That is why `gke-provision.sh delete` removes neither. Deleting the service account
@@ -108,29 +111,55 @@ project; deleting the bucket would discard the backups that exist precisely to
 survive a cluster's loss. Both are left with the manual commands printed, to run
 only after confirming nothing else uses them.
 
-GKE calls this **identity sameness**: unconditioned, any cluster in the project
-running a pod as `velero/velero` could impersonate this service account and read or
-write the whole backup bucket.
+GKE calls this **identity sameness**: any cluster in the project running a pod as
+`velero/velero-server` can impersonate this service account and read or write the
+whole backup bucket.
 
-`velero-setup` closes that with an **IAM condition** on the
-`roles/iam.workloadIdentityUser` binding, pinning it to one cluster's provider id:
+> **⚠ Not mitigated today.** The IAM condition below was written to close this and
+> **does not work on this cluster**. Proven live on 2026-09-01: with only the
+> conditioned binding, the token exchange fails with `Permission
+> 'iam.serviceAccounts.getAccessToken' denied` and the BackupStorageLocation stays
+> `Unavailable`. An *unconditioned* binding for the same member fixes it, so the
+> condition is what never matches — `request.auth.claims.google.providerId` appears
+> not to be populated for plain GKE Workload Identity here.
+>
+> `velero-setup` therefore creates **both** bindings, and the unconditioned one is
+> what Velero actually authenticates with. Acceptable while `ttf-cluster` is the
+> only cluster in the project. **Revisit before a second one exists** — either find
+> the claim GKE really sets, or give each cluster its own GSA *and* KSA name.
+
+**The KSA is `velero-server`, not `velero`.** The chart appends `-server` to the
+release name, so a binding for `[velero/velero]` — as the original design doc
+specified — targets a ServiceAccount that does not exist. Nothing errors: the
+binding is accepted and authentication simply fails later, with a message about
+the BackupStorageLocation rather than about identity.
+
+The intended (currently ineffective) condition pins the binding to one cluster's
+provider id:
 
 ```
 request.auth.claims.google.providerId ==
   'https://container.googleapis.com/v1/projects/<project>/locations/<location>/clusters/<cluster>'
 ```
 
-The KSA stays `velero/velero`, so no manifest change and no per-cluster rename are
-needed. The location is read from the cluster itself rather than from `GCP_ZONE`,
+The KSA is the same `velero/velero-server` in every cluster, so no manifest change
+and no per-cluster rename are needed — which is exactly why the condition matters,
+and why its not working leaves identity sameness unmitigated. The location is read
+from the cluster itself rather than from `GCP_ZONE`,
 because a regional cluster's location is its region and a wrong value produces a
 condition that never matches — which fails at backup time, not at setup time.
 
-**If you ran an earlier version of this script**, it created the same binding with
-no condition. IAM evaluates bindings as a union, so that one still grants every
-cluster and makes the condition ineffective. `velero-setup` detects it and prints
-the `remove-iam-policy-binding --condition=None` command; it does not remove it for
-you, since revoking an IAM binding is not something a setup command should do
-unannounced.
+**If you ran an earlier version of this script**, it bound `[velero/velero]` — the
+wrong KSA name. That binding grants nothing, because no such ServiceAccount exists,
+but it is dead IAM surface on the account. `velero-setup` detects **that** one and
+prints the `remove-iam-policy-binding` command; it does not remove it for you, since
+revoking an IAM binding is not something a setup command should do unannounced.
+
+It deliberately does **not** flag the unconditioned `velero-server` binding, because
+that one is currently required (see the warning above). An advisory firing on every
+run telling you to delete the binding that makes Velero work would be worse than no
+advisory. If the condition is ever fixed and the unconditioned binding dropped, the
+check should be re-pointed at `velero-server`.
 
 The service account is still not deleted on teardown: several clusters may hold
 separate conditional bindings on it. If a second cluster ever backs up into this
@@ -165,6 +194,27 @@ Three things worth knowing before running it:
 `GCP_PROJECT` is required only for `gke`. The `homelab` target returns before the
 check, and on `gke` a configured `gcloud config set project` satisfies it without
 an export.
+
+## Status: live and proven (2026-09-01)
+
+First real backup ran end to end on `ttf-cluster`. `BackupStorageLocation default`
+is `Available`, a verification backup Completed 98/98 items, and the objects were
+confirmed present in `gs://teralivekubernetes-velero/backups/` — a `Completed`
+phase alone would not have proven the bucket was written.
+
+Four things had to be fixed to get there, all of them silent in different ways.
+They are recorded because each will look like a different problem next time:
+
+| Symptom | Cause |
+|---|---|
+| `ImagePullBackOff` on `velero-upgrade-crds`, sync stalls | Chart's CRD hook pulls `bitnamilegacy/kubectl:<cluster-version>`; no `1.35` tag exists. Fixed by pinning the tag *and* disabling the hook. |
+| BSL `Unavailable`: `config has invalid keys [project]` | `project` is valid on the volumeSnapshotLocation, not the BackupStorageLocation. Same provider, two plugins, two schemas. |
+| BSL `Unavailable`: `serviceAccount is expected...` | Under Workload Identity the object-store plugin must be told which GSA to sign as. This is what `iam.serviceAccounts.signBlob` is for. |
+| `iam.serviceAccounts.getAccessToken denied` | Binding targeted `[velero/velero]`; the chart's KSA is `velero-server`. Plus the IAM condition never matches — see the warning above. |
+
+A restart of the Velero deployment was needed after the IAM changes: the pod
+caches its credentials at startup, so a correct binding does not take effect until
+it restarts.
 
 ## Verifying — do not skip this
 
@@ -295,8 +345,45 @@ mutually consistent. Databases must keep their own engine-native backups — PXC
 `xtrabackup` schedules, pgBackRest — and Velero is the second layer beneath them,
 not a replacement.
 
+For the shared Postgres cluster that layer is live: pgBackRest writes `repo1` to a
+local PVC and `repo2` straight to its own GCS bucket, keyless over Workload
+Identity, on its own schedule. See
+[`mimir/docs/offsite-backups.md`](../../mimir/docs/offsite-backups.md) — including
+the two-KSA IAM trap, which fails by reporting the repository healthy while no WAL
+ever arrives.
+
 **Retention.** 30 days of dailies. Neither the bucket nor the service account is
 removed by `gke-provision.sh delete` — see the scope note above for why.
+
+## CRDs are not managed by the chart here — `upgradeCRDs: false`
+
+The chart ships a pre-install/pre-upgrade hook Job that re-applies Velero's CRDs.
+It is disabled on GKE, and that has a consequence worth knowing before the next
+chart bump.
+
+**Why it is off.** The hook runs on *every* sync, including a values-only change,
+and ArgoCD treats it as a hard gate — the sync sits on `waiting for completion of
+hook batch/Job/velero-upgrade-crds` and never converges if the Job cannot start.
+It had nothing to do: all 13 Velero CRDs have existed on this cluster since
+2026-03-21, and `targetRevision` is not moving. It also happened to be broken —
+its init container pulls `docker.io/bitnamilegacy/kubectl:<tag>` where the tag
+defaults to the *cluster's* Kubernetes version, and no `1.35` tag exists in that
+repo, so it sat in `ImagePullBackOff` and blocked the first real rollout.
+
+**⚠ The trade.** Bumping `targetRevision` will no longer upgrade CRDs. If a future
+chart version changes them, apply them by hand *before* the bump:
+
+```bash
+velero install --crds-only --dry-run -o yaml | kubectl apply -f -
+```
+
+Check the chart's release notes for CRD changes when bumping. If CRD churn ever
+becomes routine, re-enable the hook rather than carrying a manual step — but keep
+the `kubectl.image.tag` pin, which is what stops the hook breaking again on a
+cluster whose Kubernetes version has no matching legacy image.
+
+Both guards are deliberate and independent: the pin fixes the hook, and disabling
+the hook stops a values-only change from ever being gated behind it.
 
 ## Monitoring
 
@@ -306,6 +393,67 @@ matters most is `VeleroNoBackupsEverSucceeded`, an `absent()` guard on
 `velero_backup_last_successful_timestamp`: that metric does not exist until a
 backup has succeeded once, so every staleness comparison is silent on a Velero that
 has never worked — precisely the state this whole page is about.
+
+## A `PartiallyFailed` that never clears — look for an orphaned PV
+
+This has now bitten once (2026-09-01/02) and is the failure mode most likely to
+recur, because it is caused by the same Delete-reclaim losses this page exists to
+protect against.
+
+**Symptom.** Every scheduled backup finishes `PartiallyFailed` with `errors: 1`,
+while the counts all look healthy — `1583/1583` items, `26/26` snapshots. The
+`VeleroBackupStale` alert fires, and it is *correct* to fire:
+`velero_backup_last_successful_timestamp` only advances on a fully `Completed`
+backup, so one permanent error makes Velero look like it stopped running entirely.
+
+**Cause.** A PV still in the cluster whose backing GCE disk is gone. Velero tries
+to snapshot it every night and gets a 404 forever. Ours was
+`backstage/data-backstage-postgresql-0`, left behind when the workload went away.
+
+**Diagnosing it.** The phase does not say which item failed, and the error is not
+in the CR — it is in the backup log in the bucket:
+
+```bash
+gcloud storage cp \
+  "gs://${GCP_PROJECT}-velero/backups/<backup-name>/<backup-name>-logs.gz" /tmp/b.log.gz
+zgrep -m5 'level=error' /tmp/b.log.gz
+```
+
+which names the item directly:
+
+```text
+error getting volume info: rpc error: code = Unknown desc = googleapi:
+Error 404: The resource '.../disks/pvc-aa7433da-...' was not found, notFound
+```
+
+**Finding them before Velero does.** Check in *both* directions. Listing disks
+with no PV finds leaked disks; this finds the ones that break backups:
+
+```bash
+gcloud compute disks list --project="$GCP_PROJECT" --format='value(name)' | sort > /tmp/disks
+kubectl get pv -o json | jq -r '
+  .items[] | select(.spec.csi.volumeHandle != null)
+  | [.metadata.name, (.spec.csi.volumeHandle | split("/") | last),
+     (.spec.claimRef.namespace // "-"), (.spec.claimRef.name // "-")] | @tsv' \
+| while IFS=$'\t' read -r pv disk ns claim; do
+    grep -qx "$disk" /tmp/disks || echo "MISSING DISK: $pv  ($ns/$claim)"
+  done
+```
+
+A PV/disk **count** mismatch is the same signal and is cheaper to spot — if there
+are more PVs than disks, one of them is already poisoning every backup. Do not
+wave it away as accounting noise; that is exactly how this went unnoticed.
+
+Note the query skips legacy in-tree `gcePersistentDisk` PVs, which have no
+`csi.volumeHandle` — `jenkins` and `fjordur-from-old-snapshot` are those. They
+*are* still snapshotted normally; they just need checking by hand.
+
+**Fixing it.** Delete the orphaned PV. Then prove it, rather than waiting for the
+next scheduled run: fire a one-off backup with the same shape as the schedule
+(same `resourcePolicy`, same `excludedNamespaces`) and confirm it reaches
+`Completed`. A `PartiallyFailed` schedule with a `Completed` manual run of
+identical shape means the cause is fixed and only the next scheduled run is
+outstanding.
 
 ## Follow-ups
 
