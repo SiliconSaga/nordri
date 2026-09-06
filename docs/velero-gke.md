@@ -77,7 +77,10 @@ with the cluster list if the location is wrong and separately if Workload Identi
 is off — the binding is silently useless without it. Then it creates
 `gs://<project>-velero` in the cluster's own region (buckets take a region or
 multi-region, never a zone), creates the `velero` service account, and binds the
-Kubernetes SA `velero/velero` to it.
+Kubernetes SA `velero/velero-server` to it — note the `-server` suffix, which the
+chart's `serverServiceAccount` helper appends to the release name. Binding plain
+`velero/velero` targets a ServiceAccount that does not exist, and fails later as
+an unavailable BackupStorageLocation rather than as anything about identity.
 
 Permissions are split deliberately:
 
@@ -99,7 +102,7 @@ rather than removing the binding silently.
 ### Scope: these resources are project-level, not cluster-level
 
 The Workload Identity pool is `<project>.svc.id.goog`, so the member
-`<project>.svc.id.goog[velero/velero]` matches **every** cluster in the project.
+`<project>.svc.id.goog[velero/velero-server]` matches **every** cluster in the project.
 The service account and the bucket are therefore shared by all of them.
 
 That is why `gke-provision.sh delete` removes neither. Deleting the service account
@@ -139,17 +142,24 @@ request.auth.claims.google.providerId ==
   'https://container.googleapis.com/v1/projects/<project>/locations/<location>/clusters/<cluster>'
 ```
 
-The KSA stays `velero/velero`, so no manifest change and no per-cluster rename are
-needed. The location is read from the cluster itself rather than from `GCP_ZONE`,
+The KSA is the same `velero/velero-server` in every cluster, so no manifest change
+and no per-cluster rename are needed — which is exactly why the condition matters,
+and why its not working leaves identity sameness unmitigated. The location is read
+from the cluster itself rather than from `GCP_ZONE`,
 because a regional cluster's location is its region and a wrong value produces a
 condition that never matches — which fails at backup time, not at setup time.
 
-**If you ran an earlier version of this script**, it created the same binding with
-no condition. IAM evaluates bindings as a union, so that one still grants every
-cluster and makes the condition ineffective. `velero-setup` detects it and prints
-the `remove-iam-policy-binding --condition=None` command; it does not remove it for
-you, since revoking an IAM binding is not something a setup command should do
-unannounced.
+**If you ran an earlier version of this script**, it bound `[velero/velero]` — the
+wrong KSA name. That binding grants nothing, because no such ServiceAccount exists,
+but it is dead IAM surface on the account. `velero-setup` detects **that** one and
+prints the `remove-iam-policy-binding` command; it does not remove it for you, since
+revoking an IAM binding is not something a setup command should do unannounced.
+
+It deliberately does **not** flag the unconditioned `velero-server` binding, because
+that one is currently required (see the warning above). An advisory firing on every
+run telling you to delete the binding that makes Velero work would be worse than no
+advisory. If the condition is ever fixed and the unconditioned binding dropped, the
+check should be re-pointed at `velero-server`.
 
 The service account is still not deleted on teardown: several clusters may hold
 separate conditional bindings on it. If a second cluster ever backs up into this
@@ -411,7 +421,7 @@ zgrep -m5 'level=error' /tmp/b.log.gz
 
 which names the item directly:
 
-```
+```text
 error getting volume info: rpc error: code = Unknown desc = googleapi:
 Error 404: The resource '.../disks/pvc-aa7433da-...' was not found, notFound
 ```

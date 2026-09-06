@@ -365,39 +365,49 @@ compute.zones.get,iam.serviceAccounts.signBlob"
         --member="serviceAccount:${GCP_PROJECT}.svc.id.goog[velero/velero-server]" \
         --condition=None >/dev/null
 
-    # An earlier run of this script created the same binding WITHOUT a condition.
-    # That unconditioned binding still grants every cluster in the project, and
-    # IAM evaluates bindings as a union — so leaving it in place makes the
-    # condition above decorative. Report it rather than removing it silently.
-    # Match the EXACT principal, not just the role. The earlier filter keyed on
-    # role plus "condition title does not contain restrict-to-", which would also
-    # match some other member, or another cluster's differently-titled condition,
-    # and then print a removal command for a binding that does not exist.
+    # Earlier runs of this script bound `velero/velero` — the WRONG KSA, since
+    # the chart's serverServiceAccount helper appends "-server". That binding
+    # grants nothing useful (no such ServiceAccount exists) but it is still an
+    # unconditioned workloadIdentityUser grant sitting on this GSA, so it is
+    # worth reporting. Report rather than remove: deleting IAM bindings on
+    # someone's behalf is not this script's job.
+    #
+    # Deliberately NOT flagging the unconditioned `velero-server` binding this
+    # script creates a few lines above. That one is required — see the warning
+    # there — and an advisory that fires on every single run, telling the
+    # operator to delete the thing that makes Velero work, is worse than no
+    # advisory at all. Re-point this check at velero-server if the conditioned
+    # binding is ever made to work and the unconditioned one is dropped.
+    #
+    # Match the EXACT principal, not just the role. An earlier filter keyed on
+    # role plus "condition title does not contain restrict-to-", which would
+    # also match some other member, or another cluster's differently-titled
+    # condition, and then print a removal command for a binding that does not
+    # exist.
     #
     # gcloud's filter language cannot express "this member AND no condition at
     # all", so the policy is read as JSON and matched with jq. jq is optional
     # here: the check is advisory, so a machine without it gets a note rather
     # than a failure.
-    VELERO_WI_MEMBER="serviceAccount:${GCP_PROJECT}.svc.id.goog[velero/velero-server]"
+    VELERO_WI_STALE_MEMBER="serviceAccount:${GCP_PROJECT}.svc.id.goog[velero/velero]"
     if ! command -v jq >/dev/null 2>&1; then
-        echo "ℹ️  jq not found — skipping the check for a leftover unconditioned binding."
+        echo "ℹ️  jq not found — skipping the check for a stale velero/velero binding."
         echo "   Inspect manually: gcloud iam service-accounts get-iam-policy $VELERO_SA"
     elif gcloud iam service-accounts get-iam-policy "$VELERO_SA" \
         --project="$GCP_PROJECT" --format=json 2>/dev/null \
-        | jq -e --arg m "$VELERO_WI_MEMBER" '
+        | jq -e --arg m "$VELERO_WI_STALE_MEMBER" '
             .bindings // []
             | map(select(
                 .role == "roles/iam.workloadIdentityUser"
-                and (has("condition") | not)
                 and (.members // [] | index($m))
               ))
             | length > 0' >/dev/null; then
-        echo "⚠️  An UNCONDITIONED workloadIdentityUser binding still exists on ${VELERO_SA}."
-        echo "   IAM unions bindings, so it grants every cluster in the project and"
-        echo "   makes the cluster-scoped condition above ineffective. Remove it:"
+        echo "⚠️  A stale workloadIdentityUser binding for velero/velero exists on ${VELERO_SA}."
+        echo "   That KSA name is wrong (the chart creates velero-server), so the binding"
+        echo "   grants nothing — but it is dead IAM surface. Remove it:"
         echo "     gcloud iam service-accounts remove-iam-policy-binding $VELERO_SA \\"
         echo "       --project=$GCP_PROJECT --role=roles/iam.workloadIdentityUser \\"
-        echo "       --member='serviceAccount:${GCP_PROJECT}.svc.id.goog[velero/velero-server]' \\"
+        echo "       --member='serviceAccount:${GCP_PROJECT}.svc.id.goog[velero/velero]' \\"
         echo "       --condition=None"
     fi
 
