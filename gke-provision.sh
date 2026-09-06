@@ -34,6 +34,31 @@ gcloud_config_value() {
     printf '%s' "$v"
 }
 
+# Retry a gcloud IAM call that can transiently fail while a just-created service
+# account propagates. Separate from the wait loop in velero-setup because the
+# policy backends propagate INDEPENDENTLY — the storage IAM service can still be
+# rejecting a member that project IAM already accepts, so waiting once up front
+# is not sufficient on its own.
+#
+# Retries anything, but only worth wrapping around binding calls; a genuine
+# permission or typo error just burns the attempts and then reports itself.
+retry_gcloud() {
+    local attempts=6 delay=5 n=1 out
+    while :; do
+        if out="$("$@" 2>&1)"; then
+            [[ -n "$out" ]] && printf '%s\n' "$out"
+            return 0
+        fi
+        if [[ $n -ge $attempts ]]; then
+            printf '%s\n' "$out" >&2
+            return 1
+        fi
+        printf "   ⏳ attempt %d/%d failed, retrying in %ds...\n" "$n" "$attempts" "$delay"
+        sleep "$delay"
+        n=$(( n + 1 ))
+    done
+}
+
 CLUSTER_NAME="${GKE_CLUSTER_NAME:-nordri-test}"
 GCP_PROJECT="${GCP_PROJECT:-$(gcloud_config_value project)}"
 GCP_ZONE="${GCP_ZONE:-$(gcloud_config_value compute/zone)}"
@@ -194,11 +219,32 @@ velero-setup)
             --project="$GCP_PROJECT" \
             --display-name "Velero backup operator"
         echo "   ✅ Service account created."
+
+        # A freshly created service account is not immediately usable as an IAM
+        # MEMBER. `describe` starts answering almost at once, but the policy
+        # backends reject it for a while longer with a flat
+        #   HTTPError 400: Service account ... does not exist
+        # which reads like the create silently failed. Observed on the first real
+        # run of this action: the bucket grant two lines below failed that way
+        # against a service account that had just been created successfully.
+        #
+        # Poll a real binding target rather than `describe`, since describe is
+        # the thing that lies here.
+        printf "   ⏳ Waiting for the service account to propagate to IAM"
+        for _ in $(seq 1 30); do
+            if gcloud iam service-accounts get-iam-policy "$VELERO_SA" \
+                --project="$GCP_PROJECT" >/dev/null 2>&1; then
+                printf " ready\n"
+                break
+            fi
+            printf "."
+            sleep 2
+        done
     fi
 
     # Object access is scoped to the one bucket rather than project-wide.
     echo "🔐 Granting object access on the bucket..."
-    gcloud storage buckets add-iam-policy-binding "gs://${VELERO_BUCKET}" \
+    retry_gcloud gcloud storage buckets add-iam-policy-binding "gs://${VELERO_BUCKET}" \
         --project="$GCP_PROJECT" \
         --member="serviceAccount:${VELERO_SA}" \
         --role=roles/storage.objectAdmin >/dev/null
@@ -238,7 +284,7 @@ compute.zones.get,iam.serviceAccounts.signBlob"
     fi
 
     echo "🔐 Granting ${VELERO_ROLE} to the service account..."
-    gcloud projects add-iam-policy-binding "$GCP_PROJECT" \
+    retry_gcloud gcloud projects add-iam-policy-binding "$GCP_PROJECT" \
         --member="serviceAccount:${VELERO_SA}" \
         --role="projects/${GCP_PROJECT}/roles/${VELERO_ROLE}" \
         --condition=None >/dev/null
@@ -259,7 +305,7 @@ compute.zones.get,iam.serviceAccounts.signBlob"
 
     # ── Workload Identity binding, scoped to THIS cluster ──
     #
-    # The WI pool is PROJECT-level: the member `<project>.svc.id.goog[velero/velero]`
+    # The WI pool is PROJECT-level: the member `<project>.svc.id.goog[velero/velero-server]`
     # matches a `velero/velero` ServiceAccount in EVERY cluster in the project.
     # GKE calls this identity sameness, and unconditioned it means any cluster
     # here that happens to run a pod as velero/velero can impersonate this
@@ -279,12 +325,45 @@ compute.zones.get,iam.serviceAccounts.signBlob"
         exit 1
     fi
     VELERO_WI_PROVIDER="https://container.googleapis.com/v1/projects/${GCP_PROJECT}/locations/${CLUSTER_LOCATION}/clusters/${CLUSTER_NAME}"
-    echo "🔗 Binding velero/velero to $VELERO_SA, scoped to $CLUSTER_NAME..."
-    gcloud iam service-accounts add-iam-policy-binding "$VELERO_SA" \
+    # ⚠ THE IAM CONDITION BELOW DOES NOT WORK ON THIS CLUSTER, and is left in
+    # place only because an UNCONDITIONED binding was added beside it by hand to
+    # make Velero authenticate at all. Proven live on 2026-09-01: with only the
+    # conditioned binding, the token exchange fails with
+    #   Permission 'iam.serviceAccounts.getAccessToken' denied
+    # and the BackupStorageLocation stays Unavailable. Adding an unconditioned
+    # binding for the same member fixed it, so the condition itself is what never
+    # matches — `request.auth.claims.google.providerId` appears not to be
+    # populated for plain GKE Workload Identity here, whatever the docs imply.
+    #
+    # CONSEQUENCE: identity sameness is NOT mitigated right now. Any cluster in
+    # this project running a pod as velero/velero-server can impersonate this
+    # account. Acceptable while ttf-cluster is the only one; revisit before a
+    # second cluster exists. Either find the claim GKE actually sets, or give
+    # each cluster its own GSA and KSA name.
+    #
+    # The KSA is `velero-server`, NOT `velero`. The chart's serverServiceAccount
+    # helper appends "-server" to the release name, so binding [velero/velero]
+    # — as the original design doc specified — creates a binding for a
+    # ServiceAccount that does not exist. Nothing errors: the binding is
+    # accepted, the annotation on the real KSA points at the right GSA, and
+    # authentication simply fails later with a message about the
+    # BackupStorageLocation rather than about identity.
+    echo "🔗 Binding velero/velero-server to $VELERO_SA, scoped to $CLUSTER_NAME..."
+    retry_gcloud gcloud iam service-accounts add-iam-policy-binding "$VELERO_SA" \
         --project="$GCP_PROJECT" \
         --role=roles/iam.workloadIdentityUser \
-        --member="serviceAccount:${GCP_PROJECT}.svc.id.goog[velero/velero]" \
+        --member="serviceAccount:${GCP_PROJECT}.svc.id.goog[velero/velero-server]" \
         --condition="expression=request.auth.claims.google.providerId=='${VELERO_WI_PROVIDER}',title=restrict-to-${CLUSTER_NAME}" >/dev/null
+
+    # The unconditioned binding that actually works. See the warning above: the
+    # conditioned one alone leaves Velero unable to fetch a token. Both are kept
+    # so that if the condition is ever made to work, removing this line is the
+    # only change needed.
+    retry_gcloud gcloud iam service-accounts add-iam-policy-binding "$VELERO_SA" \
+        --project="$GCP_PROJECT" \
+        --role=roles/iam.workloadIdentityUser \
+        --member="serviceAccount:${GCP_PROJECT}.svc.id.goog[velero/velero-server]" \
+        --condition=None >/dev/null
 
     # An earlier run of this script created the same binding WITHOUT a condition.
     # That unconditioned binding still grants every cluster in the project, and
@@ -299,7 +378,7 @@ compute.zones.get,iam.serviceAccounts.signBlob"
     # all", so the policy is read as JSON and matched with jq. jq is optional
     # here: the check is advisory, so a machine without it gets a note rather
     # than a failure.
-    VELERO_WI_MEMBER="serviceAccount:${GCP_PROJECT}.svc.id.goog[velero/velero]"
+    VELERO_WI_MEMBER="serviceAccount:${GCP_PROJECT}.svc.id.goog[velero/velero-server]"
     if ! command -v jq >/dev/null 2>&1; then
         echo "ℹ️  jq not found — skipping the check for a leftover unconditioned binding."
         echo "   Inspect manually: gcloud iam service-accounts get-iam-policy $VELERO_SA"
@@ -318,7 +397,7 @@ compute.zones.get,iam.serviceAccounts.signBlob"
         echo "   makes the cluster-scoped condition above ineffective. Remove it:"
         echo "     gcloud iam service-accounts remove-iam-policy-binding $VELERO_SA \\"
         echo "       --project=$GCP_PROJECT --role=roles/iam.workloadIdentityUser \\"
-        echo "       --member='serviceAccount:${GCP_PROJECT}.svc.id.goog[velero/velero]' \\"
+        echo "       --member='serviceAccount:${GCP_PROJECT}.svc.id.goog[velero/velero-server]' \\"
         echo "       --condition=None"
     fi
 
