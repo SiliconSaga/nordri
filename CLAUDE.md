@@ -61,5 +61,13 @@ kubectl kuttl test --config kuttl-test-gke.yaml
 - **ArgoCD webhook drift**: Kubernetes defaulting webhooks add `group:` fields at admission
   time. These must be present in git manifests to avoid OutOfSync. Already fixed for Traefik
   Gateway and cert-manager resources — see `MEMORY.md` for the full list.
-- **Gitea uses SQLite** intentionally (bootstrap simplicity). Upgrade to PostgreSQL via Mimir
-  is planned (nordri#2, blocked by mimir#1 + mimir#2).
+- **Seed Gitea uses SQLite** intentionally (bootstrap simplicity), and `bootstrap.sh` now
+  pins that explicitly. It had drifted: the chart defaults `postgresql-ha.enabled=true` and
+  `valkey-cluster.enabled=true`, so a reinstall silently brought up 8 pods (3-replica
+  Postgres + pgpool, 3-node Valkey) and 1300m of CPU requests for a disposable seed — while
+  this line still claimed SQLite. Note `persistence.enabled=false` disables only Gitea's own
+  volume, not the subcharts'. Do not thin Valkey by scaling replicas: it runs in cluster mode
+  and sharding breaks below 3 (`cluster_state:fail`). Turn it off instead.
+- **Forgejo is the intended path for persistent GitOps**; the seed Gitea should stay
+  disposable rather than being hardened. Vending its database from Mimir is therefore no
+  longer the plan for the seed (nordri#2 predates that decision).
