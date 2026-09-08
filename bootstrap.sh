@@ -47,6 +47,11 @@ set -e
 #                 • Otherwise, a strong random password is generated.
 #               After resolution, the Secret is rewritten to match.
 #
+#   HYDRATE_URL_MODE  seed (default) | forgejo | swap. Which repoURL form the
+#               hydrated manifests carry — see lib/patch-urls.sh. bootstrap
+#               always wants `seed`; the other modes exist for the Forgejo
+#               graduation flow (realm Forgejo day-2 design, Phase 3).
+#
 #   NIDAVELLIR_DIR / MIMIR_DIR / HEIMDALL_DIR
 #               Absolute path to each sibling component's checkout. Defaults
 #               to ../<name> relative to this script.
@@ -57,6 +62,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$SCRIPT_DIR/lib/hydrate.sh"
 . "$SCRIPT_DIR/lib/patch-nidavellir.sh"
 . "$SCRIPT_DIR/lib/patch-velero.sh"
+. "$SCRIPT_DIR/lib/patch-urls.sh"
 TARGET=$1
 # Capture explicit GITEA_PASS env input here without applying a default —
 # the resolver populates the value below. Username is fixed to
@@ -84,7 +90,6 @@ GITEA_CREDENTIALS_SECRET="gitea-admin-credentials"
 NIDAVELLIR_DIR="${NIDAVELLIR_DIR:-$(dirname "$SCRIPT_DIR")/nidavellir}"
 MIMIR_DIR="${MIMIR_DIR:-$(dirname "$SCRIPT_DIR")/mimir}"
 HEIMDALL_DIR="${HEIMDALL_DIR:-$(dirname "$SCRIPT_DIR")/heimdall}"
-INTERNAL_GITEA_URL="http://gitea-http.gitea.svc.cluster.local:3000"
 # Fresh-cluster bootstrap: repos are created with auto_init so ArgoCD can
 # resolve HEAD. The working-tree hydration helper reads this.
 HYDRATE_AUTO_INIT=true
@@ -402,8 +407,12 @@ fi
 # Seed Gitea. Shared with update-embedded-git.sh; see lib/patch-velero.sh.
 patch_velero_tree "$HYDRATE_DIR" "$TARGET" || exit 1
 
-# Copy the root application
+# Copy the root application — BEFORE the URL rewrite below, so it is covered.
 cp "$SCRIPT_DIR/platform/root-app.yaml" "$HYDRATE_DIR/"
+
+# Rewrite committed Forgejo repoURLs to the seed form. A no-op until the
+# manifests move to the durable form (realm Forgejo day-2 design, Phase 3).
+patch_repo_urls_tree "$HYDRATE_DIR" "${HYDRATE_URL_MODE:-seed}" >/dev/null || exit 1
 
 # Push Nordri to Gitea
 cd $HYDRATE_DIR
@@ -535,6 +544,29 @@ echo "🔧 [Layer 2.8] Installing Crossplane ProviderConfigs & RBAC..."
 kubectl apply -f "$SCRIPT_DIR/platform/fundamentals/manifests/crossplane-configs.yaml"
 echo "✅ Crossplane ProviderConfigs & RBAC applied."
 
+# --- Step 2.9: OpenBao seal key (homelab only) ---
+# Homelab OpenBao unseals with a STATIC key (realm ADR 0004): 32 random bytes
+# held in a Secret the composition injects as BAO_SEAL_STATIC_KEY. Created here,
+# once, if absent — a composition cannot generate random material (every
+# reconcile would re-render a different key and permanently seal the vault).
+# GKE needs nothing here: it seals through KMS via Workload Identity, set up by
+# `gke-provision.sh openbao-seal-setup`.
+#
+# The Secret must exist BEFORE the OpenBao pod is created; an env var sourced
+# from a missing Secret leaves the pod in CreateContainerConfigError. ArgoCD
+# deploys OpenBao at wave 10, long after this point.
+if [[ "$TARGET" == "homelab" ]]; then
+    echo "🔐 [Layer 2.9] Ensuring the homelab OpenBao static seal key..."
+    kubectl create namespace openbao --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+    if kubectl get secret -n openbao openbao-seal-key >/dev/null 2>&1; then
+        echo "   ✅ openbao-seal-key already present — leaving it alone (replacing it would seal the vault for good)."
+    else
+        kubectl create secret generic openbao-seal-key -n openbao \
+            --from-literal=key="$(openssl rand -base64 32)" >/dev/null
+        echo "   ✅ openbao-seal-key created. Back it up off-cluster if this homelab holds anything you would miss."
+    fi
+fi
+
 # --- Step 3: Install ArgoCD (Layer 3) ---
 echo "🔥 [Layer 3] Installing ArgoCD..."
 helm repo add argo https://argoproj.github.io/argo-helm >/dev/null 2>&1
@@ -579,9 +611,16 @@ echo "🔗 [Layer 3] Connecting Argo to Seed Gitea..."
 # Since Gitea and Argo are in the same cluster, Argo can talk to Gitea via K8s DNS
 # We assume the repo is public inside the cluster for read access, or we configure creds
 
-# Apply the Root App
+# Apply the Root App. Applied from a patched COPY, never straight from the
+# source tree: the committed manifest carries the durable (Forgejo) repoURL
+# form once the Phase 3 URL train lands, and a bootstrap-maturity cluster has
+# no Forgejo to point at. Same rewrite the hydrated repos get.
 echo "🌱 [Layer 4] Applying Root Application..."
-kubectl apply -f "$SCRIPT_DIR/platform/root-app.yaml" -n argo
+ROOT_APP_DIR="$(mktemp -d)"
+TEMP_DIRS+=("$ROOT_APP_DIR")
+cp "$SCRIPT_DIR/platform/root-app.yaml" "$ROOT_APP_DIR/root-app.yaml"
+patch_repo_urls_file "$ROOT_APP_DIR/root-app.yaml" "${HYDRATE_URL_MODE:-seed}" platform/root-app.yaml >/dev/null || exit 1
+kubectl apply -f "$ROOT_APP_DIR/root-app.yaml" -n argo
 
 echo "✅ Root Application applied. ArgoCD is now syncing from the internal Seed Gitea."
 
@@ -591,8 +630,12 @@ echo "✅ Root Application applied. ArgoCD is now syncing from the internal Seed
 # (Keycloak operator, ESO) they depend on exist.
 if [[ -n "$REALM" ]]; then
     echo "🔗 [Layer 4] Registering realm root-app for '$REALM'..."
+    # Same patched-copy rule as the root app above: the template's repoURL is
+    # committed in the durable form and must be rewritten for the seed.
     sed "s|__REALM_REPO__|$REALM|g" "$SCRIPT_DIR/platform/argocd/realm-root-app.template.yaml" \
-        | kubectl apply -n argo -f -
+        > "$ROOT_APP_DIR/realm-root-app.yaml"
+    patch_repo_urls_file "$ROOT_APP_DIR/realm-root-app.yaml" "${HYDRATE_URL_MODE:-seed}" platform/argocd/realm-root-app.template.yaml >/dev/null || exit 1
+    kubectl apply -n argo -f "$ROOT_APP_DIR/realm-root-app.yaml"
 fi
 
 # --- GKE: Velero readiness check ---

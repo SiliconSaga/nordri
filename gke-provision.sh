@@ -9,16 +9,16 @@
 #   gcloud config set project YOUR_PROJECT
 #
 # Usage:
-#   ./scripts/gke-provision.sh [create|delete|credentials]
+#   ./gke-provision.sh [create|delete|credentials|velero-setup|openbao-seal-setup]
 #
 # After creating the cluster:
 #   ./bootstrap.sh gke
 #
 # To start over with a clean cluster (recommended over fighting finalizers):
-#   ./scripts/gke-provision.sh delete   # then re-run create
+#   ./gke-provision.sh delete   # then re-run create
 #
 # After testing:
-#   ./scripts/gke-provision.sh delete
+#   ./gke-provision.sh delete
 
 set -e
 
@@ -118,7 +118,7 @@ create)
     echo "      ./bootstrap.sh gke"
     echo ""
     echo "⚠️  Remember: this cluster costs money. Delete it when done:"
-    echo "   ./scripts/gke-provision.sh delete"
+    echo "   ./gke-provision.sh delete"
     ;;
 
 velero-setup)
@@ -450,6 +450,135 @@ compute.zones.get,iam.serviceAccounts.signBlob"
     echo "   velero backup create verify-\$(date +%s) --include-namespaces velero --wait"
     ;;
 
+openbao-seal-setup)
+    # One-time Cloud KMS + IAM setup so OpenBao on GKE unseals itself through
+    # Workload Identity (realm ADR 0004; supersedes the manual-unseal posture of
+    # ADR 0002). A separate action for the same reason velero-setup is: the
+    # long-lived production cluster was not made by this script. Idempotent —
+    # re-running repairs drift.
+    #
+    # The key ring and key NAMES are fixed, not overridable, because the OpenBao
+    # composition in nidavellir hardcodes them alongside cluster-identity's
+    # gcpProject/gcpRegion. Two sources of truth for a key name would mean an
+    # OpenBao that cannot decrypt its own barrier.
+    #
+    # The REGION is read from the same manifest the composition reads, so the
+    # key ring is created where the seal stanza will look for it. GCP_REGION
+    # may be set for other gcloud reasons; if it disagrees, that is an error
+    # rather than a second source of truth — an OpenBao whose seal names a key
+    # in the wrong region is diagnosable only from the pod log.
+    IDENTITY_MANIFEST="$(dirname "$0")/platform/fundamentals/manifests/cluster-identity-gke.yaml"
+    SEAL_REGION="$(sed -n 's/^  gcpRegion:[[:space:]]*//p' "$IDENTITY_MANIFEST")"
+    if [[ -z "$SEAL_REGION" ]]; then
+        echo "❌ Could not read gcpRegion from $IDENTITY_MANIFEST." >&2
+        echo "   The OpenBao composition renders that value into its seal stanza, so the key ring must be created there." >&2
+        exit 1
+    fi
+    if [[ -n "${GCP_REGION:-}" && "$GCP_REGION" != "$SEAL_REGION" ]]; then
+        echo "❌ GCP_REGION=$GCP_REGION disagrees with cluster-identity gcpRegion=$SEAL_REGION." >&2
+        echo "   The seal key ring must live in the region cluster-identity names. Unset GCP_REGION," >&2
+        echo "   or change gcpRegion in $IDENTITY_MANIFEST and re-hydrate before running this." >&2
+        exit 1
+    fi
+    SEAL_KEYRING="openbao"
+    SEAL_KEY="unseal"
+    SEAL_SA="openbao-seal@${GCP_PROJECT}.iam.gserviceaccount.com"
+    SEAL_KEY_RESOURCE="projects/${GCP_PROJECT}/locations/${SEAL_REGION}/keyRings/${SEAL_KEYRING}/cryptoKeys/${SEAL_KEY}"
+
+    echo ""
+    echo "🔐 Setting up OpenBao KMS auto-unseal..."
+    echo "   Key:             ${SEAL_KEY_RESOURCE}"
+    echo "   Service account: ${SEAL_SA}"
+    echo ""
+
+    # The API is off by default on a project that has never used KMS — this one
+    # had not, as of 2026-09-07 — and every kms command below fails with
+    # PERMISSION_DENIED until it is on. Enable explicitly rather than let gcloud
+    # prompt, since this script also runs non-interactively.
+    echo "🔌 Enabling the Cloud KMS API (no-op if already enabled)..."
+    gcloud services enable cloudkms.googleapis.com --project="$GCP_PROJECT" >/dev/null
+
+    echo "🔑 Ensuring key ring ${SEAL_KEYRING} in ${SEAL_REGION}..."
+    if gcloud kms keyrings describe "$SEAL_KEYRING" --location="$SEAL_REGION" --project="$GCP_PROJECT" >/dev/null 2>&1; then
+        echo "   ✅ Key ring already exists."
+    else
+        gcloud kms keyrings create "$SEAL_KEYRING" --location="$SEAL_REGION" --project="$GCP_PROJECT"
+        echo "   ✅ Key ring created."
+    fi
+
+    # Symmetric encrypt/decrypt is what the gcpckms seal needs. Rotation is left
+    # at the default (none); OpenBao re-wraps on demand and a rotated KMS key
+    # version stays decryptable, so enabling rotation later is safe.
+    echo "🔑 Ensuring crypto key ${SEAL_KEY}..."
+    if gcloud kms keys describe "$SEAL_KEY" --keyring="$SEAL_KEYRING" --location="$SEAL_REGION" --project="$GCP_PROJECT" >/dev/null 2>&1; then
+        echo "   ✅ Crypto key already exists."
+    else
+        gcloud kms keys create "$SEAL_KEY" --keyring="$SEAL_KEYRING" --location="$SEAL_REGION" \
+            --project="$GCP_PROJECT" --purpose=encryption
+        echo "   ✅ Crypto key created."
+    fi
+
+    echo "👤 Ensuring service account (skipped if it already exists)..."
+    if gcloud iam service-accounts describe "$SEAL_SA" --project="$GCP_PROJECT" >/dev/null 2>&1; then
+        echo "   ✅ Service account already exists."
+    else
+        gcloud iam service-accounts create openbao-seal \
+            --project="$GCP_PROJECT" \
+            --display-name "OpenBao KMS auto-unseal"
+        echo "   ✅ Service account created."
+        # Same propagation lag velero-setup hit: describe answers before the IAM
+        # backends accept the account as a member. Poll a real policy read.
+        printf "   ⏳ Waiting for the service account to propagate to IAM"
+        SEAL_SA_READY=false
+        for _ in $(seq 1 30); do
+            if gcloud iam service-accounts get-iam-policy "$SEAL_SA" \
+                --project="$GCP_PROJECT" >/dev/null 2>&1; then
+                printf " ready\n"
+                SEAL_SA_READY=true
+                break
+            fi
+            printf "."
+            sleep 2
+        done
+        if [[ "$SEAL_SA_READY" != "true" ]]; then
+            printf " still not visible after 60s; continuing — the retried grants below report the real error if it persists.\n"
+        fi
+    fi
+
+    # Scoped to the ONE key, not the key ring or project: this account can
+    # wrap and unwrap OpenBao's barrier key and nothing else.
+    echo "🔐 Granting encrypt/decrypt on the key..."
+    retry_gcloud gcloud kms keys add-iam-policy-binding "$SEAL_KEY" \
+        --keyring="$SEAL_KEYRING" --location="$SEAL_REGION" --project="$GCP_PROJECT" \
+        --member="serviceAccount:${SEAL_SA}" \
+        --role=roles/cloudkms.cryptoKeyEncrypterDecrypter >/dev/null
+
+    # Workload Identity binding for the KSA the OpenBao chart creates. The KSA is
+    # plain `openbao` in namespace `openbao` because the composition sets
+    # fullnameOverride: openbao — verified live (kubectl get sa -n openbao).
+    #
+    # Unconditioned, deliberately. velero-setup proved on 2026-09-01 that the
+    # providerId IAM condition never matches on this cluster, so a conditioned
+    # binding here would only reproduce the "denied getAccessToken" failure. Same
+    # identity-sameness caveat as Velero: any cluster in this project running a
+    # pod as openbao/openbao can use this key. Acceptable while ttf-cluster is
+    # the only cluster; revisit before a second one exists.
+    echo "🔗 Binding openbao/openbao to ${SEAL_SA}..."
+    retry_gcloud gcloud iam service-accounts add-iam-policy-binding "$SEAL_SA" \
+        --project="$GCP_PROJECT" \
+        --role=roles/iam.workloadIdentityUser \
+        --member="serviceAccount:${GCP_PROJECT}.svc.id.goog[openbao/openbao]" \
+        --condition=None >/dev/null
+
+    echo ""
+    echo "✅ OpenBao KMS seal ready."
+    echo ""
+    echo "Next, on an ALREADY-INITIALIZED OpenBao (this cluster), the seal must be"
+    echo "migrated once with two Shamir shares — see nidavellir docs/secrets-management.md"
+    echo "→ 'Migrating to auto-unseal'. On a fresh cluster, init as usual; the seal is"
+    echo "picked up automatically and the init output holds RECOVERY keys, not unseal keys."
+    ;;
+
 credentials)
     echo ""
     echo "🔑 Fetching credentials for existing cluster..."
@@ -497,12 +626,13 @@ delete)
     ;;
 
 *)
-    echo "Usage: $0 [create|delete|credentials|velero-setup]"
+    echo "Usage: $0 [create|delete|credentials|velero-setup|openbao-seal-setup]"
     echo ""
     echo "  create        Create the GKE cluster and fetch credentials"
     echo "  credentials   Fetch kubectl credentials for an existing cluster"
     echo "  velero-setup  One-time GCS bucket + IAM for Velero (idempotent;"
     echo "                safe to run against an already-running cluster)"
+    echo "  openbao-seal-setup  One-time KMS key + IAM so OpenBao auto-unseals (idempotent)"
     echo "  delete        Delete the cluster (keeps the Velero backup bucket)"
     exit 1
     ;;
