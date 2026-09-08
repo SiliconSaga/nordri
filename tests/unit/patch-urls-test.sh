@@ -103,6 +103,8 @@ rm -rf "$tree"
 f="$(mktemp)"; rm -f "$f"
 patch_repo_urls_file "$f" swap >/dev/null 2>&1; rc=$?
 check "file: unreadable input is an error in swap mode" "[ $rc -ne 0 ]"
+patch_repo_urls_file "$f" seed >/dev/null 2>&1; rc=$?
+check "file: unreadable input is an error in seed mode" "[ $rc -ne 0 ]"
 
 # unknown mode fails fast.
 tree="$(make_tree)"

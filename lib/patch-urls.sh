@@ -69,10 +69,21 @@ patch_repo_urls_file() {
         echo 0
         return 0
     fi
-    if ! grep -Fq -- "$FORGEJO_GIT_BASE_URL" "$f"; then
-        echo 0
-        return 0
-    fi
+    # Same three-way read of grep's status as above: a file grep cannot read
+    # must not pass as "nothing to rewrite".
+    local rc=0
+    grep -Fq -- "$FORGEJO_GIT_BASE_URL" "$f" || rc=$?
+    case "$rc" in
+        0) ;;
+        1)
+            echo 0
+            return 0
+            ;;
+        *)
+            echo "❌ patch_repo_urls_file: could not scan $label (grep exit $rc)." >&2
+            return 1
+            ;;
+    esac
     if [[ "$OSTYPE" == "darwin"* ]]; then
         sed -i '' "s|$FORGEJO_GIT_BASE_URL_RE|$SEED_GIT_BASE_URL|g" "$f" || return 1
     else
