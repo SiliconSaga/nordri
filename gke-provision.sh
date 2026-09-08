@@ -457,10 +457,12 @@ openbao-seal-setup)
     # long-lived production cluster was not made by this script. Idempotent —
     # re-running repairs drift.
     #
-    # Names are FIXED, not overridable, because the OpenBao composition in
-    # nidavellir derives them from cluster-identity (gcpProject, gcpRegion) plus
-    # these literals. Two sources of truth for a key name would mean an OpenBao
-    # that cannot decrypt its own barrier.
+    # The key ring and key NAMES are fixed, not overridable, because the OpenBao
+    # composition in nidavellir hardcodes them alongside cluster-identity's
+    # gcpProject/gcpRegion. Two sources of truth for a key name would mean an
+    # OpenBao that cannot decrypt its own barrier. GCP_REGION may be overridden,
+    # but only to the value cluster-identity-gke.yaml carries as gcpRegion —
+    # the composition renders that one into the seal stanza.
     SEAL_REGION="${GCP_REGION:-us-east1}"
     SEAL_KEYRING="openbao"
     SEAL_KEY="unseal"

@@ -51,6 +51,21 @@ out="$(patch_repo_urls_tree "$tree" seed)"; rc=$?
 check "seed-form tree is a no-op" "[ $rc -eq 0 ] && [ \"$out\" = '0' ]"
 rm -rf "$tree"
 
+# edge cases the loop must survive: no yaml at all, the URL twice on one line,
+# and a path with spaces (find -print0 / read -d '' is what makes that safe).
+tree="$(mktemp -d)"; mkdir -p "$tree/docs"
+printf '%s/x.git\n' "$forgejo" > "$tree/docs/notes.md"
+out="$(patch_repo_urls_tree "$tree" seed)"; rc=$?
+check "no-yaml tree returns 0 and reports 0" "[ $rc -eq 0 ] && [ \"$out\" = '0' ]"
+rm -rf "$tree"
+
+tree="$(mktemp -d)"; mkdir -p "$tree/with space/apps"
+printf "a: '%s/a.git' b: '%s/b.git'\n" "$forgejo" "$forgejo" > "$tree/with space/apps/twice.yaml"
+out="$(patch_repo_urls_tree "$tree" seed)"; rc=$?
+check "spaced path handled and both URLs on one line rewritten" "[ $rc -eq 0 ] && [ \"$out\" = '1' ] && ! grep -q 'forgejo-http' \"$tree/with space/apps/twice.yaml\""
+check "spaced path carries both seed URLs" "[ \"\$(grep -o 'gitea-http' \"$tree/with space/apps/twice.yaml\" | wc -l | tr -d ' ')\" = '2' ]"
+rm -rf "$tree"
+
 # unknown mode fails fast.
 tree="$(make_tree)"
 patch_repo_urls_tree "$tree" github >/dev/null 2>&1; rc=$?

@@ -1,5 +1,8 @@
 # components/nordri/lib/patch-velero.sh
-# Stamp the GCP project into a hydrated nordri tree's Velero Application.
+# Stamp the GCP project into a hydrated nordri tree: the Velero Application and,
+# since the Forgejo day-2 Phase 1, the gke cluster-identity EnvironmentConfig
+# (whose gcpProject the OpenBao composition reads for its KMS seal). Same
+# placeholder in both files, one stamp.
 # Sourced by bootstrap.sh AND update-embedded-git.sh. Returns non-zero on any
 # failure (caller decides whether to exit).
 #
@@ -14,7 +17,8 @@
 # the update path. Anything target-specific belongs in a lib both callers
 # source, not in whichever script happened to need it first.
 #
-# No-op for homelab, which uses velero-homelab.yaml and has no project to stamp.
+# No-op for homelab, which uses velero-homelab.yaml, seals OpenBao with a static
+# key, and so has no project to stamp anywhere.
 patch_velero_tree() {
     local tree="$1" target="$2"
     local app="$tree/platform/fundamentals/apps/velero-gke.yaml"
