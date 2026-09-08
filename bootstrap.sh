@@ -541,6 +541,29 @@ echo "🔧 [Layer 2.8] Installing Crossplane ProviderConfigs & RBAC..."
 kubectl apply -f "$SCRIPT_DIR/platform/fundamentals/manifests/crossplane-configs.yaml"
 echo "✅ Crossplane ProviderConfigs & RBAC applied."
 
+# --- Step 2.9: OpenBao seal key (homelab only) ---
+# Homelab OpenBao unseals with a STATIC key (realm ADR 0004): 32 random bytes
+# held in a Secret the composition injects as BAO_SEAL_STATIC_KEY. Created here,
+# once, if absent — a composition cannot generate random material (every
+# reconcile would re-render a different key and permanently seal the vault).
+# GKE needs nothing here: it seals through KMS via Workload Identity, set up by
+# `gke-provision.sh openbao-seal-setup`.
+#
+# The Secret must exist BEFORE the OpenBao pod is created; an env var sourced
+# from a missing Secret leaves the pod in CreateContainerConfigError. ArgoCD
+# deploys OpenBao at wave 10, long after this point.
+if [[ "$TARGET" == "homelab" ]]; then
+    echo "🔐 [Layer 2.9] Ensuring the homelab OpenBao static seal key..."
+    kubectl create namespace openbao --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+    if kubectl get secret -n openbao openbao-seal-key >/dev/null 2>&1; then
+        echo "   ✅ openbao-seal-key already present — leaving it alone (replacing it would seal the vault for good)."
+    else
+        kubectl create secret generic openbao-seal-key -n openbao \
+            --from-literal=key="$(openssl rand -base64 32)" >/dev/null
+        echo "   ✅ openbao-seal-key created. Back it up off-cluster if this homelab holds anything you would miss."
+    fi
+fi
+
 # --- Step 3: Install ArgoCD (Layer 3) ---
 echo "🔥 [Layer 3] Installing ArgoCD..."
 helm repo add argo https://argoproj.github.io/argo-helm >/dev/null 2>&1

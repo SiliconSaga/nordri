@@ -65,6 +65,11 @@ kubectl get secret -n gitea gitea-admin-credentials \
 ### Layer 2.8 — Crossplane ProviderConfigs + RBAC
 - Applies `crossplane-configs.yaml` (ProviderConfig CRDs now exist from Layer 2.7)
 
+### Layer 2.9 — OpenBao seal key (homelab only)
+- Creates namespace `openbao` and, if absent, Secret `openbao-seal-key` holding a random 32-byte static seal key
+- Never replaced on re-run: a new key cannot decrypt the existing barrier
+- GKE skips this; its OpenBao seals through Cloud KMS via Workload Identity, provisioned once by `./gke-provision.sh openbao-seal-setup` (see below)
+
 ### Layer 3 — ArgoCD
 - Installs **ArgoCD** via Helm (`argocd` namespace)
 - Applies the Root Application pointing at internal Gitea → ArgoCD takes over
@@ -101,6 +106,14 @@ ArgoCD syncs Nidavellir from the internal Gitea. Vegvísir deploys in sync-wave 
 
 After the root app is applied the bootstrap script waits for the Traefik LB IP.
 cert-manager and the Gateway deploy automatically via ArgoCD.
+
+### OpenBao auto-unseal (one-time)
+
+```bash
+./gke-provision.sh openbao-seal-setup
+```
+
+Enables Cloud KMS, creates key ring `openbao` / key `unseal` in `us-east1` (the region cluster-identity's `gcpRegion` names), a service account with encrypt/decrypt on that key only, and the Workload Identity binding for `openbao/openbao`. Idempotent. On a cluster whose OpenBao is already initialized, follow it with the one-time seal migration in nidavellir's `docs/secrets-management.md`.
 
 ### Automated DNS (recommended)
 
