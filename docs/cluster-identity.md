@@ -37,7 +37,12 @@ data:
   environment: homelab    # or "gke" — controls replica counts, etc.
   storageClass: local-path # or "standard-rwo" — used by all PVC-bound resources
   domain: homelab.local   # or "cmdbee.org" — base domain for ingress hosts
+  maturity: bootstrap     # bootstrap | durable | full — gates the durable tier
+  gcpProject: <stamped>   # gke only; stamped at hydration from GCP_PROJECT
+  gcpRegion: us-east1     # gke only; where the OpenBao KMS key ring lives
 ```
+
+`maturity` is the platform's graduation switch (realm design `2026-09-07-forgejo-day2-design.md`). `bootstrap.sh` always produces a `bootstrap` cluster; compositions that belong to the durable tier render nothing until an operator commits a bump and hydrates it. `gcpProject` is a hydration-time stamp, never committed as a real id, so `git grep gcpProject` on the repo shows only the placeholder.
 
 Per-environment definitions live in
 `platform/fundamentals/manifests/cluster-identity-{homelab,gke}.yaml`. Each
