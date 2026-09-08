@@ -44,6 +44,28 @@ check "swap returns 0" "[ $rc -eq 0 ]"
 check "swap snapshot has no gitea-http" "! grep -rq 'gitea-http' '$tree'"
 rm -rf "$tree"
 
+# forgejo/swap must REFUSE a tree that still carries a seed URL — that is the
+# one manifest that would point ArgoCD back at the retired seed.
+tree="$(make_tree)"
+printf "    repoURL: '%s/heimdall.git'\n" "$seed" > "$tree/apps/heimdall-app.yaml"
+patch_repo_urls_tree "$tree" swap >/dev/null 2>&1; rc=$?
+check "swap refuses a leftover seed URL" "[ $rc -ne 0 ]"
+patch_repo_urls_tree "$tree" forgejo >/dev/null 2>&1; rc=$?
+check "forgejo refuses a leftover seed URL" "[ $rc -ne 0 ]"
+check "refusal changed nothing" "grep -q \"$seed/heimdall.git\" '$tree/apps/heimdall-app.yaml'"
+rm -rf "$tree"
+
+# single-file entry point, used for the out-of-tree root-app manifests.
+f="$(mktemp)"
+printf "    repoURL: '%s/nordri.git'\n" "$forgejo" > "$f"
+out="$(patch_repo_urls_file "$f" seed)"; rc=$?
+check "file: seed rewrites and reports 1" "[ $rc -eq 0 ] && [ \"$out\" = '1' ] && grep -q \"$seed/nordri.git\" '$f'"
+out="$(patch_repo_urls_file "$f" seed)"; rc=$?
+check "file: already-seed is a no-op reporting 0" "[ $rc -eq 0 ] && [ \"$out\" = '0' ]"
+patch_repo_urls_file "$f" swap >/dev/null 2>&1; rc=$?
+check "file: swap refuses the seed form" "[ $rc -ne 0 ]"
+rm -f "$f"
+
 # a tree already in seed form (today's manifests) is a no-op in seed mode.
 tree="$(mktemp -d)"; mkdir -p "$tree/platform/argocd"
 printf "    repoURL: '%s/nordri.git'\n" "$seed" > "$tree/platform/argocd/app-of-apps.yaml"

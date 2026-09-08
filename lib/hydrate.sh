@@ -67,7 +67,9 @@ hydrate_working_tree_repo() {
     if ! url_count="$(patch_repo_urls_tree "$tmp" "${HYDRATE_URL_MODE:-seed}")"; then
         return 1
     fi
-    [[ "$url_count" != "0" ]] && echo "   Rewrote repoURLs in $url_count file(s) for '${HYDRATE_URL_MODE:-seed}'."
+    if [[ "$url_count" != "0" ]]; then
+        echo "   Rewrote repoURLs in $url_count file(s) for '${HYDRATE_URL_MODE:-seed}'."
+    fi
     hydrate_push_tree "$tmp" "$gitea_repo" "$commit_msg"
     rm -rf "$tmp"
     echo "✅ '$gitea_repo' hydrated to Seed Gitea."

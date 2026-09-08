@@ -460,10 +460,26 @@ openbao-seal-setup)
     # The key ring and key NAMES are fixed, not overridable, because the OpenBao
     # composition in nidavellir hardcodes them alongside cluster-identity's
     # gcpProject/gcpRegion. Two sources of truth for a key name would mean an
-    # OpenBao that cannot decrypt its own barrier. GCP_REGION may be overridden,
-    # but only to the value cluster-identity-gke.yaml carries as gcpRegion —
-    # the composition renders that one into the seal stanza.
-    SEAL_REGION="${GCP_REGION:-us-east1}"
+    # OpenBao that cannot decrypt its own barrier.
+    #
+    # The REGION is read from the same manifest the composition reads, so the
+    # key ring is created where the seal stanza will look for it. GCP_REGION
+    # may be set for other gcloud reasons; if it disagrees, that is an error
+    # rather than a second source of truth — an OpenBao whose seal names a key
+    # in the wrong region is diagnosable only from the pod log.
+    IDENTITY_MANIFEST="$(dirname "$0")/platform/fundamentals/manifests/cluster-identity-gke.yaml"
+    SEAL_REGION="$(sed -n 's/^  gcpRegion:[[:space:]]*//p' "$IDENTITY_MANIFEST")"
+    if [[ -z "$SEAL_REGION" ]]; then
+        echo "❌ Could not read gcpRegion from $IDENTITY_MANIFEST." >&2
+        echo "   The OpenBao composition renders that value into its seal stanza, so the key ring must be created there." >&2
+        exit 1
+    fi
+    if [[ -n "${GCP_REGION:-}" && "$GCP_REGION" != "$SEAL_REGION" ]]; then
+        echo "❌ GCP_REGION=$GCP_REGION disagrees with cluster-identity gcpRegion=$SEAL_REGION." >&2
+        echo "   The seal key ring must live in the region cluster-identity names. Unset GCP_REGION," >&2
+        echo "   or change gcpRegion in $IDENTITY_MANIFEST and re-hydrate before running this." >&2
+        exit 1
+    fi
     SEAL_KEYRING="openbao"
     SEAL_KEY="unseal"
     SEAL_SA="openbao-seal@${GCP_PROJECT}.iam.gserviceaccount.com"
@@ -513,15 +529,20 @@ openbao-seal-setup)
         # Same propagation lag velero-setup hit: describe answers before the IAM
         # backends accept the account as a member. Poll a real policy read.
         printf "   ⏳ Waiting for the service account to propagate to IAM"
+        SEAL_SA_READY=false
         for _ in $(seq 1 30); do
             if gcloud iam service-accounts get-iam-policy "$SEAL_SA" \
                 --project="$GCP_PROJECT" >/dev/null 2>&1; then
                 printf " ready\n"
+                SEAL_SA_READY=true
                 break
             fi
             printf "."
             sleep 2
         done
+        if [[ "$SEAL_SA_READY" != "true" ]]; then
+            printf " still not visible after 60s; continuing — the retried grants below report the real error if it persists.\n"
+        fi
     fi
 
     # Scoped to the ONE key, not the key ring or project: this account can

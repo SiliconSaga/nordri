@@ -20,37 +20,64 @@
 FORGEJO_GIT_BASE_URL="http://forgejo-http.forgejo.svc.cluster.local:3000/siliconsaga"
 SEED_GIT_BASE_URL="http://gitea-http.gitea.svc.cluster.local:3000/nordri-admin"
 
-# patch_repo_urls_tree <tree> <mode>
-# Echoes the number of files rewritten. Only *.yaml files are touched: docs
-# and scripts that mention a host are prose, not manifests.
-patch_repo_urls_tree() {
-    local tree="$1" mode="$2"
-    case "$mode" in
-        seed) ;;
-        forgejo|swap)
-            echo 0
-            return 0
-            ;;
+# _patch_repo_urls_check_mode <mode>: 0 for a known mode, 1 otherwise.
+_patch_repo_urls_check_mode() {
+    case "$1" in
+        seed|forgejo|swap) return 0 ;;
         *)
-            echo "❌ patch_repo_urls_tree: unknown mode '$mode' (expected seed|forgejo|swap)." >&2
+            echo "❌ patch_repo_urls: unknown mode '$1' (expected seed|forgejo|swap)." >&2
             return 1
             ;;
     esac
-    local changed=0 f
-    while IFS= read -r -d '' f; do
-        grep -q "$FORGEJO_GIT_BASE_URL" "$f" || continue
-        if [[ "$OSTYPE" == "darwin"* ]]; then
-            sed -i '' "s|$FORGEJO_GIT_BASE_URL|$SEED_GIT_BASE_URL|g" "$f" || return 1
-        else
-            sed -i "s|$FORGEJO_GIT_BASE_URL|$SEED_GIT_BASE_URL|g" "$f" || return 1
-        fi
-        # Fail closed, as patch-velero does: a Forgejo URL surviving into the
-        # seed means ArgoCD would try a host that does not exist yet.
-        if grep -q "$FORGEJO_GIT_BASE_URL" "$f"; then
-            echo "❌ patch_repo_urls_tree: Forgejo URL survived rewrite in ${f#"$tree"/}." >&2
+}
+
+# patch_repo_urls_file <file> <mode> [<label>]
+# One manifest. In seed mode rewrites the Forgejo form to the seed form and
+# fails closed if any survives. In forgejo/swap mode rewrites nothing but
+# REFUSES a file that still carries the seed form: a swap commit with one seed
+# URL left in it points ArgoCD back at the seed that is about to be retired,
+# silently, so that is an error rather than a warning. Echoes 1 if the file
+# was rewritten, else 0. <label> is the path shown in messages (default: file).
+patch_repo_urls_file() {
+    local f="$1" mode="$2" label="${3:-$1}"
+    _patch_repo_urls_check_mode "$mode" || return 1
+    if [[ "$mode" != "seed" ]]; then
+        if grep -q "$SEED_GIT_BASE_URL" "$f"; then
+            echo "❌ patch_repo_urls_file: seed URL present in $label under mode '$mode' — the committed form must be the Forgejo URL." >&2
             return 1
         fi
-        changed=$((changed + 1))
+        echo 0
+        return 0
+    fi
+    if ! grep -q "$FORGEJO_GIT_BASE_URL" "$f"; then
+        echo 0
+        return 0
+    fi
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        sed -i '' "s|$FORGEJO_GIT_BASE_URL|$SEED_GIT_BASE_URL|g" "$f" || return 1
+    else
+        sed -i "s|$FORGEJO_GIT_BASE_URL|$SEED_GIT_BASE_URL|g" "$f" || return 1
+    fi
+    # Fail closed, as patch-velero does: a Forgejo URL surviving into the
+    # seed means ArgoCD would try a host that does not exist yet.
+    if grep -q "$FORGEJO_GIT_BASE_URL" "$f"; then
+        echo "❌ patch_repo_urls_file: Forgejo URL survived rewrite in $label." >&2
+        return 1
+    fi
+    echo 1
+}
+
+# patch_repo_urls_tree <tree> <mode>
+# Every *.yaml under the tree through patch_repo_urls_file; echoes the number
+# of files rewritten. Only *.yaml files are touched: docs and scripts that
+# mention a host are prose, not manifests. Any per-file failure fails the tree.
+patch_repo_urls_tree() {
+    local tree="$1" mode="$2"
+    _patch_repo_urls_check_mode "$mode" || return 1
+    local changed=0 f n
+    while IFS= read -r -d '' f; do
+        n="$(patch_repo_urls_file "$f" "$mode" "${f#"$tree"/}")" || return 1
+        changed=$((changed + n))
     done < <(find "$tree" -type f -name '*.yaml' -print0)
     echo "$changed"
 }
