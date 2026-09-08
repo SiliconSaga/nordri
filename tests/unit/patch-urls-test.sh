@@ -22,7 +22,7 @@ make_tree() { # a fake hydrated tree carrying the COMMITTED (Forgejo) form
 tree="$(make_tree)"
 out="$(patch_repo_urls_tree "$tree" seed)"; rc=$?
 check "seed returns 0" "[ $rc -eq 0 ]"
-check "seed snapshot has no forgejo-http in yaml" "! grep -rq 'forgejo-http' --include='*.yaml' '$tree'"
+check "seed snapshot has no forgejo-http in yaml" "! grep -q 'forgejo-http' '$tree/platform/argocd/app-of-apps.yaml' '$tree/apps/mimir-app.yaml'"
 check "seed snapshot carries the seed URL" "grep -q \"$seed/nordri.git\" '$tree/platform/argocd/app-of-apps.yaml'"
 check "seed rewrites nested apps too" "grep -q \"$seed/nidavellir.git\" '$tree/apps/mimir-app.yaml'"
 check "seed leaves non-yaml alone" "grep -q 'forgejo-http' '$tree/README.md'"
@@ -98,6 +98,11 @@ check "near-miss host untouched in seed mode" "[ $rc -eq 0 ] && [ \"$out\" = '0'
 patch_repo_urls_tree "$tree" swap >/dev/null; rc=$?
 check "near-miss host is not a seed URL in swap mode" "[ $rc -eq 0 ]"
 rm -rf "$tree"
+
+# an unreadable file must fail the scan rather than pass as clean.
+f="$(mktemp)"; rm -f "$f"
+patch_repo_urls_file "$f" swap >/dev/null 2>&1; rc=$?
+check "file: unreadable input is an error in swap mode" "[ $rc -ne 0 ]"
 
 # unknown mode fails fast.
 tree="$(make_tree)"

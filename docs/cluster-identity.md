@@ -42,7 +42,7 @@ data:
   gcpRegion: us-east1     # gke only; where the OpenBao KMS key ring lives
 ```
 
-`maturity` is the platform's graduation switch (realm design `2026-09-07-forgejo-day2-design.md`). `bootstrap.sh` always produces a `bootstrap` cluster; compositions that belong to the durable tier render nothing until an operator commits a bump and hydrates it. `gcpProject` is a hydration-time stamp, never committed as a real id, so `git grep gcpProject` on the repo shows only the placeholder.
+`maturity` is the platform's graduation switch (realm design `2026-09-07-forgejo-day2-design.md`). `bootstrap.sh` always produces a `bootstrap` cluster; compositions that belong to the durable tier render nothing until an operator commits a bump and hydrates it. `gcpProject` is a hydration-time stamp: the committed manifest carries only the `__GCP_PROJECT__` placeholder, and `lib/patch-velero.sh` fills the real id into the hydrated copy from `GCP_PROJECT`, the same way it stamps the Velero Application.
 
 Per-environment definitions live in
 `platform/fundamentals/manifests/cluster-identity-{homelab,gke}.yaml`. Each

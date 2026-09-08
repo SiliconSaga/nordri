@@ -1,6 +1,7 @@
 # components/nordri/lib/patch-urls.sh
-# Target-specific repoURL rewrite for hydrated trees. Sourced by bootstrap.sh,
-# update-embedded-git.sh and lib/hydrate.sh.
+# Target-specific repoURL rewrite for hydrated trees. Sourced by bootstrap.sh
+# and update-embedded-git.sh; lib/hydrate.sh calls patch_repo_urls_tree and
+# relies on the caller having sourced this file first.
 #
 # Git carries the DURABLE form of every ArgoCD repoURL — the in-cluster Forgejo
 # host — because after the Forgejo cutover Forgejo's main is GitHub's main
@@ -49,10 +50,22 @@ patch_repo_urls_file() {
     local f="$1" mode="$2" label="${3:-$1}"
     _patch_repo_urls_check_mode "$mode" || return 1
     if [[ "$mode" != "seed" ]]; then
-        if grep -Fq -- "$SEED_GIT_BASE_URL" "$f"; then
-            echo "❌ patch_repo_urls_file: seed URL present in $label under mode '$mode' — the committed form must be the Forgejo URL." >&2
-            return 1
-        fi
+        # grep's exit status is the signal here, so read all three: 0 = seed
+        # URL present (refuse), 1 = clean, anything else = grep could not read
+        # the file, which must not pass as "clean".
+        local rc=0
+        grep -Fq -- "$SEED_GIT_BASE_URL" "$f" || rc=$?
+        case "$rc" in
+            0)
+                echo "❌ patch_repo_urls_file: seed URL present in $label under mode '$mode' — the committed form must be the Forgejo URL." >&2
+                return 1
+                ;;
+            1) ;;
+            *)
+                echo "❌ patch_repo_urls_file: could not scan $label (grep exit $rc)." >&2
+                return 1
+                ;;
+        esac
         echo 0
         return 0
     fi
