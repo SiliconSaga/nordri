@@ -1,13 +1,17 @@
 # components/nordri/lib/hydrate.sh
 # Shared seed-Gitea hydration helpers for bootstrap.sh and update-embedded-git.sh.
-# Depends on lib/gitea.sh (gitea_ensure_repo, $GITEA_GIT_BASE, $GITEA_USER) and,
-# for the working-tree helper, the caller's $TARGET and TEMP_DIRS array.
+# Depends on lib/gitea.sh (gitea_ensure_repo, $GITEA_GIT_BASE, $GITEA_USER),
+# lib/patch-urls.sh (patch_repo_urls_tree) and, for the working-tree helper,
+# the caller's $TARGET and TEMP_DIRS array.
 #
 # Per-script knobs (read here, set by the caller before use):
 #   HYDRATE_AUTO_INIT  "true" for fresh-cluster bootstrap (repos need an initial
 #                      commit + resolvable HEAD); unset/false for day-2 updates.
 #   HYDRATE_COMMITTER  git author name for the ephemeral hydration commit
 #                      (default "Nordri Bootstrap").
+#   HYDRATE_URL_MODE   seed (default) | forgejo | swap — passed to
+#                      patch_repo_urls_tree after the per-component patch;
+#                      see lib/patch-urls.sh.
 
 # Copy a source tree into a fresh dir, dropping its .git so we push a clean
 # orphan snapshot rather than the source history.
@@ -57,6 +61,13 @@ hydrate_working_tree_repo() {
         fi
         echo "   Patched $gitea_repo for target '$TARGET' ($patch_out)."
     fi
+    # URL form is a property of the hydration TARGET, not the component, so it
+    # runs for every working-tree repo after any component-specific patch.
+    local url_count
+    if ! url_count="$(patch_repo_urls_tree "$tmp" "${HYDRATE_URL_MODE:-seed}")"; then
+        return 1
+    fi
+    [[ "$url_count" != "0" ]] && echo "   Rewrote repoURLs in $url_count file(s) for '${HYDRATE_URL_MODE:-seed}'."
     hydrate_push_tree "$tmp" "$gitea_repo" "$commit_msg"
     rm -rf "$tmp"
     echo "✅ '$gitea_repo' hydrated to Seed Gitea."

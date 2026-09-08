@@ -46,6 +46,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$SCRIPT_DIR/lib/hydrate.sh"
 . "$SCRIPT_DIR/lib/patch-nidavellir.sh"
 . "$SCRIPT_DIR/lib/patch-velero.sh"
+. "$SCRIPT_DIR/lib/patch-urls.sh"
 TARGET=$1
 
 # Validate args before anything that touches the cluster, so wrong inputs
@@ -243,6 +244,10 @@ fi
 # placeholder and leave Velero pointed at a bucket that does not exist —
 # healthy-looking and storing nothing. See lib/patch-velero.sh.
 patch_velero_tree "$HYDRATE_DIR" "$TARGET" || exit 1
+
+# Rewrite committed Forgejo repoURLs to the seed form. A no-op until the
+# manifests move to the durable form (realm Forgejo day-2 design, Phase 3).
+patch_repo_urls_tree "$HYDRATE_DIR" "${HYDRATE_URL_MODE:-seed}" >/dev/null || exit 1
 
 # Copy the root application (optional, but good for completeness)
 cp "$SCRIPT_DIR/platform/root-app.yaml" "$HYDRATE_DIR/"

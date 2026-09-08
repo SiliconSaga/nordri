@@ -57,6 +57,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$SCRIPT_DIR/lib/hydrate.sh"
 . "$SCRIPT_DIR/lib/patch-nidavellir.sh"
 . "$SCRIPT_DIR/lib/patch-velero.sh"
+. "$SCRIPT_DIR/lib/patch-urls.sh"
 TARGET=$1
 # Capture explicit GITEA_PASS env input here without applying a default —
 # the resolver populates the value below. Username is fixed to
@@ -84,7 +85,8 @@ GITEA_CREDENTIALS_SECRET="gitea-admin-credentials"
 NIDAVELLIR_DIR="${NIDAVELLIR_DIR:-$(dirname "$SCRIPT_DIR")/nidavellir}"
 MIMIR_DIR="${MIMIR_DIR:-$(dirname "$SCRIPT_DIR")/mimir}"
 HEIMDALL_DIR="${HEIMDALL_DIR:-$(dirname "$SCRIPT_DIR")/heimdall}"
-INTERNAL_GITEA_URL="http://gitea-http.gitea.svc.cluster.local:3000"
+# The seed host literal now lives in lib/patch-urls.sh (SEED_GIT_BASE_URL).
+INTERNAL_GITEA_URL="${SEED_GIT_BASE_URL%/nordri-admin}"
 # Fresh-cluster bootstrap: repos are created with auto_init so ArgoCD can
 # resolve HEAD. The working-tree hydration helper reads this.
 HYDRATE_AUTO_INIT=true
@@ -401,6 +403,10 @@ fi
 # project's identity — the value exists only in the hydrated copy pushed to the
 # Seed Gitea. Shared with update-embedded-git.sh; see lib/patch-velero.sh.
 patch_velero_tree "$HYDRATE_DIR" "$TARGET" || exit 1
+
+# Rewrite committed Forgejo repoURLs to the seed form. A no-op until the
+# manifests move to the durable form (realm Forgejo day-2 design, Phase 3).
+patch_repo_urls_tree "$HYDRATE_DIR" "${HYDRATE_URL_MODE:-seed}" >/dev/null || exit 1
 
 # Copy the root application
 cp "$SCRIPT_DIR/platform/root-app.yaml" "$HYDRATE_DIR/"
