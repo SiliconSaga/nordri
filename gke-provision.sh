@@ -9,16 +9,16 @@
 #   gcloud config set project YOUR_PROJECT
 #
 # Usage:
-#   ./scripts/gke-provision.sh [create|delete|credentials|velero-setup|openbao-seal-setup]
+#   ./gke-provision.sh [create|delete|credentials|velero-setup|openbao-seal-setup]
 #
 # After creating the cluster:
 #   ./bootstrap.sh gke
 #
 # To start over with a clean cluster (recommended over fighting finalizers):
-#   ./scripts/gke-provision.sh delete   # then re-run create
+#   ./gke-provision.sh delete   # then re-run create
 #
 # After testing:
-#   ./scripts/gke-provision.sh delete
+#   ./gke-provision.sh delete
 
 set -e
 
@@ -118,7 +118,7 @@ create)
     echo "      ./bootstrap.sh gke"
     echo ""
     echo "⚠️  Remember: this cluster costs money. Delete it when done:"
-    echo "   ./scripts/gke-provision.sh delete"
+    echo "   ./gke-provision.sh delete"
     ;;
 
 velero-setup)

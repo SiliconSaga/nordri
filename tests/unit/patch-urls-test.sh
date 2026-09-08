@@ -88,6 +88,17 @@ check "spaced path handled and both URLs on one line rewritten" "[ $rc -eq 0 ] &
 check "spaced path carries both seed URLs" "[ \"\$(grep -o 'gitea-http' \"$tree/with space/apps/twice.yaml\" | wc -l | tr -d ' ')\" = '2' ]"
 rm -rf "$tree"
 
+# literal matching: a near-miss host (one dot replaced by another character)
+# must be left alone in seed mode and must not count as a seed URL otherwise.
+tree="$(mktemp -d)"; mkdir -p "$tree/apps"
+near="${forgejo/forgejo-http.forgejo/forgejo-httpXforgejo}"
+printf "    repoURL: '%s/nordri.git'\n" "$near" > "$tree/apps/near.yaml"
+out="$(patch_repo_urls_tree "$tree" seed)"; rc=$?
+check "near-miss host untouched in seed mode" "[ $rc -eq 0 ] && [ \"$out\" = '0' ] && grep -Fq -- \"$near\" '$tree/apps/near.yaml'"
+patch_repo_urls_tree "$tree" swap >/dev/null; rc=$?
+check "near-miss host is not a seed URL in swap mode" "[ $rc -eq 0 ]"
+rm -rf "$tree"
+
 # unknown mode fails fast.
 tree="$(make_tree)"
 patch_repo_urls_tree "$tree" github >/dev/null 2>&1; rc=$?

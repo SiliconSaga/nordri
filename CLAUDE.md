@@ -47,7 +47,7 @@ kubectl kuttl test --config kuttl-test-gke.yaml
 
 ### Provision a fresh GKE test cluster
 ```bash
-./scripts/gke-provision.sh
+./gke-provision.sh
 ```
 
 ---

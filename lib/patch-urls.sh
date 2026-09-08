@@ -20,6 +20,13 @@
 FORGEJO_GIT_BASE_URL="http://forgejo-http.forgejo.svc.cluster.local:3000/siliconsaga"
 SEED_GIT_BASE_URL="http://gitea-http.gitea.svc.cluster.local:3000/nordri-admin"
 
+# The URLs are matched LITERALLY everywhere: grep with -F, and sed with the
+# regex metacharacters escaped (the dots in the hostnames would otherwise match
+# any character, so a near-miss host would be rewritten too). `|` is the sed
+# delimiter and does not occur in either URL.
+_patch_repo_urls_sed_escape() { printf '%s' "$1" | sed 's/[.[\*^$]/\\&/g'; }
+FORGEJO_GIT_BASE_URL_RE="$(_patch_repo_urls_sed_escape "$FORGEJO_GIT_BASE_URL")"
+
 # _patch_repo_urls_check_mode <mode>: 0 for a known mode, 1 otherwise.
 _patch_repo_urls_check_mode() {
     case "$1" in
@@ -42,25 +49,25 @@ patch_repo_urls_file() {
     local f="$1" mode="$2" label="${3:-$1}"
     _patch_repo_urls_check_mode "$mode" || return 1
     if [[ "$mode" != "seed" ]]; then
-        if grep -q "$SEED_GIT_BASE_URL" "$f"; then
+        if grep -Fq -- "$SEED_GIT_BASE_URL" "$f"; then
             echo "❌ patch_repo_urls_file: seed URL present in $label under mode '$mode' — the committed form must be the Forgejo URL." >&2
             return 1
         fi
         echo 0
         return 0
     fi
-    if ! grep -q "$FORGEJO_GIT_BASE_URL" "$f"; then
+    if ! grep -Fq -- "$FORGEJO_GIT_BASE_URL" "$f"; then
         echo 0
         return 0
     fi
     if [[ "$OSTYPE" == "darwin"* ]]; then
-        sed -i '' "s|$FORGEJO_GIT_BASE_URL|$SEED_GIT_BASE_URL|g" "$f" || return 1
+        sed -i '' "s|$FORGEJO_GIT_BASE_URL_RE|$SEED_GIT_BASE_URL|g" "$f" || return 1
     else
-        sed -i "s|$FORGEJO_GIT_BASE_URL|$SEED_GIT_BASE_URL|g" "$f" || return 1
+        sed -i "s|$FORGEJO_GIT_BASE_URL_RE|$SEED_GIT_BASE_URL|g" "$f" || return 1
     fi
     # Fail closed, as patch-velero does: a Forgejo URL surviving into the
     # seed means ArgoCD would try a host that does not exist yet.
-    if grep -q "$FORGEJO_GIT_BASE_URL" "$f"; then
+    if grep -Fq -- "$FORGEJO_GIT_BASE_URL" "$f"; then
         echo "❌ patch_repo_urls_file: Forgejo URL survived rewrite in $label." >&2
         return 1
     fi
