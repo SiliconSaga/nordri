@@ -12,6 +12,8 @@ set -e
 # 3.   Install ArgoCD
 # 4.   Apply Root Application (ArgoCD adopts all pre-installed components)
 # 5.   Initialize Garage S3 + Velero credentials (waits for ArgoCD to deploy Garage)
+# 5b.  OpenBao: init + unseal (homelab; gke only with OPENBAO_AUTO_INIT=1), the
+#      one-time KV/auth/policy configuration ESO needs, realm-declared seeds
 #
 # After bootstrap, ArgoCD pulls both Nordri and Nidavellir from internal Gitea.
 # See nidavellir/vegvisir/README.md for the procedure to switch to GitHub.
@@ -55,6 +57,14 @@ set -e
 #   NIDAVELLIR_DIR / MIMIR_DIR / HEIMDALL_DIR
 #               Absolute path to each sibling component's checkout. Defaults
 #               to ../<name> relative to this script.
+#
+#   OPENBAO_AUTO_INIT  Set to 1 to let Layer 5b init and unseal OpenBao on gke
+#               too, parking the shares in-cluster. Default: homelab only —
+#               on a live environment the shares belong in the password
+#               manager first (nidavellir docs/secrets-management.md).
+#   OPENBAO_SEEDS_FILE Path to the realm's seed declaration. Default:
+#               <REALM_DIR>/openbao-seeds when a realm is given; see
+#               lib/openbao.sh for the one-line-per-path format.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # Shared hydration libraries (extracted from the duplicated inline blocks).
@@ -63,6 +73,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$SCRIPT_DIR/lib/patch-nidavellir.sh"
 . "$SCRIPT_DIR/lib/patch-velero.sh"
 . "$SCRIPT_DIR/lib/patch-urls.sh"
+. "$SCRIPT_DIR/lib/openbao.sh"
 TARGET=$1
 # Capture explicit GITEA_PASS env input here without applying a default —
 # the resolver populates the value below. Username is fixed to
@@ -800,6 +811,60 @@ aws_secret_access_key=$KEY_SECRET" \
     done
 else
     echo "ℹ️  Skipping Garage init (not homelab target)."
+fi
+
+# --- Step 5b: OpenBao init, configure, seed (Layer 5b) ---
+# Everything between "OpenBao pod Running" and "the stack can read secrets"
+# used to be hands: init, unseal, the KV/auth/policy setup ESO depends on, and
+# the realm's seed values. A fresh homelab came up green on every layer and
+# still could not import its Keycloak realm for want of those three steps.
+# lib/openbao.sh does them idempotently; a re-run of this script changes
+# nothing on a cluster that already has them.
+#
+# The init half runs on homelab, whose in-cluster custody realm ADR 0002
+# accepts, and on gke only when OPENBAO_AUTO_INIT=1 says so deliberately. The
+# configure and seed halves run wherever the instance is already unsealed.
+echo "🔐 [Layer 5b] OpenBao init, configure, seed..."
+if openbao_wait_running 600; then
+    OPENBAO_READY_FOR_CONFIG=false
+    if [[ "$TARGET" == "homelab" || "${OPENBAO_AUTO_INIT:-0}" == "1" ]]; then
+        # An `a && b && flag=true` list would swallow a failure under set -e
+        # and let bootstrap finish green with a vault that is not usable.
+        if openbao_ensure_initialized && openbao_ensure_unsealed; then
+            OPENBAO_READY_FOR_CONFIG=true
+        else
+            echo "❌ OpenBao initialization or unsealing failed — see the messages above; if an init file path was printed, park it before anything else." >&2
+            exit 1
+        fi
+    elif [[ "$(openbao_status_field '.initialized' 2>/dev/null)" == "true" && "$(openbao_status_field '.sealed' 2>/dev/null)" == "false" ]]; then
+        # Initialized by hand (the gke default). Configure and seed still need
+        # the root token, which only the parked Secret provides — so require it
+        # rather than fail deeper in with a less helpful error.
+        if kubectl get secret -n "$OPENBAO_NS" "$OPENBAO_INIT_SECRET" >/dev/null 2>&1; then
+            OPENBAO_READY_FOR_CONFIG=true
+        else
+            echo "ℹ️  OpenBao on $TARGET is initialized and unsealed but Secret $OPENBAO_NS/$OPENBAO_INIT_SECRET is absent, so Layer 5b cannot authenticate to configure or seed."
+            echo "   Park the init material as the runbook describes (nidavellir docs/secrets-management.md, 'Fresh cluster — full init': init.json plus a root_token key), then re-run this script."
+        fi
+    else
+        echo "ℹ️  OpenBao on $TARGET is not initialized+unsealed and OPENBAO_AUTO_INIT is not set — init it by hand (shares to the password manager first), park the material in Secret $OPENBAO_NS/$OPENBAO_INIT_SECRET, then re-run to configure and seed."
+    fi
+    if [[ "$OPENBAO_READY_FOR_CONFIG" == "true" ]]; then
+        openbao_configure || { echo "❌ OpenBao configuration failed." >&2; exit 1; }
+        OPENBAO_SEEDS_FILE="${OPENBAO_SEEDS_FILE:-}"
+        if [[ -z "$OPENBAO_SEEDS_FILE" && -n "$REALM" && -f "$REALM_DIR/openbao-seeds" ]]; then
+            OPENBAO_SEEDS_FILE="$REALM_DIR/openbao-seeds"
+        fi
+        if [[ -n "$OPENBAO_SEEDS_FILE" ]]; then
+            echo "🌱 Seeding realm-declared OpenBao paths from $OPENBAO_SEEDS_FILE..."
+            openbao_seed_file "$OPENBAO_SEEDS_FILE" || { echo "❌ OpenBao seeding failed." >&2; exit 1; }
+        else
+            echo "ℹ️  No openbao-seeds file for this realm — nothing to seed."
+        fi
+        echo "✅ OpenBao ready: ESO can read secret/*, realm seeds present."
+    fi
+else
+    echo "⚠️  OpenBao never reached Running; skipping Layer 5b. Re-run this script once ArgoCD has deployed it (idempotent)."
 fi
 
 # --- Step 6: Post-Bootstrap Instructions (GKE) ---
