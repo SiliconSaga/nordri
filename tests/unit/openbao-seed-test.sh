@@ -33,9 +33,18 @@ if [[ "$1" == "exec" ]]; then
     payload="$(cat)"
     printf '%s\n' "$snippet" >> "$STUB_LOG"
     [[ "$token" == "dummy-root-token" ]] || { echo "bad token" >&2; exit 99; }
+    # metadata get: present if pre-existing or written earlier in this run
+    # (the stub remembers puts, so a second pass sees persisted state); an
+    # explicit not-found message otherwise; a remote error for STUB_ERROR_PATH.
+    # stderr is folded into stdout by the lib's snippet, so print the message.
     if [[ "$snippet" == *"bao kv metadata get"* ]]; then
         path="${snippet#*metadata get }"; path="${path%% *}"
-        [[ "$path" == "$STUB_EXISTING" ]] && exit 0
+        if [[ "$path" == "${STUB_ERROR_PATH:-}" ]]; then
+            echo "Error making API request. Code: 503. Errors: * OpenBao is sealed"
+            exit 2
+        fi
+        [[ "$path" == "$STUB_EXISTING" || -f "$STUB_PUTS/${path//\//_}.json" ]] && exit 0
+        echo "No value found at secret/metadata/${path#secret/}"
         exit 2
     fi
     if [[ "$snippet" == *"bao kv put"* ]]; then
@@ -69,11 +78,22 @@ check "generated values differ" "[ \"\$(jq -r '.\"client-secret\"' '$put')\" != 
 check "exactly two keys written" "[ \"\$(jq 'keys | length' '$put')\" -eq 2 ]"
 check "no CR in generated values" "! grep -q \$'\\r' '$put'"
 
-# Second run is a no-op: nothing else is written.
-rm -f "$put"
-openbao_seed_file "$work/seeds" >/dev/null 2>&1
-check "second run writes again only what is absent (stub still says absent)" "[ -f '$put' ]"
+# Second run against the persisted state is a no-op: the stub now reports the
+# written path as present, so nothing is put again and the first value stands.
+first_value="$(jq -r '."client-secret"' "$put")"
+out2="$(openbao_seed_file "$work/seeds" 2>&1)"; rc=$?
+check "second run succeeds" "[ $rc -eq 0 ]"
+check "second run reports the seeded path present" "grep -q 'secret/new/thing present' <<<'$out2'"
+check "second run leaves the first value in place" "[ \"\$(jq -r '.\"client-secret\"' '$put')\" = '$first_value' ]"
+check "exactly one kv put across both runs" "[ \"\$(grep -c 'bao kv put' '$STUB_LOG')\" -eq 1 ]"
 check "second run still skips the existing path" "[ ! -e '$STUB_PUTS/secret_already_there.json' ]"
+
+# A remote error that is NOT not-found must never be read as absent: no write,
+# non-zero return.
+printf 'secret/flaky/path key\n' > "$work/flaky"
+STUB_ERROR_PATH="secret/flaky/path" openbao_seed_file "$work/flaky" >/dev/null 2>&1; rc=$?
+check "remote metadata error is an error, not absent" "[ $rc -ne 0 ]"
+check "remote metadata error writes nothing" "[ ! -e '$STUB_PUTS/secret_flaky_path.json' ]"
 
 # Malformed lines fail fast, before any write.
 rm -rf "$STUB_PUTS"; mkdir -p "$STUB_PUTS"

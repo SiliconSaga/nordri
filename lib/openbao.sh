@@ -95,6 +95,25 @@ openbao_run_with_token() {
     } | kubectl exec -i -n "$OPENBAO_NS" "$OPENBAO_POD" -- sh -c "IFS= read -r BAO_TOKEN; export BAO_TOKEN; $snippet"
 }
 
+# Does a KV v2 path exist? Prints `present` or `absent`; returns 1 for any
+# other outcome. `bao kv metadata get` exits 2 for every remote error, not just
+# a missing path, so the exit code alone cannot decide — an API, TLS or auth
+# failure read as "absent" would lead straight to overwriting a live value.
+# Only the explicit "No value found" message counts as absent.
+# openbao_kv_path_state <secret/path>
+openbao_kv_path_state() {
+    local path="$1" out rc=0
+    out=$(openbao_run_with_token "bao kv metadata get $path 2>&1 >/dev/null" </dev/null) || rc=$?
+    if [[ $rc -eq 0 ]]; then
+        echo present
+    elif [[ $rc -eq 2 && "$out" == *"No value found"* ]]; then
+        echo absent
+    else
+        echo "❌ openbao_kv_path_state: metadata get $path failed (exit $rc): ${out:-no output}" >&2
+        return 1
+    fi
+}
+
 # A private scratch directory: 0700, under the caller's TMPDIR, removed by the
 # caller. Prints the path.
 openbao_scratch_dir() {
@@ -221,7 +240,11 @@ path "secret/data/*" { capabilities = ["read"] }
 EOF
     openbao_run_with_token 'bao write auth/kubernetes/role/eso-role bound_service_account_names=external-secrets bound_service_account_namespaces=external-secrets policies=eso-read ttl=1h >/dev/null' </dev/null || return 1
     echo "   • secret/demo canary"
-    openbao_run_with_token 'bao kv metadata get secret/demo >/dev/null 2>&1 || bao kv put secret/demo foo=bar >/dev/null' </dev/null || return 1
+    local canary
+    canary=$(openbao_kv_path_state secret/demo) || return 1
+    if [[ "$canary" == "absent" ]]; then
+        openbao_run_with_token 'bao kv put secret/demo foo=bar >/dev/null' </dev/null || return 1
+    fi
 }
 
 # Realm-declared seeds: one per line, `<kv-path> <key> [<key>...]`, blank or
@@ -235,7 +258,7 @@ EOF
 # so both are held to a strict allowlist before anything is built from them.
 # openbao_seed_file <file>
 openbao_seed_file() {
-    local file="$1" line path keys key rc scratch jq_args
+    local file="$1" line path keys key scratch jq_args
     [[ -r "$file" ]] || { echo "❌ openbao_seed_file: cannot read $file" >&2; return 1; }
     local lineno=0
     while IFS= read -r line || [[ -n "$line" ]]; do
@@ -261,20 +284,22 @@ openbao_seed_file() {
                 return 1
             fi
         done
-        rc=0
-        openbao_run_with_token "bao kv metadata get $path >/dev/null 2>&1" </dev/null || rc=$?
-        case "$rc" in
-            0) echo "   ✅ $path present — leaving it alone."; continue ;;
-            2) ;;
-            *) echo "❌ openbao_seed_file: could not check $path (exit $rc)." >&2; return 1 ;;
-        esac
+        local state
+        state=$(openbao_kv_path_state "$path") || return 1
+        if [[ "$state" == "present" ]]; then
+            echo "   ✅ $path present — leaving it alone."
+            continue
+        fi
         # Values rest only in 0600 files inside a 0700 scratch dir; jq reads
         # them by path (--rawfile) so no value ever enters an argument list.
+        # They live in their own subdirectory so a key named `put.json` cannot
+        # collide with the output file jq is about to truncate.
         scratch=$(openbao_scratch_dir) || return 1
+        mkdir "$scratch/values" || { rm -rf "$scratch"; return 1; }
         jq_args=()
         for key in "${keys[@]}"; do
-            openssl rand -base64 32 | tr -d '\r\n' > "$scratch/$key" || { rm -rf "$scratch"; return 1; }
-            jq_args+=(--rawfile "$key" "$scratch/$key")
+            openssl rand -base64 32 | tr -d '\r\n' > "$scratch/values/$key" || { rm -rf "$scratch"; return 1; }
+            jq_args+=(--rawfile "$key" "$scratch/values/$key")
         done
         # Build {key: value, ...} from the named rawfiles: $ARGS.named holds
         # every --rawfile under its key name.

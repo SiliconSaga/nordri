@@ -828,11 +828,26 @@ echo "🔐 [Layer 5b] OpenBao init, configure, seed..."
 if openbao_wait_running 600; then
     OPENBAO_READY_FOR_CONFIG=false
     if [[ "$TARGET" == "homelab" || "${OPENBAO_AUTO_INIT:-0}" == "1" ]]; then
-        openbao_ensure_initialized && openbao_ensure_unsealed && OPENBAO_READY_FOR_CONFIG=true
+        # An `a && b && flag=true` list would swallow a failure under set -e
+        # and let bootstrap finish green with a vault that is not usable.
+        if openbao_ensure_initialized && openbao_ensure_unsealed; then
+            OPENBAO_READY_FOR_CONFIG=true
+        else
+            echo "❌ OpenBao initialization or unsealing failed — see the messages above; if an init file path was printed, park it before anything else." >&2
+            exit 1
+        fi
     elif [[ "$(openbao_status_field '.initialized' 2>/dev/null)" == "true" && "$(openbao_status_field '.sealed' 2>/dev/null)" == "false" ]]; then
-        OPENBAO_READY_FOR_CONFIG=true
+        # Initialized by hand (the gke default). Configure and seed still need
+        # the root token, which only the parked Secret provides — so require it
+        # rather than fail deeper in with a less helpful error.
+        if kubectl get secret -n openbao openbao-init >/dev/null 2>&1; then
+            OPENBAO_READY_FOR_CONFIG=true
+        else
+            echo "ℹ️  OpenBao on $TARGET is initialized and unsealed but Secret openbao/openbao-init is absent, so Layer 5b cannot authenticate to configure or seed."
+            echo "   Park the init material as the runbook describes (nidavellir docs/secrets-management.md, 'Fresh cluster — full init': init.json plus a root_token key), then re-run this script."
+        fi
     else
-        echo "ℹ️  OpenBao on $TARGET is not initialized+unsealed and OPENBAO_AUTO_INIT is not set — init it by hand (shares to the password manager first), then re-run to configure and seed."
+        echo "ℹ️  OpenBao on $TARGET is not initialized+unsealed and OPENBAO_AUTO_INIT is not set — init it by hand (shares to the password manager first), park the material in Secret openbao/openbao-init, then re-run to configure and seed."
     fi
     if [[ "$OPENBAO_READY_FOR_CONFIG" == "true" ]]; then
         openbao_configure || { echo "❌ OpenBao configuration failed." >&2; exit 1; }
