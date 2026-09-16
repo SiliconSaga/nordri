@@ -617,8 +617,12 @@ if [[ "$TARGET" == "homelab" ]]; then
     if kubectl get secret -n openbao openbao-seal-key >/dev/null 2>&1; then
         echo "   ✅ openbao-seal-key already present — leaving it alone (replacing it would seal the vault for good)."
     else
+        # Windows openssl ends its output with CRLF; `$(...)` strips the LF
+        # only, and a key carrying a trailing CR is not valid base64, so the
+        # static seal would fail to decode it the day the cluster graduates.
+        # Found on a Docker Desktop homelab whose key was minted this way.
         kubectl create secret generic openbao-seal-key -n openbao \
-            --from-literal=key="$(openssl rand -base64 32)" >/dev/null
+            --from-literal=key="$(openssl rand -base64 32 | tr -d '\r\n')" >/dev/null
         echo "   ✅ openbao-seal-key created. Back it up off-cluster if this homelab holds anything you would miss."
     fi
 fi

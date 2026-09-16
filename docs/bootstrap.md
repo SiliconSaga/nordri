@@ -68,6 +68,7 @@ kubectl get secret -n gitea gitea-admin-credentials \
 ### Layer 2.9 — OpenBao seal key (homelab only)
 - Creates namespace `openbao` and, if absent, Secret `openbao-seal-key` holding a random 32-byte static seal key
 - Never replaced on re-run: a new key cannot decrypt the existing barrier
+- A key minted from Windows Git Bash before 2026-09-16 carries a trailing carriage return (openssl's CRLF) and is not valid base64. Check with a length test (44 characters, no CR); while the cluster is still on the Shamir default the key is unused and can simply be deleted and recreated, after graduation it must not be touched
 - GKE skips this; its OpenBao seals through Cloud KMS via Workload Identity, provisioned once by `./gke-provision.sh openbao-seal-setup` (see below)
 
 ### Layer 3 — ArgoCD
