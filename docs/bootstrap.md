@@ -91,6 +91,16 @@ already had it still needs. `local-path` is the only storage class in use.
 cert-manager is **not** a Nordri Layer 4 component. It is deployed by
 Vegvísir (Nidavellir Tier 2) via ArgoCD sync-waves after Nordri stabilises.
 
+### Layer 5b — OpenBao init, configure, seed
+
+Runs after ArgoCD has deployed OpenBao (nidavellir, sync-wave 10); waits up to ten minutes for the pod, then skips with a note if it never appears. Everything here is idempotent, so a re-run on a configured cluster changes nothing. Functions live in `lib/openbao.sh`.
+
+- **Init and unseal** (homelab; on GKE only with `OPENBAO_AUTO_INIT=1`): `bao operator init` with 3 shares / threshold 2, material parked in Secret `openbao/openbao-init` (`init.json` and `root_token` keys, the layout the runbooks and tests read). A Shamir instance is unsealed from two parked shares; an instance sealed on an auto seal is reported as a broken seal backend instead. A leftover `openbao-init` next to an uninitialized instance (wiped storage) is kept under a timestamped name and a fresh init proceeds. On GKE without the flag, init stays a human step with the shares going to the password manager first; re-running bootstrap afterwards does the rest.
+- **Configure**: KV v2 at `secret/`, Kubernetes auth trusting the in-cluster API, the read-only `eso-read` policy, `eso-role` bound to External Secrets' ServiceAccount, and the `secret/demo` canary. This is realm plan Task A1.5 Steps 3–4, no longer typed by hand.
+- **Seed**: if the owning realm carries an `openbao-seeds` file (`<REALM_DIR>/openbao-seeds`, or `OPENBAO_SEEDS_FILE`), each declared path that does not exist is written once with a generated 32-byte value per key. Format: one line per path, `secret/<path> <key> [<key>…]`, `#` comments. Existing paths are never touched. nordri sees only path and key names; what they are for is the realm's business.
+
+Nothing sensitive is printed: init output goes from the pod into the Secret, and the root token and shares reach the pod over stdin.
+
 ### Nidavellir (Tier 2) — Platform Services
 ArgoCD syncs Nidavellir from the internal Gitea. Vegvísir deploys in sync-wave order:
 
