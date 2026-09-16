@@ -65,6 +65,12 @@ set -e
 #   OPENBAO_SEEDS_FILE Path to the realm's seed declaration. Default:
 #               <REALM_DIR>/openbao-seeds when a realm is given; see
 #               lib/openbao.sh for the one-line-per-path format.
+#
+#   KUBE_CONTEXT  Optional. The kubectl context this run is for; the script
+#               refuses to start if the current context differs (it never
+#               switches contexts itself). Set or not, a gke target requires a
+#               gke_* context and a homelab target refuses one — see
+#               lib/kube-context.sh.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # Shared hydration libraries (extracted from the duplicated inline blocks).
@@ -74,6 +80,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$SCRIPT_DIR/lib/patch-velero.sh"
 . "$SCRIPT_DIR/lib/patch-urls.sh"
 . "$SCRIPT_DIR/lib/openbao.sh"
+. "$SCRIPT_DIR/lib/kube-context.sh"
 TARGET=$1
 # Capture explicit GITEA_PASS env input here without applying a default —
 # the resolver populates the value below. Username is fixed to
@@ -118,6 +125,10 @@ if [[ "$TARGET" != "gke" && "$TARGET" != "homelab" ]]; then
     echo "Error: Target must be 'gke' or 'homelab'"
     exit 1
 fi
+
+# Every kubectl below follows the kubeconfig's current context, not the ws k8s
+# guard scope — refuse now if that context does not fit the target.
+require_kube_context "$TARGET" || exit 1
 
 # Optional owning realm (arg 2): a realm whose cluster/ subtree carries
 # realm-owned in-cluster config (e.g. the siliconsaga keycloak realm-import).

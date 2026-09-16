@@ -44,6 +44,12 @@ set -e
 #   NIDAVELLIR_DIR / MIMIR_DIR / HEIMDALL_DIR
 #               Absolute path to each sibling component's checkout. Defaults
 #               to ../<name> relative to this script.
+#
+#   KUBE_CONTEXT  Optional. The kubectl context this run is for; the script
+#               refuses to start if the current context differs (it never
+#               switches contexts itself). Set or not, a gke target requires a
+#               gke_* context and a homelab target refuses one — see
+#               lib/kube-context.sh.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # Shared hydration libraries (extracted from the duplicated inline blocks).
@@ -52,6 +58,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$SCRIPT_DIR/lib/patch-nidavellir.sh"
 . "$SCRIPT_DIR/lib/patch-velero.sh"
 . "$SCRIPT_DIR/lib/patch-urls.sh"
+. "$SCRIPT_DIR/lib/kube-context.sh"
 TARGET=$1
 
 # Validate args before anything that touches the cluster, so wrong inputs
@@ -64,6 +71,11 @@ if [[ "$TARGET" != "gke" && "$TARGET" != "homelab" ]]; then
     echo "Error: Target must be 'gke' or 'homelab'"
     exit 1
 fi
+
+# Every kubectl below follows the kubeconfig's current context, not the ws k8s
+# guard scope — refuse now if that context does not fit the target. This is
+# the script that read a local cluster's Gitea Secret and sent it to gke.
+require_kube_context "$TARGET" || exit 1
 
 # Optional owning realm (arg 2): refresh its cluster/ subtree in the seed so
 # ArgoCD picks up realm-owned config changes. REALM_DIR overrides the default
