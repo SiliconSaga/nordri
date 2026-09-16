@@ -7,24 +7,29 @@
 #
 # Why this exists: a fresh homelab on 2026-09-15 came up with every layer
 # green and Keycloak's realm import still could not run, because three steps
-# were still hands — `bao operator init`, the KV/auth/policy setup from the
+# were still manual — `bao operator init`, the KV/auth/policy setup from the
 # realm plan (Task A1.5), and seeding secret/leidangr/oidc. Each was scripted
 # on the spot; this is that script made durable, in the shape Layer 5 already
 # uses for Garage and Velero.
 #
 # Secret hygiene, the rule this file follows throughout: no key material in an
 # argument list and no key material in a shell variable. The root token and
-# unseal shares move pod → Secret → pod as pipes, and the one place a value
-# has to rest — init output before the Secret exists, generated seed values
-# before the put — is a 0600 file in a 0700 directory that is removed on
-# success and deliberately left behind (and named) on failure, because init
-# is irreversible: losing its output loses the vault.
+# unseal shares move pod → Secret → pod as pipes (the share goes to the
+# sys/unseal API through `bao write key=-`, because `bao operator unseal`
+# accepts a share only as an argument or from a tty), and the one place a
+# value has to rest — init output before the Secret exists, generated seed
+# values before the put — is a 0600 file in a 0700 directory that is removed
+# on success and deliberately left behind (and named) on failure, because
+# init is irreversible: losing its output loses the vault.
 #
 # Custody: the init material is parked in the in-cluster `openbao-init` Secret,
 # which is the homelab posture realm ADR 0002 accepts (anyone who can read
 # Secrets in `openbao` owns the vault). On a live environment the shares belong
 # in the operator's password manager FIRST, which is why bootstrap runs the
 # init half on gke only when OPENBAO_AUTO_INIT=1 is set deliberately.
+#
+# Callers run under `set -e` without `pipefail`, so every pipeline here whose
+# producer can fail is guarded explicitly rather than trusting the shell.
 
 OPENBAO_NS="${OPENBAO_NS:-openbao}"
 OPENBAO_POD="${OPENBAO_POD:-openbao-0}"
@@ -53,13 +58,14 @@ openbao_wait_running() {
     done
 }
 
-# `bao status -format=json` exits 0 unsealed, 2 sealed, and emits JSON either
-# way; anything else is a real failure. Prints the JSON.
+# `bao status -format=json` emits JSON and exits 0 unsealed, 2 sealed, and
+# (per the CLI's documented codes) 3 when the instance is not yet initialized;
+# anything else is a real failure. Prints the JSON.
 openbao_status_json() {
     local out rc=0
     out=$(kubectl exec -n "$OPENBAO_NS" "$OPENBAO_POD" -- bao status -format=json 2>/dev/null) || rc=$?
     case "$rc" in
-        0|2) printf '%s\n' "$out" ;;
+        0|2|3) printf '%s\n' "$out" ;;
         *)
             echo "❌ openbao_status_json: bao status failed (exit $rc) — is the pod up?" >&2
             return 1
@@ -68,14 +74,19 @@ openbao_status_json() {
 }
 
 # openbao_status_field <jq-filter>  e.g. '.initialized', '.sealed', '.type'
+# The JSON is captured before jq sees it: piped straight in, a failed status
+# call would hand jq empty input, and jq exits 0 on empty input.
 openbao_status_field() {
-    openbao_status_json | jq -r "$1"
+    local json
+    json=$(openbao_status_json) || return 1
+    printf '%s\n' "$json" | jq -r "$1"
 }
 
 # Stream the parked root token to stdout. A pipe, never a variable: callers
-# splice this into the pod's stdin.
+# splice this into the pod's stdin. `--decode` is the spelling both GNU and
+# macOS base64 accept, matching the rest of the bootstrap scripts.
 openbao_root_token_stream() {
-    kubectl get secret -n "$OPENBAO_NS" "$OPENBAO_INIT_SECRET" -o jsonpath='{.data.root_token}' | base64 -d
+    kubectl get secret -n "$OPENBAO_NS" "$OPENBAO_INIT_SECRET" -o jsonpath='{.data.root_token}' | base64 --decode
 }
 
 # Run a shell snippet inside the pod with BAO_TOKEN set from the parked root
@@ -114,20 +125,50 @@ openbao_kv_path_state() {
     fi
 }
 
+# Create-only write of a JSON body (stdin) to a KV v2 path: `-cas=0` makes
+# OpenBao refuse if any version already exists, which closes the gap between
+# "checked absent" and "wrote" against a concurrent writer. Prints `created`
+# or `exists`; returns 1 on any other failure.
+# openbao_kv_create_only <secret/path>   (stdin: the JSON body)
+openbao_kv_create_only() {
+    local path="$1" out rc=0
+    out=$(openbao_run_with_token "bao kv put -cas=0 $path - 2>&1 >/dev/null") || rc=$?
+    if [[ $rc -eq 0 ]]; then
+        echo created
+    elif [[ $rc -eq 2 && "$out" == *"check-and-set parameter did not match"* ]]; then
+        echo exists
+    else
+        echo "❌ openbao_kv_create_only: writing $path failed (exit $rc): ${out:-no output}" >&2
+        return 1
+    fi
+}
+
 # A private scratch directory: 0700, under the caller's TMPDIR, removed by the
-# caller. Prints the path.
+# caller. Prints the path. Files written into it must be created under
+# `umask 077` themselves — the umask here applies to the mkdir only.
 openbao_scratch_dir() {
     local d
     d=$(umask 077 && mktemp -d "${TMPDIR:-/tmp}/openbao-XXXXXX") || return 1
     printf '%s\n' "$d"
 }
 
+# Remove a scratch directory that held key material, and refuse to report
+# success if it is still there. openbao_scratch_rm <dir>
+openbao_scratch_rm() {
+    local d="$1"
+    if ! rm -rf "$d" || [[ -e "$d" ]]; then
+        echo "❌ could not remove $d — it holds key material; remove it by hand." >&2
+        return 1
+    fi
+}
+
 # Initialize if needed and park the init material. Init is the one
 # irreversible step here, so its output is written to a 0600 file BEFORE the
 # Secret is created, and that file is removed only after the Secret reads back
-# with a root_token. If anything in between fails, the file stays and its path
-# is printed: the shares exist exactly once at that moment, and losing them
-# means wiping the vault.
+# with a root_token. If anything in between fails — including `kubectl exec`
+# losing its stream after the server has already initialized — a non-empty
+# file stays and its path is printed: the shares exist exactly once at that
+# moment, and losing them means wiping the vault.
 #
 # A leftover openbao-init Secret next to an UNinitialized instance means the
 # PVC was wiped (a reset homelab, the documented "lost the shares" recovery):
@@ -149,35 +190,46 @@ openbao_ensure_initialized() {
         kubectl delete secret -n "$OPENBAO_NS" "$OPENBAO_INIT_SECRET" >/dev/null || return 1
     fi
 
-    local scratch
+    local scratch keep="THE INIT MATERIAL IS AT"
     scratch=$(openbao_scratch_dir) || return 1
     echo "   🔐 Initializing OpenBao (3 shares, threshold 2); init output goes to $scratch/init.json (0600) until the Secret is confirmed..."
-    if ! kubectl exec -n "$OPENBAO_NS" "$OPENBAO_POD" -- bao operator init -key-shares=3 -key-threshold=2 -format=json > "$scratch/init.json"; then
-        echo "❌ openbao_ensure_initialized: bao operator init failed." >&2
-        rm -rf "$scratch"
+    if ! ( umask 077; kubectl exec -n "$OPENBAO_NS" "$OPENBAO_POD" -- bao operator init -key-shares=3 -key-threshold=2 -format=json > "$scratch/init.json" ); then
+        if [[ -s "$scratch/init.json" ]]; then
+            # The server may have initialized before the stream broke; what
+            # was captured is the only copy there will ever be.
+            echo "❌ openbao_ensure_initialized: bao operator init did not complete cleanly, but produced output. $keep $scratch/init.json — check \`bao status\` and park it by hand if the instance is initialized." >&2
+            return 1
+        fi
+        echo "❌ openbao_ensure_initialized: bao operator init failed with no output." >&2
+        openbao_scratch_rm "$scratch" || true
         return 1
     fi
-    if ! jq -r '.root_token' "$scratch/init.json" > "$scratch/root_token" || [[ ! -s "$scratch/root_token" ]]; then
-        echo "❌ openbao_ensure_initialized: init output has no root_token. THE INIT MATERIAL IS AT $scratch/init.json — do not lose it." >&2
+    # jq -r prints the literal `null` and exits 0 for a missing key; -e and
+    # `// empty` make an absent or null token an empty file, which -s rejects.
+    if ! ( umask 077; jq -er '.root_token // empty' "$scratch/init.json" > "$scratch/root_token" ) || [[ ! -s "$scratch/root_token" ]]; then
+        echo "❌ openbao_ensure_initialized: init output has no root_token. $keep $scratch/init.json — do not lose it." >&2
         return 1
     fi
     if ! kubectl create secret generic "$OPENBAO_INIT_SECRET" -n "$OPENBAO_NS" \
             --from-file=init.json="$scratch/init.json" \
             --from-file=root_token="$scratch/root_token" >/dev/null; then
-        echo "❌ openbao_ensure_initialized: creating Secret $OPENBAO_NS/$OPENBAO_INIT_SECRET failed. THE INIT MATERIAL IS AT $scratch/init.json — park it by hand, then re-run." >&2
+        echo "❌ openbao_ensure_initialized: creating Secret $OPENBAO_NS/$OPENBAO_INIT_SECRET failed. $keep $scratch/init.json — park it by hand, then re-run." >&2
         return 1
     fi
     # Read back before discarding the only other copy.
     if [[ -z "$(kubectl get secret -n "$OPENBAO_NS" "$OPENBAO_INIT_SECRET" -o jsonpath='{.data.root_token}' 2>/dev/null)" ]]; then
-        echo "❌ openbao_ensure_initialized: Secret created but reads back without root_token. THE INIT MATERIAL IS AT $scratch/init.json." >&2
+        echo "❌ openbao_ensure_initialized: Secret created but reads back without root_token. $keep $scratch/init.json." >&2
         return 1
     fi
-    rm -rf "$scratch"
+    openbao_scratch_rm "$scratch" || return 1
     echo "   ✅ Initialized; material parked in Secret $OPENBAO_NS/$OPENBAO_INIT_SECRET. With seal: auto the shares are recovery keys; with shamir they unseal (next)."
 }
 
 # Unseal a sealed Shamir instance from the parked shares. A sealed instance on
 # an auto seal is a broken seal backend, which no share can fix — say so.
+# Each share reaches the server through the sys/unseal API with the value
+# read from stdin (`key=-`); `bao operator unseal` would need it as an
+# argument, which is exactly the process-list exposure this file avoids.
 openbao_ensure_unsealed() {
     local sealed type
     sealed=$(openbao_status_field '.sealed') || return 1
@@ -185,7 +237,7 @@ openbao_ensure_unsealed() {
         echo "   ✅ OpenBao unsealed."
         return 0
     fi
-    type=$(openbao_status_field '.type')
+    type=$(openbao_status_field '.type') || return 1
     if [[ "$type" != "shamir" ]]; then
         echo "❌ OpenBao is sealed on seal type '$type' — auto-unseal did not complete. Check the seal backend (nidavellir docs/secrets-management.md); shares cannot help here." >&2
         return 1
@@ -193,12 +245,16 @@ openbao_ensure_unsealed() {
     echo "   🔓 Unsealing (shamir) with two parked shares..."
     local i
     for i in 0 1; do
-        kubectl get secret -n "$OPENBAO_NS" "$OPENBAO_INIT_SECRET" -o jsonpath='{.data.init\.json}' \
-            | base64 -d \
-            | jq -r ".unseal_keys_b64[$i]" \
-            | kubectl exec -i -n "$OPENBAO_NS" "$OPENBAO_POD" -- sh -c 'IFS= read -r s; bao operator unseal "$s" >/dev/null' || return 1
+        if ! ( set -o pipefail
+               kubectl get secret -n "$OPENBAO_NS" "$OPENBAO_INIT_SECRET" -o jsonpath='{.data.init\.json}' \
+                   | base64 --decode \
+                   | jq -er ".unseal_keys_b64[$i] // empty" \
+                   | kubectl exec -i -n "$OPENBAO_NS" "$OPENBAO_POD" -- bao write -format=json sys/unseal key=- >/dev/null ); then
+            echo "❌ openbao_ensure_unsealed: submitting share $((i + 1)) failed." >&2
+            return 1
+        fi
     done
-    sealed=$(openbao_status_field '.sealed')
+    sealed=$(openbao_status_field '.sealed') || return 1
     if [[ "$sealed" == "true" ]]; then
         echo "❌ openbao_ensure_unsealed: still sealed after two shares." >&2
         return 1
@@ -212,15 +268,16 @@ openbao_ensure_unsealed() {
 # and the secret/demo canary. Idempotent: an existing secret/ mount is accepted
 # only if it is KV v2 (the eso-read policy grants secret/data/*, which a KV v1
 # mount never serves), an existing auth method is left alone, policy and role
-# are rewritten to the same content, the canary is seeded only when absent.
+# are rewritten to the same content, the canary is created only if absent.
 openbao_configure() {
     echo "   • KV v2 at secret/"
     # Reported as "<type>,<version>" — no slash in the jq program, because Git
     # Bash rewrites a bare "/" argument into a Windows path. MSYS_NO_PATHCONV
-    # pins the rest (the mount name carries one).
-    local mount
-    mount=$(openbao_run_with_token 'bao secrets list -format=json' </dev/null \
-        | MSYS_NO_PATHCONV=1 jq -r '.["secret/"] | if . == null then "absent" else ([.type, (.options.version // "1")] | join(",")) end') || return 1
+    # pins the rest (the mount name carries one). Captured before jq so a
+    # failed list is not read as an empty (absent) mount table.
+    local mounts mount
+    mounts=$(openbao_run_with_token 'bao secrets list -format=json' </dev/null) || return 1
+    mount=$(printf '%s\n' "$mounts" | MSYS_NO_PATHCONV=1 jq -r '.["secret/"] | if . == null then "absent" else ([.type, (.options.version // "1")] | join(",")) end') || return 1
     case "$mount" in
         absent)
             openbao_run_with_token 'bao secrets enable -version=2 -path=secret kv >/dev/null' </dev/null || return 1
@@ -243,34 +300,37 @@ EOF
     local canary
     canary=$(openbao_kv_path_state secret/demo) || return 1
     if [[ "$canary" == "absent" ]]; then
-        openbao_run_with_token 'bao kv put secret/demo foo=bar >/dev/null' </dev/null || return 1
+        printf '{"foo":"bar"}\n' | openbao_kv_create_only secret/demo >/dev/null || return 1
     fi
 }
 
 # Realm-declared seeds: one per line, `<kv-path> <key> [<key>...]`, blank or
 # whitespace-only lines and `#` comments ignored. For each path that does not
 # exist yet, generate a random 32-byte base64 value per key and write them in
-# one put. Existing paths are never touched, so re-running is a no-op and a
-# rotation is an explicit `bao kv put`, not a re-bootstrap. The realm names
-# the paths; nordri never learns what they are for.
+# one create-only put. Existing paths are never touched, so re-running is a
+# no-op and a rotation is an explicit `bao kv put`, not a re-bootstrap. The
+# realm names the paths; nordri never learns what they are for.
 #
-# Path and key names are interpolated into a shell snippet run inside the pod,
-# so both are held to a strict allowlist before anything is built from them.
-# openbao_seed_file <file>
+# The whole file is parsed and validated before the first metadata check or
+# write, so a malformed line anywhere leaves the vault untouched. Path and key
+# names are interpolated into a shell snippet run inside the pod, so both are
+# held to a strict allowlist. openbao_seed_file <file>
 openbao_seed_file() {
-    local file="$1" line path keys key scratch jq_args
+    local file="$1" line path key lineno=0
+    local -a fields specs=()
     [[ -r "$file" ]] || { echo "❌ openbao_seed_file: cannot read $file" >&2; return 1; }
-    local lineno=0
+
+    # Pass 1: parse and validate. `read -a` splits on whitespace WITHOUT
+    # pathname expansion, so a `*` stays a literal `*` and fails the allowlist
+    # instead of becoming the working directory's file names.
     while IFS= read -r line || [[ -n "$line" ]]; do
         lineno=$((lineno + 1))
         line="${line%%#*}"
         line="${line//$'\r'/}"
         [[ "$line" =~ ^[[:space:]]*$ ]] && continue
-        # shellcheck disable=SC2206
-        keys=($line)
-        path="${keys[0]}"
-        keys=("${keys[@]:1}")
-        if [[ ${#keys[@]} -eq 0 ]]; then
+        IFS=$' \t' read -r -a fields <<< "$line"
+        path="${fields[0]}"
+        if [[ ${#fields[@]} -lt 2 ]]; then
             echo "❌ openbao_seed_file: $file:$lineno names path '$path' with no keys." >&2
             return 1
         fi
@@ -278,13 +338,22 @@ openbao_seed_file() {
             echo "❌ openbao_seed_file: $file:$lineno path '$path' must be secret/<segments> of [A-Za-z0-9._-], no '..'." >&2
             return 1
         fi
-        for key in "${keys[@]}"; do
+        for key in "${fields[@]:1}"; do
             if [[ ! "$key" =~ ^[A-Za-z0-9._-]+$ ]]; then
                 echo "❌ openbao_seed_file: $file:$lineno key '$key' must match [A-Za-z0-9._-]." >&2
                 return 1
             fi
         done
-        local state
+        specs+=("${fields[*]}")
+    done < "$file"
+
+    # Pass 2: seed what is absent.
+    local spec state scratch outcome
+    local -a keys jq_args
+    for spec in "${specs[@]}"; do
+        IFS=' ' read -r -a fields <<< "$spec"
+        path="${fields[0]}"
+        keys=("${fields[@]:1}")
         state=$(openbao_kv_path_state "$path") || return 1
         if [[ "$state" == "present" ]]; then
             echo "   ✅ $path present — leaving it alone."
@@ -293,18 +362,17 @@ openbao_seed_file() {
         # Values rest only in 0600 files inside a 0700 scratch dir; jq reads
         # them by path (--rawfile) so no value ever enters an argument list.
         # They live in their own subdirectory so a key named `put.json` cannot
-        # collide with the output file jq is about to truncate.
+        # collide with the output file jq is about to truncate. pipefail and
+        # umask are local to each subshell: the caller sets neither, and a
+        # failed `openssl rand` would otherwise let `tr` write an empty file
+        # that a later run then treats as a present, valid seed forever.
         scratch=$(openbao_scratch_dir) || return 1
-        mkdir "$scratch/values" || { rm -rf "$scratch"; return 1; }
+        mkdir "$scratch/values" || { openbao_scratch_rm "$scratch" || true; return 1; }
         jq_args=()
-        # pipefail is local to the subshell: the caller (bootstrap.sh) sets
-        # errexit only, under which a failed `openssl rand` would still let
-        # `tr` write an empty file and succeed — and an empty seed, once
-        # present, is never revisited. Refuse an empty result as well.
         for key in "${keys[@]}"; do
-            if ! ( set -o pipefail; openssl rand -base64 32 | tr -d '\r\n' > "$scratch/values/$key" ) \
+            if ! ( umask 077; set -o pipefail; openssl rand -base64 32 | tr -d '\r\n' > "$scratch/values/$key" ) \
                 || [[ ! -s "$scratch/values/$key" ]]; then
-                rm -rf "$scratch"
+                openbao_scratch_rm "$scratch" || true
                 echo "❌ openbao_seed_file: generating a value for $path/$key failed." >&2
                 return 1
             fi
@@ -312,15 +380,17 @@ openbao_seed_file() {
         done
         # Build {key: value, ...} from the named rawfiles: $ARGS.named holds
         # every --rawfile under its key name.
-        if ! jq -n "${jq_args[@]}" '$ARGS.named' > "$scratch/put.json"; then
-            rm -rf "$scratch"; return 1
-        fi
-        if ! openbao_run_with_token "bao kv put $path - >/dev/null" < "$scratch/put.json"; then
-            rm -rf "$scratch"
-            echo "❌ openbao_seed_file: writing $path failed." >&2
+        if ! ( umask 077; jq -n "${jq_args[@]}" '$ARGS.named' > "$scratch/put.json" ); then
+            openbao_scratch_rm "$scratch" || true
             return 1
         fi
-        rm -rf "$scratch"
-        echo "   🔑 $path seeded (${#keys[@]} generated value(s): ${keys[*]})."
-    done < "$file"
+        # Create-only: a writer that raced us in leaves its value standing.
+        outcome=$(openbao_kv_create_only "$path" < "$scratch/put.json") || { openbao_scratch_rm "$scratch" || true; return 1; }
+        openbao_scratch_rm "$scratch" || return 1
+        if [[ "$outcome" == "exists" ]]; then
+            echo "   ✅ $path was created by another writer meanwhile — leaving it alone."
+        else
+            echo "   🔑 $path seeded (${#keys[@]} generated value(s): ${keys[*]})."
+        fi
+    done
 }

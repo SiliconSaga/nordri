@@ -47,8 +47,14 @@ if [[ "$1" == "exec" ]]; then
         echo "No value found at secret/metadata/${path#secret/}"
         exit 2
     fi
-    if [[ "$snippet" == *"bao kv put"* ]]; then
-        path="${snippet#*kv put }"; path="${path%% *}"
+    # kv put is create-only (-cas=0): a path already written answers with the
+    # CAS conflict OpenBao 2.5.4 prints, exit 2, and keeps the first value.
+    if [[ "$snippet" == *"bao kv put -cas=0 "* ]]; then
+        path="${snippet#*kv put -cas=0 }"; path="${path%% *}"
+        if [[ -f "$STUB_PUTS/${path//\//_}.json" ]]; then
+            echo "Error writing data to ${path/secret\//secret/data/}: * check-and-set parameter did not match the current version"
+            exit 2
+        fi
         printf '%s' "$payload" > "$STUB_PUTS/${path//\//_}.json"
         exit 0
     fi
@@ -112,6 +118,17 @@ check "path with shell metacharacters is an error" "[ $rc -ne 0 ]"
 printf 'secret/x $(id)\n' > "$work/bad5"
 openbao_seed_file "$work/bad5" >/dev/null 2>&1; rc=$?
 check "key with shell metacharacters is an error" "[ $rc -ne 0 ]"
+# A glob in the key position must be rejected as the literal `*`, not expanded
+# against the working directory into whatever filenames happen to match.
+mkdir -p "$work/cwd"; touch "$work/cwd/innocent-key"
+( cd "$work/cwd" && printf 'secret/glob *\n' > "$work/bad6" && openbao_seed_file "$work/bad6" >/dev/null 2>&1 ); rc=$?
+check "a glob in the key position is an error, not expanded" "[ $rc -ne 0 ]"
+# Validation covers the whole file before the first write: a valid absent
+# path ahead of a malformed line must not be seeded.
+printf 'secret/first/valid key\nsecret/lonely\n' > "$work/bad7"
+openbao_seed_file "$work/bad7" >/dev/null 2>&1; rc=$?
+check "malformed later line fails the whole file" "[ $rc -ne 0 ]"
+check "earlier valid path was not written first" "[ ! -e '$STUB_PUTS/secret_first_valid.json' ]"
 check "malformed files wrote nothing" "[ -z \"\$(ls -A '$STUB_PUTS')\" ]"
 openbao_seed_file "$work/missing" >/dev/null 2>&1; rc=$?
 check "missing seeds file is an error" "[ $rc -ne 0 ]"
