@@ -13,7 +13,7 @@ Nidavellir and Demicracy — separate repos deployed by ArgoCD once Nordri is st
 Provision the raw cluster before running any scripts.
 
 - **GKE**: `./gke-provision.sh create`
-- **Homelab**: k3s/Rancher Desktop, pre-existing
+- **Homelab**: pre-existing k3s (Rancher Desktop) or Docker Desktop's built-in Kubernetes. Docker Desktop on Windows needs the WSL2 VM on cgroup v2 for Kubernetes 1.36+ (the kubelet refuses cgroup v1 by default); `wsl --update` and a reboot get there. Its storage classes are named `standard`/`hostpath`, so bootstrap Step 0b aliases the default one as `local-path`, the name cluster-identity promises.
 
 ### Layer 2 — The Seed (Gitea + Nidavellir hydration)
 `./bootstrap.sh [gke|homelab] [realm]`
