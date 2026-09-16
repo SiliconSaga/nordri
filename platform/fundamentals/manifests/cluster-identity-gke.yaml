@@ -13,3 +13,15 @@ data:
   storageClass: standard-rwo
   domain: cmdbee.org
   harborRole: central
+  # Platform maturity: bootstrap | durable | full. Compositions gate their
+  # durable-tier pieces (Forgejo, later Keycloak/Harbor) on this the same way
+  # they branch on environment. Bumping it is the graduation step — see the
+  # realm's 2026-09-07 Forgejo day-2 design. bootstrap.sh never sets more.
+  maturity: bootstrap
+  # Stamped at hydration by lib/patch-velero.sh (same placeholder as
+  # velero-gke.yaml) so the repo carries no project identity. Read by the
+  # OpenBao composition for the KMS seal and its Workload Identity annotation.
+  gcpProject: __GCP_PROJECT__
+  # Region of the KMS key ring the openbao-seal-setup action creates. Static:
+  # the key ring lives beside the cluster and does not move.
+  gcpRegion: us-east1

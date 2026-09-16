@@ -36,6 +36,11 @@ set -e
 #               aren't sent in cleartext. (See gitea-gke.yaml header for
 #               the broader writeup.)
 #
+#   HYDRATE_URL_MODE  seed (default) | forgejo | swap. Which repoURL form the
+#               hydrated manifests carry — see lib/patch-urls.sh. `swap` is the
+#               cutover commit pushed into the seed WITHOUT the seed rewrite
+#               (realm Forgejo day-2 design, Phase 3 graduate.sh).
+#
 #   NIDAVELLIR_DIR / MIMIR_DIR / HEIMDALL_DIR
 #               Absolute path to each sibling component's checkout. Defaults
 #               to ../<name> relative to this script.
@@ -46,6 +51,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$SCRIPT_DIR/lib/hydrate.sh"
 . "$SCRIPT_DIR/lib/patch-nidavellir.sh"
 . "$SCRIPT_DIR/lib/patch-velero.sh"
+. "$SCRIPT_DIR/lib/patch-urls.sh"
 TARGET=$1
 
 # Validate args before anything that touches the cluster, so wrong inputs
@@ -244,8 +250,13 @@ fi
 # healthy-looking and storing nothing. See lib/patch-velero.sh.
 patch_velero_tree "$HYDRATE_DIR" "$TARGET" || exit 1
 
-# Copy the root application (optional, but good for completeness)
+# Copy the root application (optional, but good for completeness) — BEFORE the
+# URL rewrite below, so it is covered.
 cp "$SCRIPT_DIR/platform/root-app.yaml" "$HYDRATE_DIR/"
+
+# Rewrite committed Forgejo repoURLs to the seed form. A no-op until the
+# manifests move to the durable form (realm Forgejo day-2 design, Phase 3).
+patch_repo_urls_tree "$HYDRATE_DIR" "${HYDRATE_URL_MODE:-seed}" >/dev/null || exit 1
 
 # Ensure the nordri repo exists in Gitea before pushing. The Seed Gitea
 # runs without persistence; if the pod ever rotates and the repo got lost

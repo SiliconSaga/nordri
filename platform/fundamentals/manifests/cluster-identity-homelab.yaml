@@ -14,3 +14,7 @@ data:
   domain: homelab.local
   harborRole: local
   harborCentral: harbor.cmdbee.org
+  # Platform maturity: bootstrap | durable | full. See the gke file and the
+  # realm's 2026-09-07 Forgejo day-2 design. No gcpProject/gcpRegion here:
+  # homelab OpenBao seals with a static key, not KMS.
+  maturity: bootstrap
