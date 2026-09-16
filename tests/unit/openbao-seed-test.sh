@@ -19,9 +19,11 @@ mkdir -p "$STUB_PUTS"
 
 cat > "$work/bin/kubectl" <<'STUB'
 #!/usr/bin/env bash
-# get secret … jsonpath root_token → a base64 token
+# get secret … : an existence check (no -o) or the jsonpath root_token read
 if [[ "$1" == "get" && "$2" == "secret" ]]; then
-    printf '%s' "dummy-root-token" | base64
+    case "$*" in
+        *jsonpath*) printf '%s' "dummy-root-token" | base64 ;;
+    esac
     exit 0
 fi
 # exec -i -n ns pod -- sh -c '<snippet>' : stdin line 1 is the token, rest is payload
@@ -32,12 +34,12 @@ if [[ "$1" == "exec" ]]; then
     printf '%s\n' "$snippet" >> "$STUB_LOG"
     [[ "$token" == "dummy-root-token" ]] || { echo "bad token" >&2; exit 99; }
     if [[ "$snippet" == *"bao kv metadata get"* ]]; then
-        path="${snippet#*metadata get \'}"; path="${path%%\'*}"
+        path="${snippet#*metadata get }"; path="${path%% *}"
         [[ "$path" == "$STUB_EXISTING" ]] && exit 0
         exit 2
     fi
     if [[ "$snippet" == *"bao kv put"* ]]; then
-        path="${snippet#*kv put \'}"; path="${path%%\'*}"
+        path="${snippet#*kv put }"; path="${path%% *}"
         printf '%s' "$payload" > "$STUB_PUTS/${path//\//_}.json"
         exit 0
     fi
@@ -50,13 +52,9 @@ STUB
 chmod +x "$work/bin/kubectl"
 export PATH="$work/bin:$PATH"
 
-# A realistic seeds file: comment, blank line, an existing path, an absent one.
-cat > "$work/seeds" <<'EOF'
-# realm-owned OpenBao seeds
-secret/already/there some-key
-
-secret/new/thing client-secret dev-user-password   # trailing comment
-EOF
+# A realistic seeds file: comment, blank line, a tab-only line, an existing
+# path, an absent one.
+printf '# realm-owned OpenBao seeds\nsecret/already/there some-key\n\n\t \t\nsecret/new/thing client-secret dev-user-password   # trailing comment\n' > "$work/seeds"
 
 out="$(openbao_seed_file "$work/seeds" 2>&1)"; rc=$?
 check "seeding succeeds" "[ $rc -eq 0 ]"
@@ -88,6 +86,12 @@ check "path outside secret/ is an error" "[ $rc -ne 0 ]"
 printf 'secret/../sys key\n' > "$work/bad3"
 openbao_seed_file "$work/bad3" >/dev/null 2>&1; rc=$?
 check "path with .. is an error" "[ $rc -ne 0 ]"
+printf "secret/x'; id; echo ' key\n" > "$work/bad4"
+openbao_seed_file "$work/bad4" >/dev/null 2>&1; rc=$?
+check "path with shell metacharacters is an error" "[ $rc -ne 0 ]"
+printf 'secret/x $(id)\n' > "$work/bad5"
+openbao_seed_file "$work/bad5" >/dev/null 2>&1; rc=$?
+check "key with shell metacharacters is an error" "[ $rc -ne 0 ]"
 check "malformed files wrote nothing" "[ -z \"\$(ls -A '$STUB_PUTS')\" ]"
 openbao_seed_file "$work/missing" >/dev/null 2>&1; rc=$?
 check "missing seeds file is an error" "[ $rc -ne 0 ]"

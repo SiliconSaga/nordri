@@ -99,7 +99,7 @@ Runs after ArgoCD has deployed OpenBao (nidavellir, sync-wave 10); waits up to t
 - **Configure**: KV v2 at `secret/`, Kubernetes auth trusting the in-cluster API, the read-only `eso-read` policy, `eso-role` bound to External Secrets' ServiceAccount, and the `secret/demo` canary. This is realm plan Task A1.5 Steps 3–4, no longer typed by hand.
 - **Seed**: if the owning realm carries an `openbao-seeds` file (`<REALM_DIR>/openbao-seeds`, or `OPENBAO_SEEDS_FILE`), each declared path that does not exist is written once with a generated 32-byte value per key. Format: one line per path, `secret/<path> <key> [<key>…]`, `#` comments. Existing paths are never touched. nordri sees only path and key names; what they are for is the realm's business.
 
-Nothing sensitive is printed: init output goes from the pod into the Secret, and the root token and shares reach the pod over stdin.
+Secret hygiene: no key material is ever placed in an argument list or a shell variable. The root token and shares move pod → Secret → pod as pipes; the two places a value has to rest (init output before the Secret exists, generated seed values before the put) are 0600 files in a 0700 scratch directory, removed on success. Because init is irreversible, its output file is deliberately left in place, and its path printed, if creating or reading back the Secret fails.
 
 ### Nidavellir (Tier 2) — Platform Services
 ArgoCD syncs Nidavellir from the internal Gitea. Vegvísir deploys in sync-wave order:
