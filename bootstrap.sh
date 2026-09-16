@@ -173,12 +173,21 @@ if [[ "$TARGET" == "homelab" ]]; then
     if kubectl get storageclass local-path >/dev/null 2>&1; then
         echo "✅ StorageClass local-path present."
     else
-        DEFAULT_SC="$(kubectl get storageclass -o jsonpath='{.items[?(@.metadata.annotations.storageclass\.kubernetes\.io/is-default-class=="true")].metadata.name}')"
-        if [[ -z "$DEFAULT_SC" ]]; then
+        # One name per line, so several defaults (a misconfiguration Kubernetes
+        # tolerates) are counted rather than concatenated into one bad argument.
+        DEFAULT_SCS="$(kubectl get storageclass -o jsonpath='{range .items[?(@.metadata.annotations.storageclass\.kubernetes\.io/is-default-class=="true")]}{.metadata.name}{"\n"}{end}')"
+        DEFAULT_SC_COUNT="$(printf '%s' "$DEFAULT_SCS" | grep -c .)" || DEFAULT_SC_COUNT=0
+        if [[ "$DEFAULT_SC_COUNT" -eq 0 ]]; then
             echo "❌ No StorageClass named local-path and no default StorageClass to alias it to." >&2
             echo "   cluster-identity-homelab.yaml expects local-path; create it (or a default class) and re-run." >&2
             exit 1
+        elif [[ "$DEFAULT_SC_COUNT" -gt 1 ]]; then
+            echo "❌ No StorageClass named local-path, and more than one class is marked default:" >&2
+            printf '   %s\n' $DEFAULT_SCS >&2
+            echo "   Kubernetes picks between them by creation time, which is not a choice to encode here. Keep one default and re-run." >&2
+            exit 1
         fi
+        DEFAULT_SC="$DEFAULT_SCS"
         DEFAULT_PROVISIONER="$(kubectl get storageclass "$DEFAULT_SC" -o jsonpath='{.provisioner}')"
         echo "🗄️  No StorageClass local-path — aliasing default class '$DEFAULT_SC' (provisioner $DEFAULT_PROVISIONER) under that name..."
         kubectl apply -f - <<EOF
