@@ -160,6 +160,51 @@ if [[ "$TARGET" == "homelab" ]] && command -v rdctl &> /dev/null; then
     fi
 fi
 
+# --- Step 0b: the storage class cluster-identity names (homelab) ---
+# cluster-identity-homelab.yaml pins `storageClass: local-path`, the name k3s
+# and Rancher Desktop ship. Docker Desktop's built-in Kubernetes runs the SAME
+# rancher.io/local-path provisioner but calls its classes `standard` and
+# `hostpath`, so on that host every PVC in the stack would sit Pending with
+# no event that names the cause. A StorageClass is only a name bound to a
+# provisioner and a policy, so alias the cluster's default provisioner under
+# the name the identity promises rather than teach every composition a
+# second name per host. No-op where `local-path` already exists.
+if [[ "$TARGET" == "homelab" ]]; then
+    if kubectl get storageclass local-path >/dev/null 2>&1; then
+        echo "✅ StorageClass local-path present."
+    else
+        # One name per line, so several defaults (a misconfiguration Kubernetes
+        # tolerates) are counted rather than concatenated into one bad argument.
+        DEFAULT_SCS="$(kubectl get storageclass -o jsonpath='{range .items[?(@.metadata.annotations.storageclass\.kubernetes\.io/is-default-class=="true")]}{.metadata.name}{"\n"}{end}')"
+        DEFAULT_SC_COUNT="$(printf '%s' "$DEFAULT_SCS" | grep -c .)" || DEFAULT_SC_COUNT=0
+        if [[ "$DEFAULT_SC_COUNT" -eq 0 ]]; then
+            echo "❌ No StorageClass named local-path and no default StorageClass to alias it to." >&2
+            echo "   cluster-identity-homelab.yaml expects local-path; create it (or a default class) and re-run." >&2
+            exit 1
+        elif [[ "$DEFAULT_SC_COUNT" -gt 1 ]]; then
+            echo "❌ No StorageClass named local-path, and more than one class is marked default:" >&2
+            printf '   %s\n' $DEFAULT_SCS >&2
+            echo "   Kubernetes picks between them by creation time, which is not a choice to encode here. Keep one default and re-run." >&2
+            exit 1
+        fi
+        DEFAULT_SC="$DEFAULT_SCS"
+        DEFAULT_PROVISIONER="$(kubectl get storageclass "$DEFAULT_SC" -o jsonpath='{.provisioner}')"
+        echo "🗄️  No StorageClass local-path — aliasing default class '$DEFAULT_SC' (provisioner $DEFAULT_PROVISIONER) under that name..."
+        kubectl apply -f - <<EOF
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: local-path
+  annotations:
+    nordri.siliconsaga.org/aliases: "$DEFAULT_SC"
+provisioner: $DEFAULT_PROVISIONER
+reclaimPolicy: Delete
+volumeBindingMode: WaitForFirstConsumer
+EOF
+        echo "✅ StorageClass local-path created."
+    fi
+fi
+
 # --- Step 1: Install Seed Gitea (Layer 2) ---
 # This is the SEED instance — intentionally minimal and ephemeral. It exists solely
 # to host the Nordri + Nidavellir repos so ArgoCD has a GitOps source during bootstrap.
