@@ -79,7 +79,9 @@ openbao_status_json() {
 openbao_status_field() {
     local json
     json=$(openbao_status_json) || return 1
-    printf '%s\n' "$json" | jq -r "$1"
+    # Windows jq ends -r output with CRLF; a stray CR would make "true" never
+    # compare equal to true.
+    printf '%s\n' "$json" | jq -r "$1" | tr -d '\r'
 }
 
 # Stream the parked root token to stdout. A pipe, never a variable: callers
@@ -206,7 +208,9 @@ openbao_ensure_initialized() {
     fi
     # jq -r prints the literal `null` and exits 0 for a missing key; -e and
     # `// empty` make an absent or null token an empty file, which -s rejects.
-    if ! ( umask 077; jq -er '.root_token // empty' "$scratch/init.json" > "$scratch/root_token" ) || [[ ! -s "$scratch/root_token" ]]; then
+    # `tr -d '\r\n'` guards against a Windows jq emitting CRLF: a token file
+    # carrying a stray CR would park an unusable token in the Secret.
+    if ! ( umask 077; set -o pipefail; jq -er '.root_token // empty' "$scratch/init.json" | tr -d '\r\n' > "$scratch/root_token" ) || [[ ! -s "$scratch/root_token" ]]; then
         echo "❌ openbao_ensure_initialized: init output has no root_token. $keep $scratch/init.json — do not lose it." >&2
         return 1
     fi
@@ -249,6 +253,7 @@ openbao_ensure_unsealed() {
                kubectl get secret -n "$OPENBAO_NS" "$OPENBAO_INIT_SECRET" -o jsonpath='{.data.init\.json}' \
                    | base64 --decode \
                    | jq -er ".unseal_keys_b64[$i] // empty" \
+                   | tr -d '\r\n' \
                    | kubectl exec -i -n "$OPENBAO_NS" "$OPENBAO_POD" -- bao write -format=json sys/unseal key=- >/dev/null ); then
             echo "❌ openbao_ensure_unsealed: submitting share $((i + 1)) failed." >&2
             return 1
@@ -277,7 +282,7 @@ openbao_configure() {
     # failed list is not read as an empty (absent) mount table.
     local mounts mount
     mounts=$(openbao_run_with_token 'bao secrets list -format=json' </dev/null) || return 1
-    mount=$(printf '%s\n' "$mounts" | MSYS_NO_PATHCONV=1 jq -r '.["secret/"] | if . == null then "absent" else ([.type, (.options.version // "1")] | join(",")) end') || return 1
+    mount=$(printf '%s\n' "$mounts" | MSYS_NO_PATHCONV=1 jq -r '.["secret/"] | if . == null then "absent" else ([.type, (.options.version // "1")] | join(",")) end' | tr -d '\r') || return 1
     case "$mount" in
         absent)
             openbao_run_with_token 'bao secrets enable -version=2 -path=secret kv >/dev/null' </dev/null || return 1
