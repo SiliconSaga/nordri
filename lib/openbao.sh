@@ -297,8 +297,17 @@ openbao_seed_file() {
         scratch=$(openbao_scratch_dir) || return 1
         mkdir "$scratch/values" || { rm -rf "$scratch"; return 1; }
         jq_args=()
+        # pipefail is local to the subshell: the caller (bootstrap.sh) sets
+        # errexit only, under which a failed `openssl rand` would still let
+        # `tr` write an empty file and succeed — and an empty seed, once
+        # present, is never revisited. Refuse an empty result as well.
         for key in "${keys[@]}"; do
-            openssl rand -base64 32 | tr -d '\r\n' > "$scratch/values/$key" || { rm -rf "$scratch"; return 1; }
+            if ! ( set -o pipefail; openssl rand -base64 32 | tr -d '\r\n' > "$scratch/values/$key" ) \
+                || [[ ! -s "$scratch/values/$key" ]]; then
+                rm -rf "$scratch"
+                echo "❌ openbao_seed_file: generating a value for $path/$key failed." >&2
+                return 1
+            fi
             jq_args+=(--rawfile "$key" "$scratch/values/$key")
         done
         # Build {key: value, ...} from the named rawfiles: $ARGS.named holds
