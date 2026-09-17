@@ -714,7 +714,12 @@ openbao-backup-setup)
         # secret halves are gone for good, so minting another would only
         # accumulate dead keys toward the per-account limit. Refuse until the
         # operator has cleaned them up or parked one by hand.
-        EXISTING_HMAC="$(gcloud storage hmac list --service-account="$BACKUP_SA" --project="$GCP_PROJECT" --format='value(accessId,state)' 2>/dev/null || true)"
+        # A failed lookup must not read as "no keys": that is the one answer
+        # that lets a mint proceed.
+        if ! EXISTING_HMAC="$(gcloud storage hmac list --service-account="$BACKUP_SA" --project="$GCP_PROJECT" --format='value(accessId,state)')"; then
+            echo "❌ Could not list existing HMAC keys for ${BACKUP_SA}; not minting blind." >&2
+            exit 1
+        fi
         if [[ -n "$EXISTING_HMAC" ]]; then
             echo "❌ ${BACKUP_SA} already has HMAC key(s) but Secret ${BACKUP_SECRET_NS}/${BACKUP_SECRET} is absent:" >&2
             printf '     %s\n' "$EXISTING_HMAC" >&2
