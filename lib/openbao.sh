@@ -34,6 +34,11 @@
 OPENBAO_NS="${OPENBAO_NS:-openbao}"
 OPENBAO_POD="${OPENBAO_POD:-openbao-0}"
 OPENBAO_INIT_SECRET="${OPENBAO_INIT_SECRET:-openbao-init}"
+# Optional: a path the init output is ALSO written to (0600) once the Secret
+# has read back, for the operator to move into the password safe. Empty means
+# the in-cluster Secret is the only copy (bootstrap's homelab posture).
+# openbao-init.sh sets it; bootstrap.sh leaves it alone.
+OPENBAO_INIT_KEEP_FILE="${OPENBAO_INIT_KEEP_FILE:-}"
 
 # Wait until the OpenBao pod is Running AND its API answers `bao status`.
 # Ready is not the bar (an uninitialized or sealed pod is Running and NotReady
@@ -225,6 +230,16 @@ openbao_ensure_initialized() {
         echo "❌ openbao_ensure_initialized: Secret created but reads back without root_token. $keep $scratch/init.json." >&2
         return 1
     fi
+    # The operator's copy, for the safe. Written only after the Secret is
+    # confirmed, so a failure here leaves two copies (Secret and scratch), not
+    # none. `cp` keeps the source's 0600; the umask guards a cp that does not.
+    if [[ -n "$OPENBAO_INIT_KEEP_FILE" ]]; then
+        if ! ( umask 077; cp "$scratch/init.json" "$OPENBAO_INIT_KEEP_FILE" ) || [[ ! -s "$OPENBAO_INIT_KEEP_FILE" ]]; then
+            echo "❌ openbao_ensure_initialized: could not write $OPENBAO_INIT_KEEP_FILE. The Secret is parked; $keep $scratch/init.json." >&2
+            return 1
+        fi
+        echo "   📄 Init material also written to $OPENBAO_INIT_KEEP_FILE (0600) — move its contents into the password safe, then delete the file."
+    fi
     openbao_scratch_rm "$scratch" || return 1
     echo "   ✅ Initialized; material parked in Secret $OPENBAO_NS/$OPENBAO_INIT_SECRET. With seal: auto the shares are recovery keys; with shamir they unseal (next)."
 }
@@ -270,10 +285,14 @@ openbao_ensure_unsealed() {
 # The one-time configuration External Secrets needs (realm plan Task A1.5
 # Steps 3-4): KV v2 at secret/, Kubernetes auth trusting the in-cluster API,
 # the read-only eso-read policy, the eso-role bound to ESO's ServiceAccount,
-# and the secret/demo canary. Idempotent: an existing secret/ mount is accepted
-# only if it is KV v2 (the eso-read policy grants secret/data/*, which a KV v1
-# mount never serves), an existing auth method is left alone, policy and role
-# are rewritten to the same content, the canary is created only if absent.
+# and the secret/demo canary — plus the openbao-backup policy and role the
+# chart's snapshot agent (CronJob openbao-snapshot, realm go-live design)
+# logs in with: it may read sys/storage/raft/snapshot and nothing else, so
+# the job can copy the vault out encrypted but can read no secret. Idempotent:
+# an existing secret/ mount is accepted only if it is KV v2 (the eso-read
+# policy grants secret/data/*, which a KV v1 mount never serves), an existing
+# auth method is left alone, policies and roles are rewritten to the same
+# content, the canary is created only if absent.
 openbao_configure() {
     echo "   • KV v2 at secret/"
     # Reported as "<type>,<version>" — no slash in the jq program, because Git
@@ -301,6 +320,14 @@ openbao_configure() {
 path "secret/data/*" { capabilities = ["read"] }
 EOF
     openbao_run_with_token 'bao write auth/kubernetes/role/eso-role bound_service_account_names=external-secrets bound_service_account_namespaces=external-secrets policies=eso-read ttl=1h >/dev/null' </dev/null || return 1
+    # The ServiceAccount name is the chart's (openbao-snapshot, with
+    # fullnameOverride: openbao), verified from a `helm template` render of
+    # openbao-helm 0.28.3 with snapshotAgent.enabled=true.
+    echo "   • openbao-backup policy and role (the chart's snapshot agent)"
+    openbao_run_with_token 'bao policy write openbao-backup - >/dev/null' <<'EOF' || return 1
+path "sys/storage/raft/snapshot" { capabilities = ["read"] }
+EOF
+    openbao_run_with_token 'bao write auth/kubernetes/role/openbao-backup bound_service_account_names=openbao-snapshot bound_service_account_namespaces=openbao policies=openbao-backup ttl=1h >/dev/null' </dev/null || return 1
     echo "   • secret/demo canary"
     local canary
     canary=$(openbao_kv_path_state secret/demo) || return 1
