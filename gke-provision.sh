@@ -586,8 +586,8 @@ openbao-backup-setup)
     # speaks only S3 — so GCS is reached over its S3-interop endpoint
     # (storage.googleapis.com) with an HMAC key, the shape Mimir's MySQL backups
     # already use and document. Not keyless: Workload Identity cannot issue an
-    # HMAC key. Blast radius is bounded the same way as MySQL's: the GSA holds
-    # objectAdmin on this one bucket and nothing else.
+    # HMAC key. Blast radius is bounded tighter than MySQL's: the GSA can
+    # create and read objects in this one bucket, never delete or overwrite.
     #
     # A separate, idempotent action like velero-setup. The HMAC key is minted
     # ONCE, when the Secret is absent; re-runs leave an existing Secret alone,
@@ -609,6 +609,12 @@ openbao-backup-setup)
     BACKUP_SECRET_NS="openbao"
     BACKUP_SECRET="openbao-backup-s3"
     BACKUP_RETENTION_DAYS=30
+
+    # Before anything is created: the Secret step at the end needs the gke
+    # cluster, and a wrong context must not get to mutate project-scoped
+    # storage and IAM first and only then be refused.
+    . "$(dirname "$0")/lib/kube-context.sh"
+    require_kube_context gke || exit 1
 
     echo ""
     echo "🪣 Setting up OpenBao snapshot storage..."
@@ -694,8 +700,6 @@ openbao-backup-setup)
     # chart's contract (s3CredentialsSecret): AWS-shaped names holding Google
     # values, exactly as the MySQL backup Secret does.
     echo "🔑 HMAC key for the snapshot agent..."
-    . "$(dirname "$0")/lib/kube-context.sh"
-    require_kube_context gke || exit 1
     if kubectl get secret -n "$BACKUP_SECRET_NS" "$BACKUP_SECRET" >/dev/null 2>&1; then
         echo "   ✅ Secret ${BACKUP_SECRET_NS}/${BACKUP_SECRET} already exists — keeping it (the key's secret half is shown only at creation)."
         echo "      To rotate: delete the Secret, deactivate and delete the old key"
@@ -703,6 +707,22 @@ openbao-backup-setup)
     else
         if ! command -v jq >/dev/null 2>&1; then
             echo "❌ jq is required to split the HMAC key into the Secret." >&2
+            exit 1
+        fi
+        # No Secret but keys already exist: an earlier run minted one and lost
+        # it before the Secret landed (or someone rotated by hand). Their
+        # secret halves are gone for good, so minting another would only
+        # accumulate dead keys toward the per-account limit. Refuse until the
+        # operator has cleaned them up or parked one by hand.
+        EXISTING_HMAC="$(gcloud storage hmac list --service-account="$BACKUP_SA" --project="$GCP_PROJECT" --format='value(accessId,state)' 2>/dev/null || true)"
+        if [[ -n "$EXISTING_HMAC" ]]; then
+            echo "❌ ${BACKUP_SA} already has HMAC key(s) but Secret ${BACKUP_SECRET_NS}/${BACKUP_SECRET} is absent:" >&2
+            printf '     %s\n' "$EXISTING_HMAC" >&2
+            echo "   Their secret halves cannot be read back. Either park one you still hold by hand:" >&2
+            echo "     kubectl create secret generic ${BACKUP_SECRET} -n ${BACKUP_SECRET_NS} --from-file=AWS_ACCESS_KEY_ID=<id-file> --from-file=AWS_SECRET_ACCESS_KEY=<secret-file>" >&2
+            echo "   or retire them and re-run to mint a fresh one:" >&2
+            echo "     gcloud storage hmac update <accessId> --deactivate --project=${GCP_PROJECT}" >&2
+            echo "     gcloud storage hmac delete <accessId> --project=${GCP_PROJECT}" >&2
             exit 1
         fi
         # The namespace is ArgoCD's to own once OpenBao is deployed; creating it

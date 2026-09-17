@@ -299,6 +299,11 @@ cleanup() {
             rm -rf "$d"
         fi
     done
+    # Layer 5's Garage key scratch (0600 files under 0700): an exit between
+    # its creation and its checked removal must not leave the key on disk.
+    if [[ -n "${OB_SCRATCH:-}" && -d "$OB_SCRATCH" ]]; then
+        rm -rf "$OB_SCRATCH"
+    fi
 }
 trap cleanup EXIT
 
@@ -799,7 +804,7 @@ if [[ "$TARGET" == "homelab" ]]; then
                 # rewrote the Velero Secret with it.
                 KEY_OUTPUT=$(kubectl exec -n garage garage-0 -- /garage key info --show-secret velero-service-key 2>/dev/null) || {
                     echo "⚠️  Could not create or find Garage key. Skipping Velero credential setup."
-                    break
+                    KEY_OUTPUT=""
                 }
             }
 
@@ -807,33 +812,34 @@ if [[ "$TARGET" == "homelab" ]]; then
             KEY_ID=$(echo "$KEY_OUTPUT" | grep -i "Key ID" | awk '{print $NF}')
             KEY_SECRET=$(echo "$KEY_OUTPUT" | grep -i "Secret" | awk '{print $NF}')
 
+            # A Velero failure skips only Velero's bucket and Secret: the
+            # OpenBao snapshot storage below is an independent consumer of
+            # the same Garage and must not be silently disabled by it.
             if [[ -z "$KEY_ID" || -z "$KEY_SECRET" ]]; then
                 echo "⚠️  Could not parse Garage key credentials. Skipping Velero setup."
-                echo "   Key output was: $KEY_OUTPUT"
-                break
-            fi
+            else
+                echo "   Key ID: $KEY_ID"
 
-            echo "   Key ID: $KEY_ID"
+                # Create bucket
+                echo "   Creating velero-backups bucket..."
+                kubectl exec -n garage garage-0 -- /garage bucket create velero-backups 2>/dev/null || {
+                    echo "   Bucket may already exist. Continuing..."
+                }
 
-            # Create bucket
-            echo "   Creating velero-backups bucket..."
-            kubectl exec -n garage garage-0 -- /garage bucket create velero-backups 2>/dev/null || {
-                echo "   Bucket may already exist. Continuing..."
-            }
+                # Grant access
+                kubectl exec -n garage garage-0 -- /garage bucket allow velero-backups --read --write --key velero-service-key 2>/dev/null || true
+                echo "✅ Garage bucket 'velero-backups' ready."
 
-            # Grant access
-            kubectl exec -n garage garage-0 -- /garage bucket allow velero-backups --read --write --key velero-service-key 2>/dev/null || true
-            echo "✅ Garage bucket 'velero-backups' ready."
-
-            # Create Velero credentials secret
-            echo "   Creating Velero credentials secret..."
-            kubectl create namespace velero --dry-run=client -o yaml | kubectl apply -f -
-            kubectl create secret generic velero-credentials -n velero \
-              --from-literal=cloud="[default]
+                # Create Velero credentials secret
+                echo "   Creating Velero credentials secret..."
+                kubectl create namespace velero --dry-run=client -o yaml | kubectl apply -f -
+                kubectl create secret generic velero-credentials -n velero \
+                  --from-literal=cloud="[default]
 aws_access_key_id=$KEY_ID
 aws_secret_access_key=$KEY_SECRET" \
-              --dry-run=client -o yaml | kubectl apply -f -
-            echo "✅ Velero credentials secret created."
+                  --dry-run=client -o yaml | kubectl apply -f -
+                echo "✅ Velero credentials secret created."
+            fi
 
             # OpenBao snapshot agent (realm go-live design, 2026-09-16): its
             # own key and bucket beside Velero's, so a mistake in one backup
