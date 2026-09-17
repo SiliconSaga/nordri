@@ -12,9 +12,12 @@ fails=0
 check() { if eval "$2"; then echo "ok - $1"; else echo "NOT OK - $1"; fails=$((fails+1)); fi; }
 
 work="$(mktemp -d)"; trap 'rm -rf "$work"' EXIT
-mkdir -p "$work/bin" "$work/realms/demo-realm"
+mkdir -p "$work/bin" "$work/realms/demo-realm" "$work/tmp"
 export STUB_STATE="$work/state"
 mkdir -p "$STUB_STATE"
+# The lib's scratch directories land under TMPDIR; a private one keeps the
+# "nothing left behind" assertion from seeing an unrelated run's directory.
+export TMPDIR="$work/tmp"
 
 cat > "$work/bin/kubectl" <<'STUB'
 #!/usr/bin/env bash
@@ -85,7 +88,7 @@ esac
 check "init: Secret was parked" "[ -f '$STUB_STATE/secret' ]"
 check "init: auto seal used recovery shares, not key shares" "grep -q -- '-recovery-shares=3' '$STUB_STATE/init-args' && ! grep -q -- '-key-shares' '$STUB_STATE/init-args'"
 check "init: output names the keep-file, not the material" "grep -q 'out.json' <<<'$out' && ! grep -q 'stub-root' <<<'$out'"
-check "init: no scratch directory left behind" "[ -z \"\$(ls -d \"\${TMPDIR:-/tmp}\"/openbao-?????? 2>/dev/null)\" ]"
+check "init: no scratch directory left behind" "[ -z \"\$(ls -A '$work/tmp')\" ]"
 
 # An initialized instance is refused with exit 2, and nothing is written.
 STUB_CTX="docker-desktop" bash "$root/openbao-init.sh" homelab "$work/again.json" >/dev/null 2>&1; rc=$?

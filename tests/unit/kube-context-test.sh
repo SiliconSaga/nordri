@@ -41,7 +41,7 @@ STUB_CTX="docker-desktop" KUBE_CONTEXT="$gke_ctx" require_kube_context gke > "$w
 check "mismatch names the use-context fix" "grep -q 'kubectl config use-context gke_teralivekubernetes' '$work/mismatch.out'"
 STUB_CTX="rancher-desktop" KUBE_CONTEXT="rancher-desktop" require_kube_context homelab >/dev/null 2>&1; rc=$?
 check "explicit homelab context passes" "[ $rc -eq 0 ]"
-require_kube_context staging >/dev/null 2>&1; rc=$?
+STUB_CTX="docker-desktop" require_kube_context staging >/dev/null 2>&1; rc=$?
 check "unknown target is refused" "[ $rc -ne 0 ]"
 
 echo "---"; [ "$fails" -eq 0 ] && echo "ALL PASS" || { echo "$fails FAILED"; exit 1; }

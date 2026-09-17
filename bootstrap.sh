@@ -854,13 +854,31 @@ aws_secret_access_key=$KEY_SECRET" \
             if [[ -z "$OB_KEY_ID" || -z "$OB_KEY_SECRET" || "$OB_KEY_SECRET" == "(redacted)" ]]; then
                 echo "⚠️  Could not create or read Garage key openbao-backup-key. Skipping OpenBao snapshot storage; re-run bootstrap to retry."
             else
-                kubectl exec -n garage garage-0 -- /garage bucket create openbao-backups 2>/dev/null || {
-                    echo "   Bucket openbao-backups may already exist. Continuing..."
-                }
-                kubectl exec -n garage garage-0 -- /garage bucket allow openbao-backups --read --write --key openbao-backup-key 2>/dev/null || true
+                # A failed create is only acceptable when the bucket is already
+                # there; the grant must succeed. Reporting "ready" over either
+                # failure would park credentials for a target the agent cannot
+                # write, and the first sign would be a stale-backup alert.
+                if ! kubectl exec -n garage garage-0 -- /garage bucket create openbao-backups >/dev/null 2>&1 \
+                   && ! kubectl exec -n garage garage-0 -- /garage bucket info openbao-backups >/dev/null 2>&1; then
+                    echo "❌ Garage bucket openbao-backups could not be created and does not exist." >&2
+                    exit 1
+                fi
+                if ! kubectl exec -n garage garage-0 -- /garage bucket allow openbao-backups --read --write --key openbao-backup-key >/dev/null 2>&1; then
+                    echo "❌ Could not grant openbao-backup-key read/write on Garage bucket openbao-backups." >&2
+                    exit 1
+                fi
                 echo "✅ Garage bucket 'openbao-backups' ready."
                 if kubectl get secret -n openbao openbao-backup-s3 >/dev/null 2>&1; then
-                    echo "   Secret openbao/openbao-backup-s3 already exists — keeping it."
+                    # The Secret is kept, so it must be THIS key: a Secret from
+                    # an earlier key (Garage state wiped, Secret kept) would leave
+                    # the agent uploading with credentials Garage no longer knows.
+                    OB_SECRET_KEY_ID=$(kubectl get secret -n openbao openbao-backup-s3 -o jsonpath='{.data.AWS_ACCESS_KEY_ID}' | base64 --decode | tr -d '\r\n')
+                    if [[ "$OB_SECRET_KEY_ID" != "$OB_KEY_ID" ]]; then
+                        echo "❌ Secret openbao/openbao-backup-s3 holds access key '$OB_SECRET_KEY_ID' but Garage's openbao-backup-key is '$OB_KEY_ID'." >&2
+                        echo "   To rotate onto the current key: kubectl delete secret openbao-backup-s3 -n openbao, then re-run this script." >&2
+                        exit 1
+                    fi
+                    echo "   Secret openbao/openbao-backup-s3 already exists and matches the Garage key — keeping it."
                 else
                     kubectl create namespace openbao --dry-run=client -o yaml | kubectl apply -f -
                     kubectl create secret generic openbao-backup-s3 -n openbao \

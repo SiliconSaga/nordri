@@ -618,8 +618,15 @@ openbao-backup-setup)
     echo ""
 
     echo "🪣 Creating bucket (skipped if it already exists)..."
-    if gcloud storage buckets describe "gs://${BACKUP_BUCKET}" --project="$GCP_PROJECT" >/dev/null 2>&1; then
-        echo "   ✅ Bucket already exists."
+    if BACKUP_BUCKET_LOCATION="$(gcloud storage buckets describe "gs://${BACKUP_BUCKET}" --project="$GCP_PROJECT" --format='value(location)' 2>/dev/null)"; then
+        # A bucket's location is fixed at creation, so an existing bucket
+        # somewhere else is a name collision, not something to reconcile.
+        if [[ "${BACKUP_BUCKET_LOCATION,,}" != "${BACKUP_REGION,,}" ]]; then
+            echo "❌ gs://${BACKUP_BUCKET} already exists in ${BACKUP_BUCKET_LOCATION}, not ${BACKUP_REGION} (cluster-identity gcpRegion)." >&2
+            echo "   The composition derives the bucket name from the project, so this bucket must be the one it uploads to; move or remove it before re-running." >&2
+            exit 1
+        fi
+        echo "   ✅ Bucket already exists in ${BACKUP_BUCKET_LOCATION}."
     else
         gcloud storage buckets create "gs://${BACKUP_BUCKET}" \
             --project="$GCP_PROJECT" \
@@ -627,6 +634,10 @@ openbao-backup-setup)
             --uniform-bucket-level-access
         echo "   ✅ Bucket created."
     fi
+    # Reconciled on every run, like the lifecycle rule below: a pre-existing
+    # bucket with legacy object ACLs would bypass the IAM-only grant.
+    gcloud storage buckets update "gs://${BACKUP_BUCKET}" --project="$GCP_PROJECT" \
+        --uniform-bucket-level-access >/dev/null
 
     # The agent expires objects itself (S3_EXPIRE_DAYS, same number); the
     # lifecycle rule is the backstop for an agent that stops running. Applied

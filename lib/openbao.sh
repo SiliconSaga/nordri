@@ -86,7 +86,8 @@ openbao_status_field() {
     json=$(openbao_status_json) || return 1
     # Windows jq ends -r output with CRLF; a stray CR would make "true" never
     # compare equal to true.
-    printf '%s\n' "$json" | jq -r "$1" | tr -d '\r'
+    # pipefail so a failing (or missing) jq is the function's status, not tr's.
+    ( set -o pipefail; printf '%s\n' "$json" | jq -r "$1" | tr -d '\r' )
 }
 
 # Stream the parked root token to stdout. A pipe, never a variable: callers
@@ -247,9 +248,11 @@ openbao_ensure_initialized() {
     fi
     # The operator's copy, for the safe. Written only after the Secret is
     # confirmed, so a failure here leaves two copies (Secret and scratch), not
-    # none. `cp` keeps the source's 0600; the umask guards a cp that does not.
+    # none. noclobber: the caller checked the path before a wait that can run
+    # minutes, and a file that appeared meanwhile keeps its own (possibly
+    # permissive) mode — refuse rather than pour init material into it.
     if [[ -n "$OPENBAO_INIT_KEEP_FILE" ]]; then
-        if ! ( umask 077; cp "$scratch/init.json" "$OPENBAO_INIT_KEEP_FILE" ) || [[ ! -s "$OPENBAO_INIT_KEEP_FILE" ]]; then
+        if ! ( umask 077; set -o noclobber; cat "$scratch/init.json" > "$OPENBAO_INIT_KEEP_FILE" ) || [[ ! -s "$OPENBAO_INIT_KEEP_FILE" ]]; then
             echo "❌ openbao_ensure_initialized: could not write $OPENBAO_INIT_KEEP_FILE. The Secret is parked; $keep $scratch/init.json." >&2
             return 1
         fi
