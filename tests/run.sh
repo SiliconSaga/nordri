@@ -10,7 +10,7 @@ cd "$(dirname "$0")/.." || exit 1   # nordri repo root
 shopt -s nullglob   # an empty glob (e.g. lib/*.sh) drops out instead of passing the literal pattern
 
 mode="${1:-test}"
-shell_files=(bootstrap.sh update-embedded-git.sh lib/*.sh tests/unit/*.sh tests/run.sh)
+shell_files=(bootstrap.sh update-embedded-git.sh gke-provision.sh openbao-init.sh openbao-configure.sh lib/*.sh tests/unit/*.sh tests/run.sh)
 
 syntax_check() {
   local f rc=0

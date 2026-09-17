@@ -18,6 +18,8 @@ Provision the raw cluster before running any scripts.
 ### Layer 2 — The Seed (Gitea + Nidavellir hydration)
 `./bootstrap.sh [gke|homelab] [realm]`
 
+Both this script and `update-embedded-git.sh` use plain `kubectl`, which follows the kubeconfig's **current context** — not the `ws k8s` guard scope, which wraps only `ws k8s` and does not switch the context. Each refuses to start when the current context does not fit the target: `gke` needs a `gke_*` context, `homelab` refuses one, and `KUBE_CONTEXT=<name>` pins the exact context and fails on any other. Switch with `kubectl config use-context` first; the scripts never switch for you.
+
 The optional second arg names an **owning realm** whose `cluster/` subtree carries realm-owned in-cluster config (e.g. the SiliconSaga keycloak realm-import). When given, bootstrap hydrates `realms/<realm>/cluster/` into a seed-Gitea repo named `<realm>` and registers a generic ArgoCD realm root-app pointed at it (after ArgoCD is up — see Layer 3). Omit it for a generic demo-only stack. `REALM_DIR` overrides the default `<workspace>/realms/<realm>` resolution.
 
 - Installs **Gitea** (Helm, `gitea` namespace, ephemeral — no persistence)
@@ -68,6 +70,7 @@ kubectl get secret -n gitea gitea-admin-credentials \
 ### Layer 2.9 — OpenBao seal key (homelab only)
 - Creates namespace `openbao` and, if absent, Secret `openbao-seal-key` holding a random 32-byte static seal key
 - Never replaced on re-run: a new key cannot decrypt the existing barrier
+- A key minted from Windows Git Bash before 2026-09-16 carries a trailing carriage return (openssl's CRLF) and is not valid base64. Check with a length test (44 characters, no CR); while the cluster is still on the Shamir default the key is unused and can simply be deleted and recreated, after graduation it must not be touched
 - GKE skips this; its OpenBao seals through Cloud KMS via Workload Identity, provisioned once by `./gke-provision.sh openbao-seal-setup` (see below)
 
 ### Layer 3 — ArgoCD
@@ -84,6 +87,10 @@ ArgoCD syncs the Nordri app-of-apps. Components vary by target:
 | Velero | ✅ (placeholder creds) | ✅ (Garage S3) |
 | Garage S3 | ❌ | ✅ |
 
+### Layer 5 — Garage layout, keys, buckets (homelab only)
+
+Waits for the Garage pod, assigns its layout, then creates one key and one bucket per consumer: `velero-service-key` / `velero-backups` (Secret `velero/velero-credentials`) and `openbao-backup-key` / `openbao-backups` (Secret `openbao/openbao-backup-s3`, keys `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`, the openbao-helm chart's `s3CredentialsSecret` contract). The OpenBao Secret is created only if absent, so a re-run never rotates it by accident. On GKE the equivalents are `./gke-provision.sh velero-setup` and `openbao-backup-setup` (below).
+
 Longhorn was a homelab component until 2026-08-26 and is retired — see the
 homelab overlay for why, including the manual webhook cleanup a cluster that
 already had it still needs. `local-path` is the only storage class in use.
@@ -96,10 +103,21 @@ Vegvísir (Nidavellir Tier 2) via ArgoCD sync-waves after Nordri stabilises.
 Runs after ArgoCD has deployed OpenBao (nidavellir, sync-wave 10); waits up to ten minutes for the pod, then skips with a note if it never appears. Everything here is idempotent, so a re-run on a configured cluster changes nothing. Functions live in `lib/openbao.sh`.
 
 - **Init and unseal** (homelab; on GKE only with `OPENBAO_AUTO_INIT=1`): `bao operator init` with 3 shares / threshold 2, material parked in Secret `openbao/openbao-init` (`init.json` and `root_token` keys, the layout the runbooks and tests read). A Shamir instance is unsealed from two parked shares; an instance sealed on an auto seal is reported as a broken seal backend instead. A leftover `openbao-init` next to an uninitialized instance (wiped storage) is kept under a timestamped name and a fresh init proceeds. On GKE without the flag, init stays a human step: shares to the password manager first, then the material parked in Secret `openbao/openbao-init` (`init.json` plus a `root_token` key, per nidavellir's runbook) — Layer 5b authenticates through that Secret, so without it a re-run reports what to park and does nothing else. With it, re-running bootstrap does the rest. Init or unseal failing under automatic mode stops bootstrap outright rather than finishing green with an unusable vault.
-- **Configure**: KV v2 at `secret/` (an existing mount must already be KV v2, or the run stops), Kubernetes auth trusting the in-cluster API, the read-only `eso-read` policy, `eso-role` bound to External Secrets' ServiceAccount, and the `secret/demo` canary. This is realm plan Task A1.5 Steps 3–4, no longer typed by hand. "Absent" means an explicit not-found from OpenBao; any other metadata error stops the run rather than risking a write over a live value.
+- **Configure**: KV v2 at `secret/` (an existing mount must already be KV v2, or the run stops), Kubernetes auth trusting the in-cluster API, the read-only `eso-read` policy, `eso-role` bound to External Secrets' ServiceAccount, the `openbao-backup` policy and role (read on `sys/storage/raft/snapshot` only, bound to the chart's `openbao-snapshot` ServiceAccount so the daily snapshot CronJob can copy the vault out encrypted and read nothing else), and the `secret/demo` canary. This is realm plan Task A1.5 Steps 3–4, no longer typed by hand. "Absent" means an explicit not-found from OpenBao; any other metadata error stops the run rather than risking a write over a live value.
 - **Seed**: if the owning realm carries an `openbao-seeds` file (`<REALM_DIR>/openbao-seeds`, or `OPENBAO_SEEDS_FILE`), each declared path that does not exist is written once with a generated 32-byte value per key. Format: one line per path, `secret/<path> <key> [<key>…]`, `#` comments. Existing paths are never touched. nordri sees only path and key names; what they are for is the realm's business.
 
 Secret hygiene: no key material is ever placed in an argument list or a shell variable. The root token and shares move pod → Secret → pod as pipes; the two places a value has to rest (init output before the Secret exists, generated seed values before the put) are 0600 files in a 0700 scratch directory, removed on success. Because init is irreversible, its output file is deliberately left in place, and its path printed, if creating or reading back the Secret fails.
+
+#### Standalone: `openbao-init.sh` and `openbao-configure.sh`
+
+The same lib, without a bootstrap run, for a live cluster (the realm's 2026-09-16 go-live design):
+
+```bash
+./openbao-init.sh gke ~/openbao-init/gke.json    # init once; material → Secret AND that file (0600, parent created 0700)
+./openbao-configure.sh gke realm-siliconsaga     # mount, auth, policies, roles, canary, realm seeds
+```
+
+`openbao-init.sh` refuses an initialized instance (init material can be minted exactly once), refuses an output file that already exists, and never prints the material — it prints `bao status`. The operator moves the file's contents into the password safe and deletes it; the in-cluster `openbao-init` Secret is the second copy (realm ADR 0002 custody plus the safe). `openbao-configure.sh` is idempotent, so it is also how a new policy or seed path is added after the fact. Both check the kubectl context like bootstrap does.
 
 ### Nidavellir (Tier 2) — Platform Services
 ArgoCD syncs Nidavellir from the internal Gitea. Vegvísir deploys in sync-wave order:
@@ -123,7 +141,15 @@ cert-manager and the Gateway deploy automatically via ArgoCD.
 ./gke-provision.sh openbao-seal-setup
 ```
 
-Enables Cloud KMS, creates key ring `openbao` / key `unseal` in the region `cluster-identity-gke.yaml` names as `gcpRegion` (read from that manifest, not hardcoded; a `GCP_REGION` that disagrees is an error), a service account with encrypt/decrypt on that key only, and the Workload Identity binding for `openbao/openbao`. Idempotent. On a cluster whose OpenBao is already initialized, follow it with the one-time seal migration in nidavellir's `docs/secrets-management.md`.
+Enables Cloud KMS, creates key ring `openbao` / key `unseal` in the region `cluster-identity-gke.yaml` names as `gcpRegion` (read from that manifest, not hardcoded; a `GCP_REGION` that disagrees is an error), a service account with encrypt/decrypt on that key only, and the Workload Identity binding for `openbao/openbao`. Idempotent. On a cluster whose OpenBao is already initialized, follow it with the one-time seal migration in nidavellir's `docs/secrets-management.md` — or, when the vault holds nothing worth keeping, wipe it and init fresh under the seal with `./openbao-init.sh` (the go-live path).
+
+### OpenBao snapshot backups (one-time)
+
+```bash
+./gke-provision.sh openbao-backup-setup
+```
+
+Creates bucket `gs://<project>-openbao-backups` in `gcpRegion` (uniform access; an existing bucket elsewhere is refused) with a 30-day lifecycle rule, the `openbao-backup` service account with `objectCreator` and `objectViewer` on that bucket only (no delete, no overwrite: the lifecycle rule is the only thing that removes snapshots), and — once, when Secret `openbao/openbao-backup-s3` is absent — an HMAC key for it, parked in that Secret as `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`. The chart's snapshot agent (CronJob `openbao-snapshot`, enabled by nidavellir's openbao composition) uploads a Raft snapshot daily at 05:00 UTC over the GCS S3-interop endpoint; HMAC rather than Workload Identity because s3cmd speaks only S3, the same reasoning Mimir's MySQL backups document. Re-runs keep an existing Secret; a run that finds keys on the service account but no Secret refuses to mint another and says how to park or retire them. Requires a `gke_*` kubectl context, checked before anything is created.
 
 ### Automated DNS (recommended)
 

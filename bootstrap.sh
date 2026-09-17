@@ -11,7 +11,8 @@ set -e
 # 2.8  Install Crossplane ProviderConfigs + RBAC
 # 3.   Install ArgoCD
 # 4.   Apply Root Application (ArgoCD adopts all pre-installed components)
-# 5.   Initialize Garage S3 + Velero credentials (waits for ArgoCD to deploy Garage)
+# 5.   Initialize Garage S3 + Velero and OpenBao-snapshot credentials (waits
+#      for ArgoCD to deploy Garage)
 # 5b.  OpenBao: init + unseal (homelab; gke only with OPENBAO_AUTO_INIT=1), the
 #      one-time KV/auth/policy configuration ESO needs, realm-declared seeds
 #
@@ -65,8 +66,26 @@ set -e
 #   OPENBAO_SEEDS_FILE Path to the realm's seed declaration. Default:
 #               <REALM_DIR>/openbao-seeds when a realm is given; see
 #               lib/openbao.sh for the one-line-per-path format.
+#
+#   KUBE_CONTEXT  Optional. The kubectl context this run is for; the script
+#               refuses to start if the current context differs (it never
+#               switches contexts itself). Set or not, a gke target requires a
+#               gke_* context and a homelab target refuses one — see
+#               lib/kube-context.sh.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# Helm 4 applies server-side by default, and a RE-RUN on a cluster where ArgoCD
+# has since adopted these releases (Layer 4) then fails with a field-manager
+# conflict on whatever ArgoCD last wrote — seen 2026-09-16 on Traefik's
+# container args, which stopped an otherwise idempotent re-run at Layer 2.6.
+# Forcing the conflict makes bootstrap's values win for a moment; ArgoCD's
+# self-heal reconciles its own values back within its sync interval, which is
+# exactly what helm 3's client-side three-way merge did without saying so.
+# Helm 3 has no such flag, so it is added only on helm 4+.
+HELM_APPLY_FLAGS=()
+case "$(helm version --template '{{.Version}}' 2>/dev/null)" in
+    v[4-9].*) HELM_APPLY_FLAGS=(--force-conflicts) ;;
+esac
 # Shared hydration libraries (extracted from the duplicated inline blocks).
 . "$SCRIPT_DIR/lib/gitea.sh"
 . "$SCRIPT_DIR/lib/hydrate.sh"
@@ -74,6 +93,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$SCRIPT_DIR/lib/patch-velero.sh"
 . "$SCRIPT_DIR/lib/patch-urls.sh"
 . "$SCRIPT_DIR/lib/openbao.sh"
+. "$SCRIPT_DIR/lib/kube-context.sh"
 TARGET=$1
 # Capture explicit GITEA_PASS env input here without applying a default —
 # the resolver populates the value below. Username is fixed to
@@ -118,6 +138,10 @@ if [[ "$TARGET" != "gke" && "$TARGET" != "homelab" ]]; then
     echo "Error: Target must be 'gke' or 'homelab'"
     exit 1
 fi
+
+# Every kubectl below follows the kubeconfig's current context, not the ws k8s
+# guard scope — refuse now if that context does not fit the target.
+require_kube_context "$TARGET" || exit 1
 
 # Optional owning realm (arg 2): a realm whose cluster/ subtree carries
 # realm-owned in-cluster config (e.g. the siliconsaga keycloak realm-import).
@@ -275,6 +299,11 @@ cleanup() {
             rm -rf "$d"
         fi
     done
+    # Layer 5's Garage key scratch (0600 files under 0700): an exit between
+    # its creation and its checked removal must not leave the key on disk.
+    if [[ -n "${OB_SCRATCH:-}" && -d "$OB_SCRATCH" ]]; then
+        rm -rf "$OB_SCRATCH"
+    fi
 }
 trap cleanup EXIT
 
@@ -525,7 +554,7 @@ helm repo update
 
 # We install the full Crossplane Core here to ensure CRDs (Composition, Provider, etc.) are established.
 # ArgoCD will later adopt this release because we use the same release name and namespace.
-helm upgrade --install crossplane crossplane-stable/crossplane \
+helm upgrade --install crossplane crossplane-stable/crossplane "${HELM_APPLY_FLAGS[@]}" \
   --namespace crossplane --create-namespace \
   --version 2.1.4
 
@@ -562,7 +591,7 @@ echo "✅ Crossplane Installed."
 echo "🚦 [Layer 2.6] Installing Traefik..."
 helm repo add traefik https://traefik.github.io/charts >/dev/null 2>&1
 
-helm upgrade --install traefik traefik/traefik \
+helm upgrade --install traefik traefik/traefik "${HELM_APPLY_FLAGS[@]}" \
   --namespace kube-system \
   --version 38.0.1 \
   --set providers.kubernetesGateway.enabled=true \
@@ -617,8 +646,12 @@ if [[ "$TARGET" == "homelab" ]]; then
     if kubectl get secret -n openbao openbao-seal-key >/dev/null 2>&1; then
         echo "   ✅ openbao-seal-key already present — leaving it alone (replacing it would seal the vault for good)."
     else
+        # Windows openssl ends its output with CRLF; `$(...)` strips the LF
+        # only, and a key carrying a trailing CR is not valid base64, so the
+        # static seal would fail to decode it the day the cluster graduates.
+        # Found on a Docker Desktop homelab whose key was minted this way.
         kubectl create secret generic openbao-seal-key -n openbao \
-            --from-literal=key="$(openssl rand -base64 32)" >/dev/null
+            --from-literal=key="$(openssl rand -base64 32 | tr -d '\r\n')" >/dev/null
         echo "   ✅ openbao-seal-key created. Back it up off-cluster if this homelab holds anything you would miss."
     fi
 fi
@@ -628,7 +661,7 @@ echo "🔥 [Layer 3] Installing ArgoCD..."
 helm repo add argo https://argoproj.github.io/argo-helm >/dev/null 2>&1
 kubectl create namespace argo --dry-run=client -o yaml | kubectl apply -f -
 
-helm upgrade --install argocd argo/argo-cd --namespace argo \
+helm upgrade --install argocd argo/argo-cd --namespace argo "${HELM_APPLY_FLAGS[@]}" \
   --set dex.enabled=false \
   --set server.insecure=true \
   --set server.extraArgs={--insecure} \
@@ -766,9 +799,12 @@ if [[ "$TARGET" == "homelab" ]]; then
             echo "   Creating Garage API key for Velero..."
             KEY_OUTPUT=$(kubectl exec -n garage garage-0 -- /garage key create velero-service-key 2>/dev/null) || {
                 echo "   Key may already exist, retrieving..."
-                KEY_OUTPUT=$(kubectl exec -n garage garage-0 -- /garage key info velero-service-key 2>/dev/null) || {
+                # Garage 2.x prints "(redacted)" for the secret unless asked;
+                # without --show-secret a re-run parsed that literal and
+                # rewrote the Velero Secret with it.
+                KEY_OUTPUT=$(kubectl exec -n garage garage-0 -- /garage key info --show-secret velero-service-key 2>/dev/null) || {
                     echo "⚠️  Could not create or find Garage key. Skipping Velero credential setup."
-                    break
+                    KEY_OUTPUT=""
                 }
             }
 
@@ -776,33 +812,96 @@ if [[ "$TARGET" == "homelab" ]]; then
             KEY_ID=$(echo "$KEY_OUTPUT" | grep -i "Key ID" | awk '{print $NF}')
             KEY_SECRET=$(echo "$KEY_OUTPUT" | grep -i "Secret" | awk '{print $NF}')
 
+            # A Velero failure skips only Velero's bucket and Secret: the
+            # OpenBao snapshot storage below is an independent consumer of
+            # the same Garage and must not be silently disabled by it.
             if [[ -z "$KEY_ID" || -z "$KEY_SECRET" ]]; then
                 echo "⚠️  Could not parse Garage key credentials. Skipping Velero setup."
-                echo "   Key output was: $KEY_OUTPUT"
-                break
-            fi
+            else
+                echo "   Key ID: $KEY_ID"
 
-            echo "   Key ID: $KEY_ID"
+                # Create bucket
+                echo "   Creating velero-backups bucket..."
+                kubectl exec -n garage garage-0 -- /garage bucket create velero-backups 2>/dev/null || {
+                    echo "   Bucket may already exist. Continuing..."
+                }
 
-            # Create bucket
-            echo "   Creating velero-backups bucket..."
-            kubectl exec -n garage garage-0 -- /garage bucket create velero-backups 2>/dev/null || {
-                echo "   Bucket may already exist. Continuing..."
-            }
+                # Grant access
+                kubectl exec -n garage garage-0 -- /garage bucket allow velero-backups --read --write --key velero-service-key 2>/dev/null || true
+                echo "✅ Garage bucket 'velero-backups' ready."
 
-            # Grant access
-            kubectl exec -n garage garage-0 -- /garage bucket allow velero-backups --read --write --key velero-service-key 2>/dev/null || true
-            echo "✅ Garage bucket 'velero-backups' ready."
-
-            # Create Velero credentials secret
-            echo "   Creating Velero credentials secret..."
-            kubectl create namespace velero --dry-run=client -o yaml | kubectl apply -f -
-            kubectl create secret generic velero-credentials -n velero \
-              --from-literal=cloud="[default]
+                # Create Velero credentials secret
+                echo "   Creating Velero credentials secret..."
+                kubectl create namespace velero --dry-run=client -o yaml | kubectl apply -f -
+                kubectl create secret generic velero-credentials -n velero \
+                  --from-literal=cloud="[default]
 aws_access_key_id=$KEY_ID
 aws_secret_access_key=$KEY_SECRET" \
-              --dry-run=client -o yaml | kubectl apply -f -
-            echo "✅ Velero credentials secret created."
+                  --dry-run=client -o yaml | kubectl apply -f -
+                echo "✅ Velero credentials secret created."
+            fi
+
+            # OpenBao snapshot agent (realm go-live design, 2026-09-16): its
+            # own key and bucket beside Velero's, so a mistake in one backup
+            # target cannot reach the other. The Secret's key names are the
+            # openbao-helm chart's contract (s3CredentialsSecret). Created
+            # only if absent: the key is stable, and a rotation is an explicit
+            # delete-and-re-run, not a side effect of every bootstrap.
+            #
+            # The key's secret half moves Garage → 0600 file → Secret without
+            # passing through a variable or an argument (lib/openbao.sh's
+            # rule); only the key ID, which is not secret, is held in a
+            # variable. The Velero block above predates this and still uses
+            # --from-literal; bringing it to the same shape is a follow-up.
+            echo "   Creating Garage API key for the OpenBao snapshot agent..."
+            OB_SCRATCH=$(umask 077 && mktemp -d "${TMPDIR:-/tmp}/openbao-garage-XXXXXX")
+            if ! ( umask 077; kubectl exec -n garage garage-0 -- /garage key create openbao-backup-key > "$OB_SCRATCH/key.txt" 2>/dev/null ); then
+                ( umask 077; kubectl exec -n garage garage-0 -- /garage key info --show-secret openbao-backup-key > "$OB_SCRATCH/key.txt" 2>/dev/null ) || : > "$OB_SCRATCH/key.txt"
+            fi
+            OB_KEY_ID=$(grep -i "Key ID" "$OB_SCRATCH/key.txt" | awk '{print $NF}')
+            ( umask 077; grep -i "Secret" "$OB_SCRATCH/key.txt" | awk '{print $NF}' | tr -d '\r\n' > "$OB_SCRATCH/secret" )
+            if [[ -z "$OB_KEY_ID" || ! -s "$OB_SCRATCH/secret" ]] || grep -q '(redacted)' "$OB_SCRATCH/secret"; then
+                rm -rf "$OB_SCRATCH"
+                echo "⚠️  Could not create or read Garage key openbao-backup-key. Skipping OpenBao snapshot storage; re-run bootstrap to retry."
+            else
+                # A failed create is only acceptable when the bucket is already
+                # there; the grant must succeed. Reporting "ready" over either
+                # failure would park credentials for a target the agent cannot
+                # write, and the first sign would be a stale-backup alert.
+                if ! kubectl exec -n garage garage-0 -- /garage bucket create openbao-backups >/dev/null 2>&1 \
+                   && ! kubectl exec -n garage garage-0 -- /garage bucket info openbao-backups >/dev/null 2>&1; then
+                    echo "❌ Garage bucket openbao-backups could not be created and does not exist." >&2
+                    exit 1
+                fi
+                if ! kubectl exec -n garage garage-0 -- /garage bucket allow openbao-backups --read --write --key openbao-backup-key >/dev/null 2>&1; then
+                    echo "❌ Could not grant openbao-backup-key read/write on Garage bucket openbao-backups." >&2
+                    exit 1
+                fi
+                echo "✅ Garage bucket 'openbao-backups' ready."
+                if kubectl get secret -n openbao openbao-backup-s3 >/dev/null 2>&1; then
+                    # The Secret is kept, so it must be THIS key: a Secret from
+                    # an earlier key (Garage state wiped, Secret kept) would leave
+                    # the agent uploading with credentials Garage no longer knows.
+                    OB_SECRET_KEY_ID=$(kubectl get secret -n openbao openbao-backup-s3 -o jsonpath='{.data.AWS_ACCESS_KEY_ID}' | base64 --decode | tr -d '\r\n')
+                    if [[ "$OB_SECRET_KEY_ID" != "$OB_KEY_ID" ]]; then
+                        echo "❌ Secret openbao/openbao-backup-s3 holds access key '$OB_SECRET_KEY_ID' but Garage's openbao-backup-key is '$OB_KEY_ID'." >&2
+                        echo "   To rotate onto the current key: kubectl delete secret openbao-backup-s3 -n openbao, then re-run this script." >&2
+                        exit 1
+                    fi
+                    echo "   Secret openbao/openbao-backup-s3 already exists and matches the Garage key — keeping it."
+                else
+                    kubectl create namespace openbao --dry-run=client -o yaml | kubectl apply -f -
+                    printf '%s' "$OB_KEY_ID" > "$OB_SCRATCH/id"
+                    kubectl create secret generic openbao-backup-s3 -n openbao \
+                      --from-file=AWS_ACCESS_KEY_ID="$OB_SCRATCH/id" \
+                      --from-file=AWS_SECRET_ACCESS_KEY="$OB_SCRATCH/secret"
+                    echo "✅ OpenBao snapshot credentials secret created."
+                fi
+                if ! rm -rf "$OB_SCRATCH" || [[ -e "$OB_SCRATCH" ]]; then
+                    echo "❌ Could not remove $OB_SCRATCH — it holds the Garage key; remove it by hand." >&2
+                    exit 1
+                fi
+            fi
             break
         fi
 

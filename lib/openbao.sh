@@ -34,6 +34,11 @@
 OPENBAO_NS="${OPENBAO_NS:-openbao}"
 OPENBAO_POD="${OPENBAO_POD:-openbao-0}"
 OPENBAO_INIT_SECRET="${OPENBAO_INIT_SECRET:-openbao-init}"
+# Optional: a path the init output is ALSO written to (0600) once the Secret
+# has read back, for the operator to move into the password safe. Empty means
+# the in-cluster Secret is the only copy (bootstrap's homelab posture).
+# openbao-init.sh sets it; bootstrap.sh leaves it alone.
+OPENBAO_INIT_KEEP_FILE="${OPENBAO_INIT_KEEP_FILE:-}"
 
 # Wait until the OpenBao pod is Running AND its API answers `bao status`.
 # Ready is not the bar (an uninitialized or sealed pod is Running and NotReady
@@ -79,7 +84,10 @@ openbao_status_json() {
 openbao_status_field() {
     local json
     json=$(openbao_status_json) || return 1
-    printf '%s\n' "$json" | jq -r "$1"
+    # Windows jq ends -r output with CRLF; a stray CR would make "true" never
+    # compare equal to true.
+    # pipefail so a failing (or missing) jq is the function's status, not tr's.
+    ( set -o pipefail; printf '%s\n' "$json" | jq -r "$1" | tr -d '\r' )
 }
 
 # Stream the parked root token to stdout. A pipe, never a variable: callers
@@ -190,10 +198,25 @@ openbao_ensure_initialized() {
         kubectl delete secret -n "$OPENBAO_NS" "$OPENBAO_INIT_SECRET" >/dev/null || return 1
     fi
 
+    # The share flags depend on the seal the server is running: under Shamir
+    # the shares are the unseal keys (-key-shares); under an auto seal the API
+    # refuses those ("secret_shares not applicable to seal type static") and
+    # the shares are RECOVERY keys (-recovery-shares). Same 3/2 split either
+    # way. Found on the first fresh init under the static seal, 2026-09-16.
+    local seal_type shares_desc
+    local -a init_flags
+    seal_type=$(openbao_status_field '.type') || return 1
+    if [[ "$seal_type" == "shamir" ]]; then
+        init_flags=(-key-shares=3 -key-threshold=2)
+        shares_desc="3 unseal shares, threshold 2"
+    else
+        init_flags=(-recovery-shares=3 -recovery-threshold=2)
+        shares_desc="seal $seal_type: 3 recovery shares, threshold 2"
+    fi
     local scratch keep="THE INIT MATERIAL IS AT"
     scratch=$(openbao_scratch_dir) || return 1
-    echo "   🔐 Initializing OpenBao (3 shares, threshold 2); init output goes to $scratch/init.json (0600) until the Secret is confirmed..."
-    if ! ( umask 077; kubectl exec -n "$OPENBAO_NS" "$OPENBAO_POD" -- bao operator init -key-shares=3 -key-threshold=2 -format=json > "$scratch/init.json" ); then
+    echo "   🔐 Initializing OpenBao ($shares_desc); init output goes to $scratch/init.json (0600) until the Secret is confirmed..."
+    if ! ( umask 077; kubectl exec -n "$OPENBAO_NS" "$OPENBAO_POD" -- bao operator init "${init_flags[@]}" -format=json > "$scratch/init.json" ); then
         if [[ -s "$scratch/init.json" ]]; then
             # The server may have initialized before the stream broke; what
             # was captured is the only copy there will ever be.
@@ -206,7 +229,9 @@ openbao_ensure_initialized() {
     fi
     # jq -r prints the literal `null` and exits 0 for a missing key; -e and
     # `// empty` make an absent or null token an empty file, which -s rejects.
-    if ! ( umask 077; jq -er '.root_token // empty' "$scratch/init.json" > "$scratch/root_token" ) || [[ ! -s "$scratch/root_token" ]]; then
+    # `tr -d '\r\n'` guards against a Windows jq emitting CRLF: a token file
+    # carrying a stray CR would park an unusable token in the Secret.
+    if ! ( umask 077; set -o pipefail; jq -er '.root_token // empty' "$scratch/init.json" | tr -d '\r\n' > "$scratch/root_token" ) || [[ ! -s "$scratch/root_token" ]]; then
         echo "❌ openbao_ensure_initialized: init output has no root_token. $keep $scratch/init.json — do not lose it." >&2
         return 1
     fi
@@ -220,6 +245,18 @@ openbao_ensure_initialized() {
     if [[ -z "$(kubectl get secret -n "$OPENBAO_NS" "$OPENBAO_INIT_SECRET" -o jsonpath='{.data.root_token}' 2>/dev/null)" ]]; then
         echo "❌ openbao_ensure_initialized: Secret created but reads back without root_token. $keep $scratch/init.json." >&2
         return 1
+    fi
+    # The operator's copy, for the safe. Written only after the Secret is
+    # confirmed, so a failure here leaves two copies (Secret and scratch), not
+    # none. noclobber: the caller checked the path before a wait that can run
+    # minutes, and a file that appeared meanwhile keeps its own (possibly
+    # permissive) mode — refuse rather than pour init material into it.
+    if [[ -n "$OPENBAO_INIT_KEEP_FILE" ]]; then
+        if ! ( umask 077; set -o noclobber; cat "$scratch/init.json" > "$OPENBAO_INIT_KEEP_FILE" ) || [[ ! -s "$OPENBAO_INIT_KEEP_FILE" ]]; then
+            echo "❌ openbao_ensure_initialized: could not write $OPENBAO_INIT_KEEP_FILE. The Secret is parked; $keep $scratch/init.json." >&2
+            return 1
+        fi
+        echo "   📄 Init material also written to $OPENBAO_INIT_KEEP_FILE (0600) — move its contents into the password safe, then delete the file."
     fi
     openbao_scratch_rm "$scratch" || return 1
     echo "   ✅ Initialized; material parked in Secret $OPENBAO_NS/$OPENBAO_INIT_SECRET. With seal: auto the shares are recovery keys; with shamir they unseal (next)."
@@ -249,6 +286,7 @@ openbao_ensure_unsealed() {
                kubectl get secret -n "$OPENBAO_NS" "$OPENBAO_INIT_SECRET" -o jsonpath='{.data.init\.json}' \
                    | base64 --decode \
                    | jq -er ".unseal_keys_b64[$i] // empty" \
+                   | tr -d '\r\n' \
                    | kubectl exec -i -n "$OPENBAO_NS" "$OPENBAO_POD" -- bao write -format=json sys/unseal key=- >/dev/null ); then
             echo "❌ openbao_ensure_unsealed: submitting share $((i + 1)) failed." >&2
             return 1
@@ -265,10 +303,14 @@ openbao_ensure_unsealed() {
 # The one-time configuration External Secrets needs (realm plan Task A1.5
 # Steps 3-4): KV v2 at secret/, Kubernetes auth trusting the in-cluster API,
 # the read-only eso-read policy, the eso-role bound to ESO's ServiceAccount,
-# and the secret/demo canary. Idempotent: an existing secret/ mount is accepted
-# only if it is KV v2 (the eso-read policy grants secret/data/*, which a KV v1
-# mount never serves), an existing auth method is left alone, policy and role
-# are rewritten to the same content, the canary is created only if absent.
+# and the secret/demo canary — plus the openbao-backup policy and role the
+# chart's snapshot agent (CronJob openbao-snapshot, realm go-live design)
+# logs in with: it may read sys/storage/raft/snapshot and nothing else, so
+# the job can copy the vault out encrypted but can read no secret. Idempotent:
+# an existing secret/ mount is accepted only if it is KV v2 (the eso-read
+# policy grants secret/data/*, which a KV v1 mount never serves), an existing
+# auth method is left alone, policies and roles are rewritten to the same
+# content, the canary is created only if absent.
 openbao_configure() {
     echo "   • KV v2 at secret/"
     # Reported as "<type>,<version>" — no slash in the jq program, because Git
@@ -277,7 +319,7 @@ openbao_configure() {
     # failed list is not read as an empty (absent) mount table.
     local mounts mount
     mounts=$(openbao_run_with_token 'bao secrets list -format=json' </dev/null) || return 1
-    mount=$(printf '%s\n' "$mounts" | MSYS_NO_PATHCONV=1 jq -r '.["secret/"] | if . == null then "absent" else ([.type, (.options.version // "1")] | join(",")) end') || return 1
+    mount=$(printf '%s\n' "$mounts" | MSYS_NO_PATHCONV=1 jq -r '.["secret/"] | if . == null then "absent" else ([.type, (.options.version // "1")] | join(",")) end' | tr -d '\r') || return 1
     case "$mount" in
         absent)
             openbao_run_with_token 'bao secrets enable -version=2 -path=secret kv >/dev/null' </dev/null || return 1
@@ -296,6 +338,14 @@ openbao_configure() {
 path "secret/data/*" { capabilities = ["read"] }
 EOF
     openbao_run_with_token 'bao write auth/kubernetes/role/eso-role bound_service_account_names=external-secrets bound_service_account_namespaces=external-secrets policies=eso-read ttl=1h >/dev/null' </dev/null || return 1
+    # The ServiceAccount name is the chart's (openbao-snapshot, with
+    # fullnameOverride: openbao), verified from a `helm template` render of
+    # openbao-helm 0.28.3 with snapshotAgent.enabled=true.
+    echo "   • openbao-backup policy and role (the chart's snapshot agent)"
+    openbao_run_with_token 'bao policy write openbao-backup - >/dev/null' <<'EOF' || return 1
+path "sys/storage/raft/snapshot" { capabilities = ["read"] }
+EOF
+    openbao_run_with_token 'bao write auth/kubernetes/role/openbao-backup bound_service_account_names=openbao-snapshot bound_service_account_namespaces=openbao policies=openbao-backup ttl=1h >/dev/null' </dev/null || return 1
     echo "   • secret/demo canary"
     local canary
     canary=$(openbao_kv_path_state secret/demo) || return 1
