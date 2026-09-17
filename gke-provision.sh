@@ -9,7 +9,7 @@
 #   gcloud config set project YOUR_PROJECT
 #
 # Usage:
-#   ./gke-provision.sh [create|delete|credentials|velero-setup|openbao-seal-setup]
+#   ./gke-provision.sh [create|delete|credentials|velero-setup|openbao-seal-setup|openbao-backup-setup]
 #
 # After creating the cluster:
 #   ./bootstrap.sh gke
@@ -579,6 +579,154 @@ openbao-seal-setup)
     echo "picked up automatically and the init output holds RECOVERY keys, not unseal keys."
     ;;
 
+openbao-backup-setup)
+    # One-time GCS + IAM + HMAC setup for the OpenBao snapshot agent (realm
+    # go-live design, 2026-09-16). The openbao-helm chart's CronJob
+    # `openbao-snapshot` saves a Raft snapshot and uploads it with s3cmd, which
+    # speaks only S3 — so GCS is reached over its S3-interop endpoint
+    # (storage.googleapis.com) with an HMAC key, the shape Mimir's MySQL backups
+    # already use and document. Not keyless: Workload Identity cannot issue an
+    # HMAC key. Blast radius is bounded the same way as MySQL's: the GSA holds
+    # objectAdmin on this one bucket and nothing else.
+    #
+    # A separate, idempotent action like velero-setup. The HMAC key is minted
+    # ONCE, when the Secret is absent; re-runs leave an existing Secret alone,
+    # since the secret half of a key is shown only at creation.
+    #
+    # Bucket name NOT overridable: the nidavellir openbao composition derives it
+    # from cluster-identity's gcpProject (<project>-openbao-backups). One
+    # derivation. The bucket's region is cluster-identity's gcpRegion, read from
+    # the same manifest openbao-seal-setup reads.
+    IDENTITY_MANIFEST="$(dirname "$0")/platform/fundamentals/manifests/cluster-identity-gke.yaml"
+    BACKUP_REGION="$(sed -n 's/^  gcpRegion:[[:space:]]*//p' "$IDENTITY_MANIFEST")"
+    if [[ -z "$BACKUP_REGION" ]]; then
+        echo "❌ Could not read gcpRegion from $IDENTITY_MANIFEST." >&2
+        exit 1
+    fi
+    BACKUP_BUCKET="${GCP_PROJECT}-openbao-backups"
+    BACKUP_SA_ID="openbao-backup"
+    BACKUP_SA="${BACKUP_SA_ID}@${GCP_PROJECT}.iam.gserviceaccount.com"
+    BACKUP_SECRET_NS="openbao"
+    BACKUP_SECRET="openbao-backup-s3"
+    BACKUP_RETENTION_DAYS=30
+
+    echo ""
+    echo "🪣 Setting up OpenBao snapshot storage..."
+    echo "   Bucket:          gs://${BACKUP_BUCKET} (${BACKUP_REGION})"
+    echo "   Service account: ${BACKUP_SA}"
+    echo "   Secret:          ${BACKUP_SECRET_NS}/${BACKUP_SECRET}"
+    echo ""
+
+    echo "🪣 Creating bucket (skipped if it already exists)..."
+    if gcloud storage buckets describe "gs://${BACKUP_BUCKET}" --project="$GCP_PROJECT" >/dev/null 2>&1; then
+        echo "   ✅ Bucket already exists."
+    else
+        gcloud storage buckets create "gs://${BACKUP_BUCKET}" \
+            --project="$GCP_PROJECT" \
+            --location="$BACKUP_REGION" \
+            --uniform-bucket-level-access
+        echo "   ✅ Bucket created."
+    fi
+
+    # The agent expires objects itself (S3_EXPIRE_DAYS, same number); the
+    # lifecycle rule is the backstop for an agent that stops running. Applied
+    # on every run so the number here is the source of truth.
+    echo "🗓️  Setting a ${BACKUP_RETENTION_DAYS}-day lifecycle rule..."
+    BACKUP_LIFECYCLE="$(mktemp)"
+    printf '{"rule":[{"action":{"type":"Delete"},"condition":{"age":%d}}]}\n' "$BACKUP_RETENTION_DAYS" > "$BACKUP_LIFECYCLE"
+    gcloud storage buckets update "gs://${BACKUP_BUCKET}" --project="$GCP_PROJECT" \
+        --lifecycle-file="$BACKUP_LIFECYCLE" >/dev/null
+    rm -f "$BACKUP_LIFECYCLE"
+    echo "   ✅ Lifecycle rule set."
+
+    echo "👤 Ensuring service account (skipped if it already exists)..."
+    if gcloud iam service-accounts describe "$BACKUP_SA" --project="$GCP_PROJECT" >/dev/null 2>&1; then
+        echo "   ✅ Service account already exists."
+    else
+        gcloud iam service-accounts create "$BACKUP_SA_ID" \
+            --project="$GCP_PROJECT" \
+            --display-name "OpenBao Raft snapshot uploads"
+        echo "   ✅ Service account created."
+        # Same propagation lag velero-setup hit: describe answers before the IAM
+        # backends accept the account as a member. Poll a real policy read.
+        printf "   ⏳ Waiting for the service account to propagate to IAM"
+        for _ in $(seq 1 30); do
+            if gcloud iam service-accounts get-iam-policy "$BACKUP_SA" \
+                --project="$GCP_PROJECT" >/dev/null 2>&1; then
+                printf " ready\n"
+                break
+            fi
+            printf "."
+            sleep 2
+        done
+    fi
+
+    echo "🔐 Granting object access on the bucket (and nothing else)..."
+    retry_gcloud gcloud storage buckets add-iam-policy-binding "gs://${BACKUP_BUCKET}" \
+        --project="$GCP_PROJECT" \
+        --member="serviceAccount:${BACKUP_SA}" \
+        --role=roles/storage.objectAdmin >/dev/null
+
+    # The HMAC key goes straight from gcloud's JSON into the Secret through
+    # 0600 files in a 0700 directory — never an argument, never a variable —
+    # the hygiene lib/openbao.sh follows. The Secret's key names are the
+    # chart's contract (s3CredentialsSecret): AWS-shaped names holding Google
+    # values, exactly as the MySQL backup Secret does.
+    echo "🔑 HMAC key for the snapshot agent..."
+    . "$(dirname "$0")/lib/kube-context.sh"
+    require_kube_context gke || exit 1
+    if kubectl get secret -n "$BACKUP_SECRET_NS" "$BACKUP_SECRET" >/dev/null 2>&1; then
+        echo "   ✅ Secret ${BACKUP_SECRET_NS}/${BACKUP_SECRET} already exists — keeping it (the key's secret half is shown only at creation)."
+        echo "      To rotate: delete the Secret, deactivate and delete the old key"
+        echo "      (gcloud storage hmac list --service-account=${BACKUP_SA}), re-run this action."
+    else
+        if ! command -v jq >/dev/null 2>&1; then
+            echo "❌ jq is required to split the HMAC key into the Secret." >&2
+            exit 1
+        fi
+        # The namespace is ArgoCD's to own once OpenBao is deployed; creating it
+        # here (apply, not create) lets this action run before or after.
+        kubectl create namespace "$BACKUP_SECRET_NS" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+        HMAC_SCRATCH=$(umask 077 && mktemp -d "${TMPDIR:-/tmp}/openbao-hmac-XXXXXX")
+        if ! ( umask 077; gcloud storage hmac create "$BACKUP_SA" --project="$GCP_PROJECT" --format=json > "$HMAC_SCRATCH/hmac.json" ); then
+            echo "❌ gcloud storage hmac create failed. If it reports the key limit, list and deactivate stale keys:" >&2
+            echo "     gcloud storage hmac list --service-account=${BACKUP_SA} --project=${GCP_PROJECT}" >&2
+            rm -rf "$HMAC_SCRATCH"
+            exit 1
+        fi
+        # `--format=json` wraps the API's HmacKey (metadata.accessId + secret);
+        # accept a flattened accessId too, so a gcloud that changes the shape
+        # fails the -s check below rather than parking an empty id.
+        if ! ( umask 077; set -o pipefail
+               jq -er '(.metadata.accessId // .accessId) // empty' "$HMAC_SCRATCH/hmac.json" | tr -d '\r\n' > "$HMAC_SCRATCH/id" \
+               && jq -er '.secret // empty' "$HMAC_SCRATCH/hmac.json" | tr -d '\r\n' > "$HMAC_SCRATCH/secret" ) \
+           || [[ ! -s "$HMAC_SCRATCH/id" || ! -s "$HMAC_SCRATCH/secret" ]]; then
+            echo "❌ Could not read accessId and secret from gcloud's output. The key WAS created; its material is at $HMAC_SCRATCH/hmac.json (0600) — park it by hand or deactivate the key." >&2
+            exit 1
+        fi
+        if ! kubectl create secret generic "$BACKUP_SECRET" -n "$BACKUP_SECRET_NS" \
+                --from-file=AWS_ACCESS_KEY_ID="$HMAC_SCRATCH/id" \
+                --from-file=AWS_SECRET_ACCESS_KEY="$HMAC_SCRATCH/secret" >/dev/null; then
+            echo "❌ Creating Secret ${BACKUP_SECRET_NS}/${BACKUP_SECRET} failed. The key material is at $HMAC_SCRATCH/hmac.json (0600) — park it by hand, then remove the directory." >&2
+            exit 1
+        fi
+        if ! rm -rf "$HMAC_SCRATCH" || [[ -e "$HMAC_SCRATCH" ]]; then
+            echo "❌ Could not remove $HMAC_SCRATCH — it holds key material; remove it by hand." >&2
+            exit 1
+        fi
+        echo "   ✅ HMAC key minted and parked in Secret ${BACKUP_SECRET_NS}/${BACKUP_SECRET}."
+    fi
+
+    echo ""
+    echo "✅ OpenBao snapshot storage ready."
+    echo ""
+    echo "The CronJob openbao-snapshot (nidavellir's openbao composition) uploads to"
+    echo "s3://${BACKUP_BUCKET}/openbao/ at 05:00 UTC daily, once OpenBao has the"
+    echo "openbao-backup role (./openbao-configure.sh gke <realm>). Prove it rather than assume:"
+    echo "   kubectl create job --from=cronjob/openbao-snapshot -n openbao openbao-snapshot-manual"
+    echo "   gcloud storage ls gs://${BACKUP_BUCKET}/openbao/ --project=${GCP_PROJECT}"
+    ;;
+
 credentials)
     echo ""
     echo "🔑 Fetching credentials for existing cluster..."
@@ -615,9 +763,11 @@ delete)
     # cluster. Deleting it here would make this command the most destructive
     # thing in the repo.
     echo ""
-    echo "ℹ️  Velero resources were KEPT — both are project-scoped, not cluster-scoped:"
+    echo "ℹ️  Velero and OpenBao backup resources were KEPT — all project-scoped, not cluster-scoped:"
     echo "     gs://${GCP_PROJECT}-velero            (backups outlive clusters)"
+    echo "     gs://${GCP_PROJECT}-openbao-backups   (Raft snapshots outlive clusters)"
     echo "     velero@${GCP_PROJECT}.iam.gserviceaccount.com  (shared by all clusters in this project)"
+    echo "     openbao-backup@${GCP_PROJECT}.iam.gserviceaccount.com  (and its HMAC key)"
     echo ""
     echo "   Remove them by hand ONLY if no other cluster in this project uses Velero:"
     echo "     gcloud iam service-accounts delete velero@${GCP_PROJECT}.iam.gserviceaccount.com"
@@ -626,13 +776,15 @@ delete)
     ;;
 
 *)
-    echo "Usage: $0 [create|delete|credentials|velero-setup|openbao-seal-setup]"
+    echo "Usage: $0 [create|delete|credentials|velero-setup|openbao-seal-setup|openbao-backup-setup]"
     echo ""
     echo "  create        Create the GKE cluster and fetch credentials"
     echo "  credentials   Fetch kubectl credentials for an existing cluster"
     echo "  velero-setup  One-time GCS bucket + IAM for Velero (idempotent;"
     echo "                safe to run against an already-running cluster)"
     echo "  openbao-seal-setup  One-time KMS key + IAM so OpenBao auto-unseals (idempotent)"
+    echo "  openbao-backup-setup  One-time GCS bucket + GSA + HMAC key Secret for the"
+    echo "                OpenBao snapshot agent (idempotent; the key is minted once)"
     echo "  delete        Delete the cluster (keeps the Velero backup bucket)"
     exit 1
     ;;

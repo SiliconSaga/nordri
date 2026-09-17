@@ -11,7 +11,8 @@ set -e
 # 2.8  Install Crossplane ProviderConfigs + RBAC
 # 3.   Install ArgoCD
 # 4.   Apply Root Application (ArgoCD adopts all pre-installed components)
-# 5.   Initialize Garage S3 + Velero credentials (waits for ArgoCD to deploy Garage)
+# 5.   Initialize Garage S3 + Velero and OpenBao-snapshot credentials (waits
+#      for ArgoCD to deploy Garage)
 # 5b.  OpenBao: init + unseal (homelab; gke only with OPENBAO_AUTO_INIT=1), the
 #      one-time KV/auth/policy configuration ESO needs, realm-declared seeds
 #
@@ -781,7 +782,10 @@ if [[ "$TARGET" == "homelab" ]]; then
             echo "   Creating Garage API key for Velero..."
             KEY_OUTPUT=$(kubectl exec -n garage garage-0 -- /garage key create velero-service-key 2>/dev/null) || {
                 echo "   Key may already exist, retrieving..."
-                KEY_OUTPUT=$(kubectl exec -n garage garage-0 -- /garage key info velero-service-key 2>/dev/null) || {
+                # Garage 2.x prints "(redacted)" for the secret unless asked;
+                # without --show-secret a re-run parsed that literal and
+                # rewrote the Velero Secret with it.
+                KEY_OUTPUT=$(kubectl exec -n garage garage-0 -- /garage key info --show-secret velero-service-key 2>/dev/null) || {
                     echo "⚠️  Could not create or find Garage key. Skipping Velero credential setup."
                     break
                 }
@@ -818,6 +822,41 @@ aws_access_key_id=$KEY_ID
 aws_secret_access_key=$KEY_SECRET" \
               --dry-run=client -o yaml | kubectl apply -f -
             echo "✅ Velero credentials secret created."
+
+            # OpenBao snapshot agent (realm go-live design, 2026-09-16): its
+            # own key and bucket beside Velero's, so a mistake in one backup
+            # target cannot reach the other. The Secret's key names are the
+            # openbao-helm chart's contract (s3CredentialsSecret). Created
+            # only if absent: the key is stable, and a rotation is an explicit
+            # delete-and-re-run, not a side effect of every bootstrap.
+            #
+            # Same shape as the Velero block above (the parsed key in a
+            # variable, --from-literal); moving both to file-fed Secrets is
+            # a follow-up, not a half-fix of one of them here.
+            echo "   Creating Garage API key for the OpenBao snapshot agent..."
+            OB_KEY_OUTPUT=$(kubectl exec -n garage garage-0 -- /garage key create openbao-backup-key 2>/dev/null) || {
+                OB_KEY_OUTPUT=$(kubectl exec -n garage garage-0 -- /garage key info --show-secret openbao-backup-key 2>/dev/null) || OB_KEY_OUTPUT=""
+            }
+            OB_KEY_ID=$(echo "$OB_KEY_OUTPUT" | grep -i "Key ID" | awk '{print $NF}')
+            OB_KEY_SECRET=$(echo "$OB_KEY_OUTPUT" | grep -i "Secret" | awk '{print $NF}')
+            if [[ -z "$OB_KEY_ID" || -z "$OB_KEY_SECRET" || "$OB_KEY_SECRET" == "(redacted)" ]]; then
+                echo "⚠️  Could not create or read Garage key openbao-backup-key. Skipping OpenBao snapshot storage; re-run bootstrap to retry."
+            else
+                kubectl exec -n garage garage-0 -- /garage bucket create openbao-backups 2>/dev/null || {
+                    echo "   Bucket openbao-backups may already exist. Continuing..."
+                }
+                kubectl exec -n garage garage-0 -- /garage bucket allow openbao-backups --read --write --key openbao-backup-key 2>/dev/null || true
+                echo "✅ Garage bucket 'openbao-backups' ready."
+                if kubectl get secret -n openbao openbao-backup-s3 >/dev/null 2>&1; then
+                    echo "   Secret openbao/openbao-backup-s3 already exists — keeping it."
+                else
+                    kubectl create namespace openbao --dry-run=client -o yaml | kubectl apply -f -
+                    kubectl create secret generic openbao-backup-s3 -n openbao \
+                      --from-literal=AWS_ACCESS_KEY_ID="$OB_KEY_ID" \
+                      --from-literal=AWS_SECRET_ACCESS_KEY="$OB_KEY_SECRET"
+                    echo "✅ OpenBao snapshot credentials secret created."
+                fi
+            fi
             break
         fi
 
