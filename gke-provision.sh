@@ -672,11 +672,21 @@ openbao-backup-setup)
         done
     fi
 
-    echo "🔐 Granting object access on the bucket (and nothing else)..."
+    # Create + read, never delete or overwrite: the agent only PUTs a
+    # timestamped object (and lists the prefix), retention on gke is the
+    # lifecycle rule above alone (the composition leaves S3_EXPIRE_DAYS unset
+    # here), so a compromised backup pod cannot erase or replace history.
+    # objectCreator lacks overwrite, so an exact-minute name collision fails
+    # the Job rather than clobbering — visible, and the right outcome.
+    echo "🔐 Granting create and read on the bucket (no delete, no overwrite)..."
     retry_gcloud gcloud storage buckets add-iam-policy-binding "gs://${BACKUP_BUCKET}" \
         --project="$GCP_PROJECT" \
         --member="serviceAccount:${BACKUP_SA}" \
-        --role=roles/storage.objectAdmin >/dev/null
+        --role=roles/storage.objectCreator >/dev/null
+    retry_gcloud gcloud storage buckets add-iam-policy-binding "gs://${BACKUP_BUCKET}" \
+        --project="$GCP_PROJECT" \
+        --member="serviceAccount:${BACKUP_SA}" \
+        --role=roles/storage.objectViewer >/dev/null
 
     # The HMAC key goes straight from gcloud's JSON into the Secret through
     # 0600 files in a 0700 directory — never an argument, never a variable —

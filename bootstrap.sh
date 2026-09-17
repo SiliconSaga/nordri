@@ -842,16 +842,20 @@ aws_secret_access_key=$KEY_SECRET" \
             # only if absent: the key is stable, and a rotation is an explicit
             # delete-and-re-run, not a side effect of every bootstrap.
             #
-            # Same shape as the Velero block above (the parsed key in a
-            # variable, --from-literal); moving both to file-fed Secrets is
-            # a follow-up, not a half-fix of one of them here.
+            # The key's secret half moves Garage → 0600 file → Secret without
+            # passing through a variable or an argument (lib/openbao.sh's
+            # rule); only the key ID, which is not secret, is held in a
+            # variable. The Velero block above predates this and still uses
+            # --from-literal; bringing it to the same shape is a follow-up.
             echo "   Creating Garage API key for the OpenBao snapshot agent..."
-            OB_KEY_OUTPUT=$(kubectl exec -n garage garage-0 -- /garage key create openbao-backup-key 2>/dev/null) || {
-                OB_KEY_OUTPUT=$(kubectl exec -n garage garage-0 -- /garage key info --show-secret openbao-backup-key 2>/dev/null) || OB_KEY_OUTPUT=""
-            }
-            OB_KEY_ID=$(echo "$OB_KEY_OUTPUT" | grep -i "Key ID" | awk '{print $NF}')
-            OB_KEY_SECRET=$(echo "$OB_KEY_OUTPUT" | grep -i "Secret" | awk '{print $NF}')
-            if [[ -z "$OB_KEY_ID" || -z "$OB_KEY_SECRET" || "$OB_KEY_SECRET" == "(redacted)" ]]; then
+            OB_SCRATCH=$(umask 077 && mktemp -d "${TMPDIR:-/tmp}/openbao-garage-XXXXXX")
+            if ! ( umask 077; kubectl exec -n garage garage-0 -- /garage key create openbao-backup-key > "$OB_SCRATCH/key.txt" 2>/dev/null ); then
+                ( umask 077; kubectl exec -n garage garage-0 -- /garage key info --show-secret openbao-backup-key > "$OB_SCRATCH/key.txt" 2>/dev/null ) || : > "$OB_SCRATCH/key.txt"
+            fi
+            OB_KEY_ID=$(grep -i "Key ID" "$OB_SCRATCH/key.txt" | awk '{print $NF}')
+            ( umask 077; grep -i "Secret" "$OB_SCRATCH/key.txt" | awk '{print $NF}' | tr -d '\r\n' > "$OB_SCRATCH/secret" )
+            if [[ -z "$OB_KEY_ID" || ! -s "$OB_SCRATCH/secret" ]] || grep -q '(redacted)' "$OB_SCRATCH/secret"; then
+                rm -rf "$OB_SCRATCH"
                 echo "⚠️  Could not create or read Garage key openbao-backup-key. Skipping OpenBao snapshot storage; re-run bootstrap to retry."
             else
                 # A failed create is only acceptable when the bucket is already
@@ -881,10 +885,15 @@ aws_secret_access_key=$KEY_SECRET" \
                     echo "   Secret openbao/openbao-backup-s3 already exists and matches the Garage key — keeping it."
                 else
                     kubectl create namespace openbao --dry-run=client -o yaml | kubectl apply -f -
+                    printf '%s' "$OB_KEY_ID" > "$OB_SCRATCH/id"
                     kubectl create secret generic openbao-backup-s3 -n openbao \
-                      --from-literal=AWS_ACCESS_KEY_ID="$OB_KEY_ID" \
-                      --from-literal=AWS_SECRET_ACCESS_KEY="$OB_KEY_SECRET"
+                      --from-file=AWS_ACCESS_KEY_ID="$OB_SCRATCH/id" \
+                      --from-file=AWS_SECRET_ACCESS_KEY="$OB_SCRATCH/secret"
                     echo "✅ OpenBao snapshot credentials secret created."
+                fi
+                if ! rm -rf "$OB_SCRATCH" || [[ -e "$OB_SCRATCH" ]]; then
+                    echo "❌ Could not remove $OB_SCRATCH — it holds the Garage key; remove it by hand." >&2
+                    exit 1
                 fi
             fi
             break

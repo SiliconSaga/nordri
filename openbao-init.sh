@@ -55,9 +55,30 @@ if [[ -e "$OUT" ]]; then
     exit 1
 fi
 OUT_DIR="$(dirname "$OUT")"
-if [[ ! -d "$OUT_DIR" || ! -w "$OUT_DIR" ]]; then
-    echo "❌ Cannot write into $OUT_DIR (missing or not writable). Choose a directory you own, e.g. your home directory." >&2
+# The file itself is 0600, but its directory decides who can see that it
+# exists and race its creation: a missing parent is created 0700; an existing
+# one that is wider than that is refused, so the material never lands in a
+# shared or world-readable directory (a bare home directory is often 0755 —
+# use a subdirectory, e.g. ~/openbao-init/gke.json).
+if [[ ! -d "$OUT_DIR" ]]; then
+    if ! mkdir -p -m 0700 "$OUT_DIR"; then
+        echo "❌ Cannot create $OUT_DIR for the init material." >&2
+        exit 1
+    fi
+elif [[ ! -w "$OUT_DIR" ]]; then
+    echo "❌ $OUT_DIR is not writable." >&2
     exit 1
+else
+    OUT_DIR_MODE="$(stat -c %a "$OUT_DIR" 2>/dev/null || stat -f %Lp "$OUT_DIR" 2>/dev/null || echo 700)"
+    if [[ "$OUT_DIR_MODE" != 700 ]]; then
+        case "$(uname -s)" in
+            MINGW*|MSYS*|CYGWIN*) ;; # Git Bash reports emulated modes; the check means nothing here
+            *)
+                echo "❌ $OUT_DIR is mode $OUT_DIR_MODE; the init material must go in a directory only you can list (0700). Point at a new subdirectory and this script creates it." >&2
+                exit 1
+                ;;
+        esac
+    fi
 fi
 
 require_kube_context "$TARGET" || exit 1

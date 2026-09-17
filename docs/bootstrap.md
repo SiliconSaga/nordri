@@ -113,7 +113,7 @@ Secret hygiene: no key material is ever placed in an argument list or a shell va
 The same lib, without a bootstrap run, for a live cluster (the realm's 2026-09-16 go-live design):
 
 ```bash
-./openbao-init.sh gke ~/openbao-init.json        # init once; material → Secret AND that file (0600)
+./openbao-init.sh gke ~/openbao-init/gke.json    # init once; material → Secret AND that file (0600, parent created 0700)
 ./openbao-configure.sh gke realm-siliconsaga     # mount, auth, policies, roles, canary, realm seeds
 ```
 
@@ -149,7 +149,7 @@ Enables Cloud KMS, creates key ring `openbao` / key `unseal` in the region `clus
 ./gke-provision.sh openbao-backup-setup
 ```
 
-Creates bucket `gs://<project>-openbao-backups` in `gcpRegion` with a 30-day lifecycle rule, the `openbao-backup` service account with `objectAdmin` on that bucket only, and — once, when Secret `openbao/openbao-backup-s3` is absent — an HMAC key for it, parked in that Secret as `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`. The chart's snapshot agent (CronJob `openbao-snapshot`, enabled by nidavellir's openbao composition) uploads a Raft snapshot daily at 05:00 UTC over the GCS S3-interop endpoint; HMAC rather than Workload Identity because s3cmd speaks only S3, the same reasoning Mimir's MySQL backups document. Re-runs keep an existing Secret. Requires a `gke_*` kubectl context for the Secret step.
+Creates bucket `gs://<project>-openbao-backups` in `gcpRegion` (uniform access; an existing bucket elsewhere is refused) with a 30-day lifecycle rule, the `openbao-backup` service account with `objectCreator` and `objectViewer` on that bucket only (no delete, no overwrite: the lifecycle rule is the only thing that removes snapshots), and — once, when Secret `openbao/openbao-backup-s3` is absent — an HMAC key for it, parked in that Secret as `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`. The chart's snapshot agent (CronJob `openbao-snapshot`, enabled by nidavellir's openbao composition) uploads a Raft snapshot daily at 05:00 UTC over the GCS S3-interop endpoint; HMAC rather than Workload Identity because s3cmd speaks only S3, the same reasoning Mimir's MySQL backups document. Re-runs keep an existing Secret. Requires a `gke_*` kubectl context for the Secret step.
 
 ### Automated DNS (recommended)
 

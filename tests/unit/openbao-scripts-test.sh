@@ -64,8 +64,12 @@ touch "$work/exists.json"
 STUB_CTX="$gke_ctx" bash "$root/openbao-init.sh" gke "$work/exists.json" >/dev/null 2>&1; rc=$?
 check "init: existing output file is refused" "[ $rc -eq 1 ]"
 check "init: existing output file is left alone" "[ ! -s '$work/exists.json' ]"
-STUB_CTX="$gke_ctx" bash "$root/openbao-init.sh" gke "$work/nowhere/out.json" >/dev/null 2>&1; rc=$?
-check "init: unwritable output directory is refused" "[ $rc -eq 1 ]"
+STUB_CTX="docker-desktop" bash "$root/openbao-init.sh" gke "$work/newdir/out.json" >/dev/null 2>&1; rc=$?
+check "init: missing output directory is created before the context check refuses" "[ $rc -ne 0 ] && [ -d '$work/newdir' ]"
+case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*) echo "ok - init: created output directory is 0700 (skipped: no POSIX modes on $(uname -s))" ;;
+    *) check "init: created output directory is 0700" "[ \"\$(stat -c %a '$work/newdir' 2>/dev/null || stat -f %Lp '$work/newdir')\" = 700 ]" ;;
+esac
 STUB_CTX="docker-desktop" bash "$root/openbao-init.sh" gke "$work/out.json" >/dev/null 2>&1; rc=$?
 check "init: gke target on a local context is refused" "[ $rc -ne 0 ]"
 check "init: refused run wrote no output file" "[ ! -e '$work/out.json' ]"
