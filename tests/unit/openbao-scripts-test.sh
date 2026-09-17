@@ -37,8 +37,13 @@ if [[ "$1" == "exec" ]]; then
             fi
             printf '{"initialized":false,"sealed":true,"type":"static"}\n'; exit 3 ;;
         *"bao operator init"*)
+            # The real API refuses -key-shares under an auto seal and
+            # -recovery-shares under Shamir; the stub is a static seal.
+            printf '%s\n' "$*" > "$STUB_STATE/init-args"
+            case "$*" in *-key-shares*) echo "Error initializing: parameters secret_shares,secret_threshold not applicable to seal type static" >&2; exit 2 ;; esac
+            case "$*" in *-recovery-shares=3*-recovery-threshold=2*) ;; *) echo "stub: expected -recovery-shares=3 -recovery-threshold=2" >&2; exit 2 ;; esac
             touch "$STUB_STATE/initialized"
-            printf '{"unseal_keys_b64":["a","b","c"],"recovery_keys_b64":[],"root_token":"stub-root"}\n'; exit 0 ;;
+            printf '{"unseal_keys_b64":[],"recovery_keys_b64":["a","b","c"],"root_token":"stub-root"}\n'; exit 0 ;;
     esac
 fi
 echo "unexpected kubectl $*" >&2; exit 97
@@ -78,6 +83,7 @@ case "$(uname -s)" in
         check "init: keep-file is 0600" "[ \"\$(stat -c %a '$work/out.json' 2>/dev/null || stat -f %Lp '$work/out.json')\" = 600 ]" ;;
 esac
 check "init: Secret was parked" "[ -f '$STUB_STATE/secret' ]"
+check "init: auto seal used recovery shares, not key shares" "grep -q -- '-recovery-shares=3' '$STUB_STATE/init-args' && ! grep -q -- '-key-shares' '$STUB_STATE/init-args'"
 check "init: output names the keep-file, not the material" "grep -q 'out.json' <<<'$out' && ! grep -q 'stub-root' <<<'$out'"
 check "init: no scratch directory left behind" "[ -z \"\$(ls -d \"\${TMPDIR:-/tmp}\"/openbao-?????? 2>/dev/null)\" ]"
 

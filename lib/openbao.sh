@@ -197,10 +197,25 @@ openbao_ensure_initialized() {
         kubectl delete secret -n "$OPENBAO_NS" "$OPENBAO_INIT_SECRET" >/dev/null || return 1
     fi
 
+    # The share flags depend on the seal the server is running: under Shamir
+    # the shares are the unseal keys (-key-shares); under an auto seal the API
+    # refuses those ("secret_shares not applicable to seal type static") and
+    # the shares are RECOVERY keys (-recovery-shares). Same 3/2 split either
+    # way. Found on the first fresh init under the static seal, 2026-09-16.
+    local seal_type shares_desc
+    local -a init_flags
+    seal_type=$(openbao_status_field '.type') || return 1
+    if [[ "$seal_type" == "shamir" ]]; then
+        init_flags=(-key-shares=3 -key-threshold=2)
+        shares_desc="3 unseal shares, threshold 2"
+    else
+        init_flags=(-recovery-shares=3 -recovery-threshold=2)
+        shares_desc="seal $seal_type: 3 recovery shares, threshold 2"
+    fi
     local scratch keep="THE INIT MATERIAL IS AT"
     scratch=$(openbao_scratch_dir) || return 1
-    echo "   🔐 Initializing OpenBao (3 shares, threshold 2); init output goes to $scratch/init.json (0600) until the Secret is confirmed..."
-    if ! ( umask 077; kubectl exec -n "$OPENBAO_NS" "$OPENBAO_POD" -- bao operator init -key-shares=3 -key-threshold=2 -format=json > "$scratch/init.json" ); then
+    echo "   🔐 Initializing OpenBao ($shares_desc); init output goes to $scratch/init.json (0600) until the Secret is confirmed..."
+    if ! ( umask 077; kubectl exec -n "$OPENBAO_NS" "$OPENBAO_POD" -- bao operator init "${init_flags[@]}" -format=json > "$scratch/init.json" ); then
         if [[ -s "$scratch/init.json" ]]; then
             # The server may have initialized before the stream broke; what
             # was captured is the only copy there will ever be.
