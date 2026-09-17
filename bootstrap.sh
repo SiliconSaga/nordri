@@ -74,6 +74,18 @@ set -e
 #               lib/kube-context.sh.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# Helm 4 applies server-side by default, and a RE-RUN on a cluster where ArgoCD
+# has since adopted these releases (Layer 4) then fails with a field-manager
+# conflict on whatever ArgoCD last wrote — seen 2026-09-16 on Traefik's
+# container args, which stopped an otherwise idempotent re-run at Layer 2.6.
+# Forcing the conflict makes bootstrap's values win for a moment; ArgoCD's
+# self-heal reconciles its own values back within its sync interval, which is
+# exactly what helm 3's client-side three-way merge did without saying so.
+# Helm 3 has no such flag, so it is added only on helm 4+.
+HELM_APPLY_FLAGS=()
+case "$(helm version --template '{{.Version}}' 2>/dev/null)" in
+    v[4-9].*) HELM_APPLY_FLAGS=(--force-conflicts) ;;
+esac
 # Shared hydration libraries (extracted from the duplicated inline blocks).
 . "$SCRIPT_DIR/lib/gitea.sh"
 . "$SCRIPT_DIR/lib/hydrate.sh"
@@ -537,7 +549,7 @@ helm repo update
 
 # We install the full Crossplane Core here to ensure CRDs (Composition, Provider, etc.) are established.
 # ArgoCD will later adopt this release because we use the same release name and namespace.
-helm upgrade --install crossplane crossplane-stable/crossplane \
+helm upgrade --install crossplane crossplane-stable/crossplane "${HELM_APPLY_FLAGS[@]}" \
   --namespace crossplane --create-namespace \
   --version 2.1.4
 
@@ -574,7 +586,7 @@ echo "✅ Crossplane Installed."
 echo "🚦 [Layer 2.6] Installing Traefik..."
 helm repo add traefik https://traefik.github.io/charts >/dev/null 2>&1
 
-helm upgrade --install traefik traefik/traefik \
+helm upgrade --install traefik traefik/traefik "${HELM_APPLY_FLAGS[@]}" \
   --namespace kube-system \
   --version 38.0.1 \
   --set providers.kubernetesGateway.enabled=true \
@@ -644,7 +656,7 @@ echo "🔥 [Layer 3] Installing ArgoCD..."
 helm repo add argo https://argoproj.github.io/argo-helm >/dev/null 2>&1
 kubectl create namespace argo --dry-run=client -o yaml | kubectl apply -f -
 
-helm upgrade --install argocd argo/argo-cd --namespace argo \
+helm upgrade --install argocd argo/argo-cd --namespace argo "${HELM_APPLY_FLAGS[@]}" \
   --set dex.enabled=false \
   --set server.insecure=true \
   --set server.extraArgs={--insecure} \
