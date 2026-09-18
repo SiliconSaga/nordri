@@ -552,6 +552,18 @@ openbao-seal-setup)
         --keyring="$SEAL_KEYRING" --location="$SEAL_REGION" --project="$GCP_PROJECT" \
         --member="serviceAccount:${SEAL_SA}" \
         --role=roles/cloudkms.cryptoKeyEncrypterDecrypter >/dev/null
+    # ...plus read on the same key. The gcpckms seal checks the key EXISTS
+    # before it wraps anything (cloudkms.cryptoKeys.get), and
+    # cryptoKeyEncrypterDecrypter does not carry that permission. Without it
+    # the pod dies on start with "Error parsing Seal configuration:
+    # Permission 'cloudkms.cryptoKeys.get' denied" — found on the first fresh
+    # init under KMS, 2026-09-17. cloudkms.viewer is read-only and, bound on
+    # the key rather than the ring or project, exposes only this key's
+    # metadata.
+    retry_gcloud gcloud kms keys add-iam-policy-binding "$SEAL_KEY" \
+        --keyring="$SEAL_KEYRING" --location="$SEAL_REGION" --project="$GCP_PROJECT" \
+        --member="serviceAccount:${SEAL_SA}" \
+        --role=roles/cloudkms.viewer >/dev/null
 
     # Workload Identity binding for the KSA the OpenBao chart creates. The KSA is
     # plain `openbao` in namespace `openbao` because the composition sets
