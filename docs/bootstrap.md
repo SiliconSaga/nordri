@@ -141,7 +141,7 @@ cert-manager and the Gateway deploy automatically via ArgoCD.
 ./gke-provision.sh openbao-seal-setup
 ```
 
-Enables Cloud KMS, creates key ring `openbao` / key `unseal` in the region `cluster-identity-gke.yaml` names as `gcpRegion` (read from that manifest, not hardcoded; a `GCP_REGION` that disagrees is an error), a service account with encrypt/decrypt on that key only, and the Workload Identity binding for `openbao/openbao`. Idempotent. On a cluster whose OpenBao is already initialized, follow it with the one-time seal migration in nidavellir's `docs/secrets-management.md` — or, when the vault holds nothing worth keeping, wipe it and init fresh under the seal with `./openbao-init.sh` (the go-live path).
+Enables Cloud KMS, creates key ring `openbao` / key `unseal` in the region `cluster-identity-gke.yaml` names as `gcpRegion` (read from that manifest, not hardcoded; a `GCP_REGION` that disagrees is an error), a service account with encrypt/decrypt plus read (`cloudkms.viewer`, because the seal checks the key exists before wrapping) on that key only, and the Workload Identity binding for `openbao/openbao`. Idempotent. On a cluster whose OpenBao is already initialized, follow it with the one-time seal migration in nidavellir's `docs/secrets-management.md` — or, when the vault holds nothing worth keeping, wipe it and init fresh under the seal with `./openbao-init.sh` (the go-live path).
 
 ### OpenBao snapshot backups (one-time)
 

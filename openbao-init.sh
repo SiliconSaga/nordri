@@ -61,7 +61,10 @@ OUT_DIR="$(dirname "$OUT")"
 # shared or world-readable directory (a bare home directory is often 0755 —
 # use a subdirectory, e.g. ~/openbao-init/gke.json).
 if [[ ! -d "$OUT_DIR" ]]; then
-    if ! mkdir -p -m 0700 "$OUT_DIR"; then
+    # umask rather than -m: on Git Bash `mkdir -m` fails outright ("cannot
+    # change permissions") on NTFS, while a umask-governed mkdir succeeds
+    # there and still yields 0700 on a real POSIX filesystem.
+    if ! ( umask 077; mkdir -p "$OUT_DIR" ); then
         echo "❌ Cannot create $OUT_DIR for the init material." >&2
         exit 1
     fi
