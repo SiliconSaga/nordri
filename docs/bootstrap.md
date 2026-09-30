@@ -74,8 +74,9 @@ kubectl get secret -n gitea gitea-admin-credentials \
 - GKE skips this; its OpenBao seals through Cloud KMS via Workload Identity, provisioned once by `./gke-provision.sh openbao-seal-setup` (see below)
 
 ### Layer 3 — ArgoCD
-- Installs **ArgoCD** via Helm (`argocd` namespace)
+- Installs **ArgoCD** via Helm (`argo` namespace, chart pinned to `ARGOCD_CHART_VERSION`, controller metrics on)
 - Applies the Root Application pointing at internal Gitea → ArgoCD takes over
+- Layer 4 then adopts the release under `platform/fundamentals/apps/argocd.yaml` (same chart version, same values), so ArgoCD updates itself from Git from then on; the metrics Service it renders is what Heimdall's `ArgoCDApplicationUnknown` rule reads
 
 ### Layer 4 — Fundamentals (ArgoCD-managed)
 ArgoCD syncs the Nordri app-of-apps. Components vary by target:
@@ -84,6 +85,7 @@ ArgoCD syncs the Nordri app-of-apps. Components vary by target:
 |---|---|---|
 | Traefik (adopted by ArgoCD) | ✅ | ✅ |
 | Crossplane (adopted by ArgoCD) | ✅ | ✅ |
+| ArgoCD (adopted by ArgoCD) | ✅ | ✅ |
 | Velero | ✅ (placeholder creds) | ✅ (Garage S3) |
 | Garage S3 | ❌ | ✅ |
 
@@ -100,7 +102,7 @@ Vegvísir (Nidavellir Tier 2) via ArgoCD sync-waves after Nordri stabilises.
 
 ### Layer 5b — OpenBao init, configure, seed
 
-Runs after ArgoCD has deployed OpenBao (nidavellir, sync-wave 10); waits up to ten minutes for the pod, then skips with a note if it never appears. Everything here is idempotent, so a re-run on a configured cluster changes nothing. Functions live in `lib/openbao.sh`.
+Runs after ArgoCD has deployed OpenBao (nidavellir, sync-wave 10); waits up to ten minutes for the pod, then skips with a note if it never appears. Everything here is idempotent, so a re-run on a configured cluster changes nothing. Functions live in `lib/openbao.sh`. Configure also writes the `forgejo-init` policy and role (create-only writes under `secret/forgejo`, for Forgejo's credentials Job — nidavellir `docs/forgejo.md`); on a live vault, `./openbao-configure.sh <target> [realm]` is how a new role reaches it.
 
 - **Init and unseal** (homelab; on GKE only with `OPENBAO_AUTO_INIT=1`): `bao operator init` with 3 shares / threshold 2, material parked in Secret `openbao/openbao-init` (`init.json` and `root_token` keys, the layout the runbooks and tests read). A Shamir instance is unsealed from two parked shares; an instance sealed on an auto seal is reported as a broken seal backend instead. A leftover `openbao-init` next to an uninitialized instance (wiped storage) is kept under a timestamped name and a fresh init proceeds. On GKE without the flag, init stays a human step: shares to the password manager first, then the material parked in Secret `openbao/openbao-init` (`init.json` plus a `root_token` key, per nidavellir's runbook) — Layer 5b authenticates through that Secret, so without it a re-run reports what to park and does nothing else. With it, re-running bootstrap does the rest. Init or unseal failing under automatic mode stops bootstrap outright rather than finishing green with an unusable vault.
 - **Configure**: KV v2 at `secret/` (an existing mount must already be KV v2, or the run stops), Kubernetes auth trusting the in-cluster API, the read-only `eso-read` policy, `eso-role` bound to External Secrets' ServiceAccount, the `openbao-backup` policy and role (read on `sys/storage/raft/snapshot` only, bound to the chart's `openbao-snapshot` ServiceAccount so the daily snapshot CronJob can copy the vault out encrypted and read nothing else), and the `secret/demo` canary. This is realm plan Task A1.5 Steps 3–4, no longer typed by hand. "Absent" means an explicit not-found from OpenBao; any other metadata error stops the run rather than risking a write over a live value.

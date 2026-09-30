@@ -661,10 +661,15 @@ echo "🔥 [Layer 3] Installing ArgoCD..."
 helm repo add argo https://argoproj.github.io/argo-helm >/dev/null 2>&1
 kubectl create namespace argo --dry-run=client -o yaml | kubectl apply -f -
 
-helm upgrade --install argocd argo/argo-cd --namespace argo "${HELM_APPLY_FLAGS[@]}" \
+# Pinned, and mirrored value for value by platform/fundamentals/apps/argocd.yaml,
+# which adopts this release under GitOps once Layer 4 syncs: keep the two in
+# step or the adoption's first sync is a chart roll instead of a no-op diff.
+ARGOCD_CHART_VERSION="10.9.1"
+helm upgrade --install argocd argo/argo-cd --namespace argo --version "$ARGOCD_CHART_VERSION" "${HELM_APPLY_FLAGS[@]}" \
   --set dex.enabled=false \
   --set server.insecure=true \
   --set server.extraArgs={--insecure} \
+  --set controller.metrics.enabled=true \
   --set configs.cm."kustomize\.buildOptions"="--load-restrictor LoadRestrictionsNone --enable-helm"
 
 echo "⏳ Waiting for ArgoCD to become ready..."

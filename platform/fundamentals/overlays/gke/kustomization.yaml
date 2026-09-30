@@ -5,6 +5,7 @@ resources:
   # Shared Apps
   - ../../apps/traefik.yaml
   - ../../apps/crossplane.yaml
+  - ../../apps/argocd.yaml
 
   # GKE Specific Apps
   # Velero is environment-specific, not shared: GCP plugin + GCS + Workload
