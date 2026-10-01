@@ -76,7 +76,7 @@ kubectl get secret -n gitea gitea-admin-credentials \
 ### Layer 3 — ArgoCD
 - Installs **ArgoCD** via Helm (`argo` namespace, chart pinned to `ARGOCD_CHART_VERSION`, controller metrics on)
 - Applies the Root Application pointing at internal Gitea → ArgoCD takes over
-- Layer 4 then adopts the release under `platform/fundamentals/apps/argocd.yaml` (same chart version, same values), so ArgoCD updates itself from Git from then on; the metrics Service it renders is what Heimdall's `ArgoCDApplicationUnknown` rule reads
+- Layer 4 then adopts the release under `platform/fundamentals/apps/argocd.yaml` (same chart version, same values), so ArgoCD updates itself from Git from then on; the metrics Service it renders is what Heimdall's `ArgoCDApplicationUnknown` rule reads. On a cluster bootstrapped before the pin the adoption is an in-place upgrade rather than a no-op (homelab rolled 10.1.2 → 10.9.1 cleanly on 2026-10-01); expect the same on GKE, which was at 9.5.14
 
 ### Layer 4 — Fundamentals (ArgoCD-managed)
 ArgoCD syncs the Nordri app-of-apps. Components vary by target:

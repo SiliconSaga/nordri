@@ -3,9 +3,12 @@
 # bootstrap.sh Layer 3 `helm upgrade --install`s this exact chart version with
 # these exact values (the chicken-and-egg step; keep the two in step), then
 # this Application adopts the release the way traefik.yaml and crossplane.yaml
-# adopt theirs: the first sync is a no-op diff, and from then on ArgoCD
-# updates itself from Git. The chart is designed for that; a controller roll
-# mid-sync resumes cleanly. This is bootstrap maturity, not durable.
+# adopt theirs, and from then on ArgoCD updates itself from Git. On a cluster
+# bootstrapped at this pin the first sync is a no-op diff. On one installed
+# earlier it is an upgrade: the adoption rolls ArgoCD to this version in
+# place (homelab went 10.1.2 → 10.9.1 on 2026-10-01, every pod replaced, and
+# the sync it was mid-way through resumed and finished). The chart is
+# designed for that. This is bootstrap maturity, not durable.
 #
 # controller.metrics.enabled is the reason this exists now: it renders Service
 # argocd-application-controller-metrics (port http-metrics, 8082), which
