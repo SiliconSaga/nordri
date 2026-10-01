@@ -351,15 +351,18 @@ EOF
     # Forgejo's credentials Job (nidavellir forgejo/composition.yaml, realm
     # Forgejo day-2 Phase 2 design) mints the admin and break-glass passwords
     # in-cluster and writes them here create-only: every write carries
-    # options.cas=0, which KV v2 refuses if any version exists. `update` is in
-    # the policy only because the data endpoint demands it for a cas write;
-    # the Job never sends a write without cas=0. Both the bare path and the
-    # /* form are needed — the admin credential lives at secret/forgejo
-    # itself, and a trailing /* never matches the path it hangs off.
+    # options.cas=0, and the policy grants `create` alone. Verified live
+    # (2026-10-01): KV v2 authorizes a write to an absent path as `create`
+    # and to an existing one as `update`, so `create` is all a cas=0 write
+    # to a new path needs — and without `update` even a plain overwrite is
+    # refused with 403, whereas with it the overwrite went through. Both the
+    # bare path and the /* form are needed — the admin credential lives at
+    # secret/forgejo itself, and a trailing /* never matches the path it
+    # hangs off.
     echo "   • forgejo-init policy and role (Forgejo's credentials Job)"
     openbao_run_with_token 'bao policy write forgejo-init - >/dev/null' <<'EOF' || return 1
-path "secret/data/forgejo" { capabilities = ["create", "update"] }
-path "secret/data/forgejo/*" { capabilities = ["create", "update"] }
+path "secret/data/forgejo" { capabilities = ["create"] }
+path "secret/data/forgejo/*" { capabilities = ["create"] }
 path "secret/metadata/forgejo" { capabilities = ["read"] }
 path "secret/metadata/forgejo/*" { capabilities = ["read"] }
 EOF
