@@ -306,7 +306,9 @@ openbao_ensure_unsealed() {
 # and the secret/demo canary — plus the openbao-backup policy and role the
 # chart's snapshot agent (CronJob openbao-snapshot, realm go-live design)
 # logs in with: it may read sys/storage/raft/snapshot and nothing else, so
-# the job can copy the vault out encrypted but can read no secret. Idempotent:
+# the job can copy the vault out encrypted but can read no secret — and the
+# forgejo-init policy and role Forgejo's credentials Job writes with (create-
+# only under secret/forgejo; realm Forgejo day-2 Phase 2 design). Idempotent:
 # an existing secret/ mount is accepted only if it is KV v2 (the eso-read
 # policy grants secret/data/*, which a KV v1 mount never serves), an existing
 # auth method is left alone, policies and roles are rewritten to the same
@@ -346,6 +348,25 @@ EOF
 path "sys/storage/raft/snapshot" { capabilities = ["read"] }
 EOF
     openbao_run_with_token 'bao write auth/kubernetes/role/openbao-backup bound_service_account_names=openbao-snapshot bound_service_account_namespaces=openbao policies=openbao-backup ttl=1h >/dev/null' </dev/null || return 1
+    # Forgejo's credentials Job (nidavellir forgejo/composition.yaml, realm
+    # Forgejo day-2 Phase 2 design) mints the admin and break-glass passwords
+    # in-cluster and writes them here create-only: every write carries
+    # options.cas=0, and the policy grants `create` alone. Verified live
+    # (2026-10-01): KV v2 authorizes a write to an absent path as `create`
+    # and to an existing one as `update`, so `create` is all a cas=0 write
+    # to a new path needs — and without `update` even a plain overwrite is
+    # refused with 403, whereas with it the overwrite went through. Both the
+    # bare path and the /* form are needed — the admin credential lives at
+    # secret/forgejo itself, and a trailing /* never matches the path it
+    # hangs off.
+    echo "   • forgejo-init policy and role (Forgejo's credentials Job)"
+    openbao_run_with_token 'bao policy write forgejo-init - >/dev/null' <<'EOF' || return 1
+path "secret/data/forgejo" { capabilities = ["create"] }
+path "secret/data/forgejo/*" { capabilities = ["create"] }
+path "secret/metadata/forgejo" { capabilities = ["read"] }
+path "secret/metadata/forgejo/*" { capabilities = ["read"] }
+EOF
+    openbao_run_with_token 'bao write auth/kubernetes/role/forgejo-init bound_service_account_names=forgejo-init bound_service_account_namespaces=forgejo policies=forgejo-init ttl=1h >/dev/null' </dev/null || return 1
     echo "   • secret/demo canary"
     local canary
     canary=$(openbao_kv_path_state secret/demo) || return 1

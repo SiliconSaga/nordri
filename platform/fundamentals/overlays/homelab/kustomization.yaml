@@ -5,6 +5,7 @@ resources:
   # Shared Apps
   - ../../apps/traefik.yaml
   - ../../apps/crossplane.yaml
+  - ../../apps/argocd.yaml
 
   # Shared Manifests
   - ../../manifests/crossplane-providers.yaml

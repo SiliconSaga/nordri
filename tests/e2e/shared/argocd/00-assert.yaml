@@ -45,3 +45,26 @@ status:
     status: Healthy
   sync:
     status: Synced
+---
+# ArgoCD adopting its own Layer 3 release (apps/argocd.yaml).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: argocd
+  namespace: argo
+status:
+  health:
+    status: Healthy
+  sync:
+    status: Synced
+---
+# controller.metrics.enabled — the Service Heimdall scrapes for argocd_app_info.
+apiVersion: v1
+kind: Service
+metadata:
+  name: argocd-application-controller-metrics
+  namespace: argo
+spec:
+  ports:
+    - name: http-metrics
+      port: 8082
