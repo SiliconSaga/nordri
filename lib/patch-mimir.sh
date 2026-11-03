@@ -62,7 +62,12 @@ patch_mimir_tree() {
     else
         sed -i "s|^\( *\)path: shared$|\1path: $overlay|g" "$shared_app"
     fi
-    if ! grep -q "path: $overlay" "$shared_app"; then
+    # Anchored to the WHOLE line, not a substring. `grep -q "path: $overlay"`
+    # would accept `path: shared/overlays/gke-old` as a successful patch for
+    # target gke — a value the sed above does not touch, because it only matches
+    # the bare `path: shared`. The function would then return 0 on a manifest it
+    # never changed, which is the exact silent success this guard exists to deny.
+    if ! grep -q "^ *path: $overlay$" "$shared_app"; then
         echo "❌ mimir shared-clusters overlay path not patched — the 'path: shared' placeholder may have changed." >&2
         return 1
     fi

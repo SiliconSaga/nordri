@@ -38,6 +38,15 @@ printf 'spec:\n  source:\n    path: RENAMED\n' > "$tree/argocd/apps/shared-clust
 patch_mimir_tree "$tree" gke >/dev/null 2>&1; rc=$?
 check "renamed path placeholder returns non-zero" "[ $rc -ne 0 ]"
 
+# A path that merely STARTS WITH the overlay must not satisfy the check. The sed
+# leaves `overlays/gke-old` alone (it only matches a bare `path: shared`), so a
+# substring grep would return 0 on a manifest it never touched.
+seed_tree
+printf 'spec:\n  source:\n    path: shared/overlays/gke-old\n' > "$tree/argocd/apps/shared-clusters.yaml"
+patch_mimir_tree "$tree" gke >/dev/null 2>&1; rc=$?
+check "overlay-prefixed path returns non-zero" "[ $rc -ne 0 ]"
+check "overlay-prefixed path left unchanged" "grep -q 'path: shared/overlays/gke-old' '$tree/argocd/apps/shared-clusters.yaml'"
+
 # A 'path:' in prose must not be mistaken for the field (the sed is anchored).
 seed_tree
 printf 'spec:\n  source:\n    path: shared\n# note: path: shared used to be flat\n' \
