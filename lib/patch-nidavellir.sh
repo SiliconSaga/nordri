@@ -17,7 +17,8 @@ patch_nidavellir_tree() {
     local tree="$1" target="$2"
     local vegvisir_app="$tree/apps/vegvisir-app.yaml"
     local tailscale_app="$tree/apps/tailscale-operator-app.yaml"
-    local f ts_hostname machine
+    local ntfy_claim="$tree/ntfy/claim.yaml"
+    local f ts_hostname ntfy_hostname node machine
     # Validate the caller-supplied target before any sed: an empty/unknown target
     # would rewrite `overlays/homelab` → `overlays/<bad>` AND still pass the later
     # verification (which greps the same substituted value), silently corrupting
@@ -31,27 +32,35 @@ patch_nidavellir_tree() {
     esac
     # Guard: these apps must exist in the hydrated tree; a missing path (e.g. a
     # nidavellir apps/ rename) would otherwise abort with a bare `sed` error.
-    for f in "$vegvisir_app" "$tailscale_app"; do
+    for f in "$vegvisir_app" "$tailscale_app" "$ntfy_claim"; do
         if [[ ! -f "$f" ]]; then
             echo "❌ Expected nidavellir manifest missing: ${f#"$tree"/} — has apps/ been renamed?" >&2
             return 1
         fi
     done
+    # One identity, two device names derived from it. ntfy is stamped from the
+    # same value as the operator so a cluster's tailnet devices agree about which
+    # box they belong to — ntfy's claim previously hardcoded `ntfy-gke`, so every
+    # homelab cluster was requesting GKE's device name.
     if [[ "$target" == "gke" ]]; then
-        ts_hostname="tailscale-operator-gke"
+        node="gke"
     else
         machine="$(scutil --get LocalHostName 2>/dev/null || hostname -s 2>/dev/null || hostname)"
         machine="$(printf '%s' "$machine" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9-' '-' | sed 's/^-*//;s/-*$//')"
         [[ -z "$machine" ]] && machine="local"
-        ts_hostname="tailscale-operator-$machine"
+        node="$machine"
     fi
+    ts_hostname="tailscale-operator-$node"
+    ntfy_hostname="ntfy-$node"
     # Portable sed -i (BSD/macOS needs '' as the backup extension, GNU/MSYS must not).
     if [[ "$OSTYPE" == "darwin"* ]]; then
         sed -i '' "s|path: vegvisir/manifests/overlays/homelab|path: vegvisir/manifests/overlays/$target|g" "$vegvisir_app"
         sed -i '' "s|tailscale-operator-MACHINE|$ts_hostname|g" "$tailscale_app"
+        sed -i '' "s|ntfy-MACHINE|$ntfy_hostname|g" "$ntfy_claim"
     else
         sed -i "s|path: vegvisir/manifests/overlays/homelab|path: vegvisir/manifests/overlays/$target|g" "$vegvisir_app"
         sed -i "s|tailscale-operator-MACHINE|$ts_hostname|g" "$tailscale_app"
+        sed -i "s|ntfy-MACHINE|$ntfy_hostname|g" "$ntfy_claim"
     fi
     # Verify the substitutions took effect — sed exits 0 even when nothing
     # matched, so a renamed placeholder upstream would silently push the wrong
@@ -62,6 +71,16 @@ patch_nidavellir_tree() {
     fi
     if ! grep -q "$ts_hostname" "$tailscale_app"; then
         echo "❌ tailscale operator hostname not stamped — the 'tailscale-operator-MACHINE' placeholder may have changed." >&2
+        return 1
+    fi
+    # Both the hostname and the base-url carry the placeholder, so a leftover is
+    # a mismatch between the device name ntfy claims and the URL it advertises.
+    if grep -q "ntfy-MACHINE" "$ntfy_claim"; then
+        echo "❌ ntfy hostname not stamped — an 'ntfy-MACHINE' placeholder survived in ntfy/claim.yaml." >&2
+        return 1
+    fi
+    if ! grep -q "$ntfy_hostname" "$ntfy_claim"; then
+        echo "❌ ntfy hostname not stamped — the 'ntfy-MACHINE' placeholder may have changed." >&2
         return 1
     fi
     printf '%s' "$ts_hostname"
