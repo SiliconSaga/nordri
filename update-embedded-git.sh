@@ -56,6 +56,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$SCRIPT_DIR/lib/gitea.sh"
 . "$SCRIPT_DIR/lib/hydrate.sh"
 . "$SCRIPT_DIR/lib/patch-nidavellir.sh"
+. "$SCRIPT_DIR/lib/patch-mimir.sh"
 . "$SCRIPT_DIR/lib/patch-velero.sh"
 . "$SCRIPT_DIR/lib/patch-urls.sh"
 . "$SCRIPT_DIR/lib/kube-context.sh"
@@ -298,7 +299,7 @@ echo "✅ Nordri configuration updated."
 # Also push Nidavellir so ArgoCD picks up any changes there too.
 hydrate_working_tree_repo "$NIDAVELLIR_DIR" "$NIDAVELLIR_GITEA_REPO" "Update for $TARGET" patch_nidavellir_tree
 
-hydrate_working_tree_repo "$MIMIR_DIR" "$MIMIR_GITEA_REPO" "Update for $TARGET"
+hydrate_working_tree_repo "$MIMIR_DIR" "$MIMIR_GITEA_REPO" "Update for $TARGET" patch_mimir_tree
 
 hydrate_working_tree_repo "$HEIMDALL_DIR" "$HEIMDALL_GITEA_REPO" "Update for $TARGET"
 
