@@ -8,7 +8,12 @@ check() { if eval "$2"; then echo "ok - $1"; else echo "NOT OK - $1"; fails=$((f
 
 # Arrange: a fake hydrated mimir tree — the Application carrying the generic
 # path, plus both realm overlays the patch is allowed to point at.
-tree="$(mktemp -d)"; trap 'rm -rf "$tree"' EXIT
+# Bail if mktemp fails rather than carrying an empty $tree: every path below is
+# built as "$tree/...", so an empty one turns `mkdir -p "$tree/argocd"` into
+# /argocd and the teardown's `rm -rf` into a swing at the filesystem root.
+tree="$(mktemp -d)" || { echo "NOT OK - could not create a temp dir" >&2; exit 1; }
+[ -n "$tree" ] && [ -d "$tree" ] || { echo "NOT OK - temp dir is not usable" >&2; exit 1; }
+trap 'rm -rf "$tree"' EXIT
 seed_tree() {
     mkdir -p "$tree/argocd/apps" "$tree/shared/overlays/gke" "$tree/shared/overlays/homelab"
     printf 'spec:\n  source:\n    path: shared\n' > "$tree/argocd/apps/shared-clusters.yaml"
