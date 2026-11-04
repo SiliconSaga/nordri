@@ -95,6 +95,7 @@ esac
 . "$SCRIPT_DIR/lib/patch-urls.sh"
 . "$SCRIPT_DIR/lib/openbao.sh"
 . "$SCRIPT_DIR/lib/kube-context.sh"
+. "$SCRIPT_DIR/lib/garage.sh"
 TARGET=$1
 # Capture explicit GITEA_PASS env input here without applying a default —
 # the resolver populates the value below. Username is fixed to
@@ -802,17 +803,15 @@ if [[ "$TARGET" == "homelab" ]]; then
             echo "✅ Garage layout assigned."
 
             # Create API key for Velero
-            echo "   Creating Garage API key for Velero..."
-            KEY_OUTPUT=$(kubectl exec -n garage garage-0 -- /garage key create velero-service-key 2>/dev/null) || {
-                echo "   Key may already exist, retrieving..."
-                # Garage 2.x prints "(redacted)" for the secret unless asked;
-                # without --show-secret a re-run parsed that literal and
-                # rewrote the Velero Secret with it.
-                KEY_OUTPUT=$(kubectl exec -n garage garage-0 -- /garage key info --show-secret velero-service-key 2>/dev/null) || {
-                    echo "⚠️  Could not create or find Garage key. Skipping Velero credential setup."
-                    KEY_OUTPUT=""
-                }
-            }
+            echo "   Finding or creating Garage API key for Velero..."
+            VELERO_SCRATCH=$(umask 077 && mktemp -d "${TMPDIR:-/tmp}/velero-garage-XXXXXX")
+            if garage_key_ensure velero-service-key "$VELERO_SCRATCH/key.txt"; then
+                KEY_OUTPUT=$(cat "$VELERO_SCRATCH/key.txt")
+            else
+                echo "⚠️  Could not create or find Garage key. Skipping Velero credential setup."
+                KEY_OUTPUT=""
+            fi
+            rm -rf "$VELERO_SCRATCH"
 
             # Parse key ID and secret from output
             KEY_ID=$(echo "$KEY_OUTPUT" | grep -i "Key ID" | awk '{print $NF}')
@@ -832,19 +831,24 @@ if [[ "$TARGET" == "homelab" ]]; then
                     echo "   Bucket may already exist. Continuing..."
                 }
 
-                # Grant access
-                kubectl exec -n garage garage-0 -- /garage bucket allow velero-backups --read --write --key velero-service-key 2>/dev/null || true
-                echo "✅ Garage bucket 'velero-backups' ready."
+                # Grant by ID, not name, and do not write a Secret for a key
+                # that cannot reach the bucket: that is exactly the state that
+                # left homelab's storage location Unavailable unnoticed.
+                if ! kubectl exec -n garage garage-0 -- /garage bucket allow velero-backups --read --write --key "$KEY_ID" >/dev/null 2>&1; then
+                    echo "❌ Could not grant $KEY_ID read/write on Garage bucket velero-backups. Skipping the Velero Secret; re-run bootstrap to retry." >&2
+                else
+                    echo "✅ Garage bucket 'velero-backups' ready."
 
-                # Create Velero credentials secret
-                echo "   Creating Velero credentials secret..."
-                kubectl create namespace velero --dry-run=client -o yaml | kubectl apply -f -
-                kubectl create secret generic velero-credentials -n velero \
-                  --from-literal=cloud="[default]
+                    # Create Velero credentials secret
+                    echo "   Creating Velero credentials secret..."
+                    kubectl create namespace velero --dry-run=client -o yaml | kubectl apply -f -
+                    kubectl create secret generic velero-credentials -n velero \
+                      --from-literal=cloud="[default]
 aws_access_key_id=$KEY_ID
 aws_secret_access_key=$KEY_SECRET" \
-                  --dry-run=client -o yaml | kubectl apply -f -
-                echo "✅ Velero credentials secret created."
+                      --dry-run=client -o yaml | kubectl apply -f -
+                    echo "✅ Velero credentials secret created."
+                fi
             fi
 
             # OpenBao snapshot agent (realm go-live design, 2026-09-16): its
@@ -861,9 +865,7 @@ aws_secret_access_key=$KEY_SECRET" \
             # --from-literal; bringing it to the same shape is a follow-up.
             echo "   Creating Garage API key for the OpenBao snapshot agent..."
             OB_SCRATCH=$(umask 077 && mktemp -d "${TMPDIR:-/tmp}/openbao-garage-XXXXXX")
-            if ! ( umask 077; kubectl exec -n garage garage-0 -- /garage key create openbao-backup-key > "$OB_SCRATCH/key.txt" 2>/dev/null ); then
-                ( umask 077; kubectl exec -n garage garage-0 -- /garage key info --show-secret openbao-backup-key > "$OB_SCRATCH/key.txt" 2>/dev/null ) || : > "$OB_SCRATCH/key.txt"
-            fi
+            garage_key_ensure openbao-backup-key "$OB_SCRATCH/key.txt" || : > "$OB_SCRATCH/key.txt"
             OB_KEY_ID=$(grep -i "Key ID" "$OB_SCRATCH/key.txt" | awk '{print $NF}')
             ( umask 077; grep -i "Secret" "$OB_SCRATCH/key.txt" | awk '{print $NF}' | tr -d '\r\n' > "$OB_SCRATCH/secret" )
             if [[ -z "$OB_KEY_ID" || ! -s "$OB_SCRATCH/secret" ]] || grep -q '(redacted)' "$OB_SCRATCH/secret"; then
@@ -879,8 +881,8 @@ aws_secret_access_key=$KEY_SECRET" \
                     echo "❌ Garage bucket openbao-backups could not be created and does not exist." >&2
                     exit 1
                 fi
-                if ! kubectl exec -n garage garage-0 -- /garage bucket allow openbao-backups --read --write --key openbao-backup-key >/dev/null 2>&1; then
-                    echo "❌ Could not grant openbao-backup-key read/write on Garage bucket openbao-backups." >&2
+                if ! kubectl exec -n garage garage-0 -- /garage bucket allow openbao-backups --read --write --key "$OB_KEY_ID" >/dev/null 2>&1; then
+                    echo "❌ Could not grant openbao-backup-key ($OB_KEY_ID) read/write on Garage bucket openbao-backups." >&2
                     exit 1
                 fi
                 echo "✅ Garage bucket 'openbao-backups' ready."
