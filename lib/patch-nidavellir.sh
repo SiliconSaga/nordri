@@ -79,8 +79,21 @@ patch_nidavellir_tree() {
         echo "❌ ntfy hostname not stamped — an 'ntfy-MACHINE' placeholder survived in ntfy/claim.yaml." >&2
         return 1
     fi
-    if ! grep -q "$ntfy_hostname" "$ntfy_claim"; then
-        echo "❌ ntfy hostname not stamped — the 'ntfy-MACHINE' placeholder may have changed." >&2
+    # A nidavellir checkout from before the placeholder still hardcodes ntfy-gke.
+    # That is right for GKE and wrong everywhere else, so homelab refuses it
+    # rather than claiming GKE's device name.
+    if [[ "$target" != "gke" ]] && grep -Eq '^[[:space:]]*tailscaleHostname:[[:space:]]*"?ntfy-gke"?[[:space:]]*$' "$ntfy_claim"; then
+        echo "❌ ntfy/claim.yaml hardcodes ntfy-gke: this nidavellir checkout predates the ntfy-MACHINE placeholder. Update nidavellir and re-run." >&2
+        return 1
+    fi
+    # Each field is checked on its own: a match in one must not cover for the
+    # other, or the device name and the advertised URL could disagree.
+    if ! grep -Eq "^[[:space:]]*tailscaleHostname:[[:space:]]*\"?$ntfy_hostname\"?[[:space:]]*$" "$ntfy_claim"; then
+        echo "❌ ntfy tailscaleHostname is not $ntfy_hostname — the 'ntfy-MACHINE' placeholder may have changed." >&2
+        return 1
+    fi
+    if ! grep -Eq "^[[:space:]]*baseUrl:[[:space:]]*\"?https?://$ntfy_hostname\." "$ntfy_claim"; then
+        echo "❌ ntfy baseUrl does not point at $ntfy_hostname — the 'ntfy-MACHINE' placeholder may have changed." >&2
         return 1
     fi
     printf '%s' "$ts_hostname"

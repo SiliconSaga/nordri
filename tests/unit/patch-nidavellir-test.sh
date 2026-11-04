@@ -62,6 +62,47 @@ printf 'tailscaleHostname: ntfy-MACHINE\nbaseUrl: "http://ntfy-MACHINE.ts.net"\n
 patch_nidavellir_tree "$tree" homelab >/dev/null 2>&1; rc=$?
 check "all ntfy placeholders are stamped, not just the first" "! grep -q 'ntfy-MACHINE' '$tree/ntfy/claim.yaml'"
 
+# Each ntfy field must carry the stamped name: a placeholder-free baseUrl that
+# points elsewhere must not pass on the strength of the hostname alone.
+seed_tree
+printf 'tailscaleHostname: ntfy-MACHINE\nbaseUrl: "http://ntfy-elsewhere.tailf5b47a.ts.net"\n' \
+    > "$tree/ntfy/claim.yaml"
+patch_nidavellir_tree "$tree" homelab >/dev/null 2>&1; rc=$?
+check "a baseUrl that disagrees with the hostname returns non-zero" "[ $rc -ne 0 ]"
+seed_tree
+printf 'tailscaleHostname: ntfy-elsewhere\nbaseUrl: "http://ntfy-MACHINE.tailf5b47a.ts.net"\n' \
+    > "$tree/ntfy/claim.yaml"
+patch_nidavellir_tree "$tree" homelab >/dev/null 2>&1; rc=$?
+check "a hostname that disagrees with the baseUrl returns non-zero" "[ $rc -ne 0 ]"
+
+# The real claim is indented under spec.parameters; the field checks must
+# still find it there.
+seed_tree
+printf 'spec:\n  parameters:\n    tailscaleHostname: ntfy-MACHINE\n    baseUrl: "http://ntfy-MACHINE.tailf5b47a.ts.net"\n' \
+    > "$tree/ntfy/claim.yaml"
+patch_nidavellir_tree "$tree" homelab >/dev/null 2>&1; rc=$?
+check "an indented claim is stamped and passes" "[ $rc -eq 0 ]"
+
+# The real claim's comments mention ntfy-gke while explaining the history; a
+# comment is not a stale claim.
+seed_tree
+printf '# These were hardcoded to ntfy-gke before.\ntailscaleHostname: ntfy-MACHINE\nbaseUrl: "http://ntfy-MACHINE.tailf5b47a.ts.net"\n' \
+    > "$tree/ntfy/claim.yaml"
+patch_nidavellir_tree "$tree" homelab >/dev/null 2>&1; rc=$?
+check "ntfy-gke in a comment is not a stale claim" "[ $rc -eq 0 ]"
+
+# A nidavellir checkout from before the placeholder hardcodes ntfy-gke. Homelab
+# must refuse it; GKE accepts it, since ntfy-gke is GKE's own name.
+seed_tree
+printf 'tailscaleHostname: ntfy-gke\nbaseUrl: "http://ntfy-gke.tailf5b47a.ts.net"\n' > "$tree/ntfy/claim.yaml"
+patch_nidavellir_tree "$tree" homelab > /dev/null 2> "$tree/stale.err"; rc=$?
+check "a stale ntfy-gke claim on homelab returns non-zero" "[ $rc -ne 0 ]"
+check "the stale-claim failure says to update nidavellir" "grep -q 'predates the ntfy-MACHINE placeholder' '$tree/stale.err'"
+seed_tree
+printf 'tailscaleHostname: ntfy-gke\nbaseUrl: "http://ntfy-gke.tailf5b47a.ts.net"\n' > "$tree/ntfy/claim.yaml"
+patch_nidavellir_tree "$tree" gke >/dev/null 2>&1; rc=$?
+check "a stale ntfy-gke claim on gke still passes" "[ $rc -eq 0 ]"
+
 # Missing file must fail loudly.
 seed_tree
 rm -f "$tree/apps/vegvisir-app.yaml"
