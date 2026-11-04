@@ -90,6 +90,7 @@ esac
 . "$SCRIPT_DIR/lib/gitea.sh"
 . "$SCRIPT_DIR/lib/hydrate.sh"
 . "$SCRIPT_DIR/lib/patch-nidavellir.sh"
+. "$SCRIPT_DIR/lib/patch-mimir.sh"
 . "$SCRIPT_DIR/lib/patch-velero.sh"
 . "$SCRIPT_DIR/lib/patch-urls.sh"
 . "$SCRIPT_DIR/lib/openbao.sh"
@@ -523,7 +524,7 @@ hydrate_working_tree_repo "$NIDAVELLIR_DIR" "$NIDAVELLIR_GITEA_REPO" "Hydration 
 
 # Also push Mimir to Gitea so ArgoCD can deploy data service operators + XRDs.
 # Mimir is referenced by nidavellir/apps/mimir-app.yaml (sync-wave 6).
-hydrate_working_tree_repo "$MIMIR_DIR" "$MIMIR_GITEA_REPO" "Hydration for $TARGET"
+hydrate_working_tree_repo "$MIMIR_DIR" "$MIMIR_GITEA_REPO" "Hydration for $TARGET" patch_mimir_tree
 
 # Also push Heimdall to Gitea so ArgoCD can deploy the observability stack.
 # Heimdall is referenced by nidavellir/apps/heimdall-app.yaml (sync-wave 10).
