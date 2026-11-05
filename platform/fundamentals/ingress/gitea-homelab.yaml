@@ -43,5 +43,12 @@ spec:
             type: PathPrefix
             value: /
       backendRefs:
-        - name: gitea-http
+        # `group: ""`, `kind: Service` and `weight: 1` are added by the Gateway
+        # API admission webhook on apply, so they belong here too — otherwise
+        # the manifest never matches etcd and `layer4-fundamentals` sits
+        # OutOfSync forever. Same as the gke overlay.
+        - group: ""
+          kind: Service
+          name: gitea-http
           port: 3000
+          weight: 1
