@@ -314,13 +314,25 @@ if [[ -n "$REALM" ]]; then
 fi
 
 echo "✅ Configuration Updated."
-echo "🔄 Triggering ArgoCD Sync (Root App)..."
-# Try to sync if argocd CLI is available, otherwise just warn
-if command -v argocd &> /dev/null; then
-     # We assume user is logged in or we might need to skip this
-     argocd app sync root-app --local || echo "⚠️ Could not trigger sync via CLI. ArgoCD will auto-sync shortly."
+echo "🔄 Triggering ArgoCD refresh..."
+# This used to run `argocd app sync root-app --local`, which was wrong twice
+# over and silently skipped whenever the CLI was absent: there is no `root-app`
+# (the app-of-apps is `nordri-root`), and `--local` syncs from a local manifest
+# directory rather than from the seed we just pushed.
+#
+# A hard-refresh annotation needs no CLI and no login. It goes to every app
+# because a refresh does NOT cascade from a parent app to its children, and
+# this run may have hydrated several seed repos — refreshing only the root
+# leaves a changed leaf sitting on its cached revision until the next poll.
+if kubectl get applications.argoproj.io -n argo -o name >/dev/null 2>&1; then
+    if kubectl annotate applications.argoproj.io -n argo --all \
+        argocd.argoproj.io/refresh=hard --overwrite >/dev/null 2>&1; then
+        echo "✅ Hard refresh requested on every ArgoCD app."
+    else
+        echo "⚠️ Could not annotate ArgoCD apps. They will auto-sync within 3 minutes."
+    fi
 else
-    echo "ℹ️ ArgoCD CLI not found. ArgoCD will auto-sync within 3 minutes."
+    echo "ℹ️ No ArgoCD apps readable in namespace 'argo'. They will auto-sync if present."
 fi
 
 echo "🎉 Update Complete!"
