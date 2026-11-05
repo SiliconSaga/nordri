@@ -48,6 +48,12 @@ patch_nidavellir_tree() {
         machine="$(scutil --get LocalHostName 2>/dev/null || hostname -s 2>/dev/null || hostname)"
         machine="$(printf '%s' "$machine" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9-' '-' | sed 's/^-*//;s/-*$//')"
         [[ -z "$machine" ]] && machine="local"
+        # A box that happens to be named gke would claim GKE's device names.
+        # Refuse before any sed, so the tree is left as it was.
+        if [[ "$machine" == "gke" ]]; then
+            echo "❌ This machine's name normalizes to 'gke', which is reserved for the GKE cluster's tailnet devices. Rename the machine or hydrate from another box." >&2
+            return 1
+        fi
         node="$machine"
     fi
     ts_hostname="tailscale-operator-$node"
@@ -92,7 +98,9 @@ patch_nidavellir_tree() {
         echo "❌ ntfy tailscaleHostname is not $ntfy_hostname — the 'ntfy-MACHINE' placeholder may have changed." >&2
         return 1
     fi
-    if ! grep -Eq "^[[:space:]]*baseUrl:[[:space:]]*\"?https?://$ntfy_hostname\." "$ntfy_claim"; then
+    # The whole URL, not just its first label: ntfy is reachable only through
+    # MagicDNS, so the host must end in a tailnet's .ts.net domain.
+    if ! grep -Eq "^[[:space:]]*baseUrl:[[:space:]]*\"?https?://$ntfy_hostname\.[a-z0-9-]+\.ts\.net/?\"?[[:space:]]*$" "$ntfy_claim"; then
         echo "❌ ntfy baseUrl does not point at $ntfy_hostname — the 'ntfy-MACHINE' placeholder may have changed." >&2
         return 1
     fi

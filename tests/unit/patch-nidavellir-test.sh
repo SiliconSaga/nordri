@@ -11,7 +11,15 @@ check() { if eval "$2"; then echo "ok - $1"; else echo "NOT OK - $1"; fails=$((f
 # empty one aims the teardown's `rm -rf` at the filesystem root.
 tree="$(mktemp -d)" || { echo "NOT OK - could not create a temp dir" >&2; exit 1; }
 [ -n "$tree" ] && [ -d "$tree" ] || { echo "NOT OK - temp dir is not usable" >&2; exit 1; }
-trap 'rm -rf "$tree"' EXIT
+trap 'rm -rf "$tree" "$stubs"' EXIT
+# Host discovery is stubbed so the homelab stamp is a known name, not whatever
+# box runs the test. STUB_HOST is what both scutil and hostname report.
+stubs="$(mktemp -d)" || { echo "NOT OK - could not create a stub dir" >&2; exit 1; }
+for cmd in scutil hostname; do
+    printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$STUB_HOST"\n' > "$stubs/$cmd"
+    chmod +x "$stubs/$cmd"
+done
+export PATH="$stubs:$PATH" STUB_HOST="Test-Box"
 seed_tree() {
     mkdir -p "$tree/apps" "$tree/ntfy"
     printf 'path: vegvisir/manifests/overlays/homelab\n' > "$tree/apps/vegvisir-app.yaml"
@@ -32,6 +40,16 @@ check "homelab ntfy hostname stamped" "! grep -q 'ntfy-MACHINE' '$tree/ntfy/clai
 # box's alerts to the wrong phone.
 check "homelab ntfy is not ntfy-gke" "! grep -q 'ntfy-gke' '$tree/ntfy/claim.yaml'"
 check "homelab ntfy hostname matches its base-url" "[ \"\$(grep -c \"\$(sed -n 's/^tailscaleHostname: //p' '$tree/ntfy/claim.yaml')\" '$tree/ntfy/claim.yaml')\" -eq 2 ]"
+check "homelab ntfy hostname is the normalized box name" "grep -qx 'tailscaleHostname: ntfy-test-box' '$tree/ntfy/claim.yaml'"
+check "homelab ntfy base-url is the normalized box name" "grep -qx 'baseUrl: \"http://ntfy-test-box.tailf5b47a.ts.net\"' '$tree/ntfy/claim.yaml'"
+check "homelab operator hostname is the normalized box name" "grep -qx 'hostname: tailscale-operator-test-box' '$tree/apps/tailscale-operator-app.yaml'"
+
+# A box named gke would claim GKE's device names: refused, tree untouched.
+seed_tree
+STUB_HOST="GKE" patch_nidavellir_tree "$tree" homelab >/dev/null 2>&1; rc=$?
+check "a homelab box named gke returns non-zero" "[ $rc -ne 0 ]"
+check "a homelab box named gke leaves the claim unstamped" "grep -q 'ntfy-MACHINE' '$tree/ntfy/claim.yaml'"
+check "a homelab box named gke leaves the operator unstamped" "grep -q 'tailscale-operator-MACHINE' '$tree/apps/tailscale-operator-app.yaml'"
 
 # gke target rewrites overlay to gke and uses the fixed gke hostnames.
 seed_tree
@@ -74,6 +92,11 @@ printf 'tailscaleHostname: ntfy-elsewhere\nbaseUrl: "http://ntfy-MACHINE.tailf5b
     > "$tree/ntfy/claim.yaml"
 patch_nidavellir_tree "$tree" homelab >/dev/null 2>&1; rc=$?
 check "a hostname that disagrees with the baseUrl returns non-zero" "[ $rc -ne 0 ]"
+seed_tree
+printf 'tailscaleHostname: ntfy-MACHINE\nbaseUrl: "http://ntfy-MACHINE.example.invalid"\n' \
+    > "$tree/ntfy/claim.yaml"
+patch_nidavellir_tree "$tree" homelab >/dev/null 2>&1; rc=$?
+check "a baseUrl outside a tailnet's ts.net domain returns non-zero" "[ $rc -ne 0 ]"
 
 # The real claim is indented under spec.parameters; the field checks must
 # still find it there.
