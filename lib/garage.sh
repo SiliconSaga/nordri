@@ -19,18 +19,21 @@
 # garage_key_ensure <name> <outfile>
 
 garage_key_ensure() {
-    local name="$1" out="$2" list matches
+    local name="$1" out="$2" list ids matches
     if ! list=$(kubectl exec -n garage garage-0 -- /garage key list 2>/dev/null); then
         echo "⚠️  Could not list Garage keys; not creating $name blind." >&2
         return 1
     fi
-    matches=$(printf '%s\n' "$list" | tr -d '\r' | awk -v n="$name" '$3 == n { c++ } END { print c + 0 }')
+    ids=$(printf '%s\n' "$list" | tr -d '\r' | awk -v n="$name" '$3 == n { print $1 }')
+    matches=$(printf '%s' "$ids" | awk 'NF { c++ } END { print c + 0 }')
     case "$matches" in
         0)
             ( umask 077; kubectl exec -n garage garage-0 -- /garage key create "$name" > "$out" 2>/dev/null )
             ;;
         1)
-            ( umask 077; kubectl exec -n garage garage-0 -- /garage key info --show-secret "$name" > "$out" 2>/dev/null )
+            # By the ID from the exact-name match: `key info` takes a search
+            # pattern, so passing the name could resolve to some other key.
+            ( umask 077; kubectl exec -n garage garage-0 -- /garage key info --show-secret "$ids" > "$out" 2>/dev/null )
             ;;
         *)
             echo "❌ $matches Garage keys are named $name. Keep the one its Secret holds, delete the others with" >&2

@@ -805,6 +805,7 @@ if [[ "$TARGET" == "homelab" ]]; then
             # Create API key for Velero
             echo "   Finding or creating Garage API key for Velero..."
             VELERO_SCRATCH=$(umask 077 && mktemp -d "${TMPDIR:-/tmp}/velero-garage-XXXXXX")
+            TEMP_DIRS+=("$VELERO_SCRATCH")
             if garage_key_ensure velero-service-key "$VELERO_SCRATCH/key.txt"; then
                 KEY_OUTPUT=$(cat "$VELERO_SCRATCH/key.txt")
             else
@@ -836,6 +837,9 @@ if [[ "$TARGET" == "homelab" ]]; then
                 # left homelab's storage location Unavailable unnoticed.
                 if ! kubectl exec -n garage garage-0 -- /garage bucket allow velero-backups --read --write --key "$KEY_ID" >/dev/null 2>&1; then
                     echo "❌ Could not grant $KEY_ID read/write on Garage bucket velero-backups. Skipping the Velero Secret; re-run bootstrap to retry." >&2
+                    if kubectl get secret -n velero velero-credentials >/dev/null 2>&1; then
+                        echo "   The existing velero/velero-credentials Secret was left as it was, and may hold a different key." >&2
+                    fi
                 else
                     echo "✅ Garage bucket 'velero-backups' ready."
 
@@ -865,6 +869,7 @@ aws_secret_access_key=$KEY_SECRET" \
             # --from-literal; bringing it to the same shape is a follow-up.
             echo "   Creating Garage API key for the OpenBao snapshot agent..."
             OB_SCRATCH=$(umask 077 && mktemp -d "${TMPDIR:-/tmp}/openbao-garage-XXXXXX")
+            TEMP_DIRS+=("$OB_SCRATCH")
             garage_key_ensure openbao-backup-key "$OB_SCRATCH/key.txt" || : > "$OB_SCRATCH/key.txt"
             OB_KEY_ID=$(grep -i "Key ID" "$OB_SCRATCH/key.txt" | awk '{print $NF}')
             ( umask 077; grep -i "Secret" "$OB_SCRATCH/key.txt" | awk '{print $NF}' | tr -d '\r\n' > "$OB_SCRATCH/secret" )

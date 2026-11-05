@@ -29,14 +29,15 @@ case "$2 $3" in
         ;;
     "key info")
         [[ "$4" == "--show-secret" ]] || { echo "info without --show-secret" >&2; exit 98; }
-        printf 'Key name: %s\nKey ID: GKold\nSecret key: oldsecret\n' "$5"
+        echo "$5" > "$STUB_INFO"
+        printf 'Key ID: %s\nSecret key: oldsecret\n' "$5"
         ;;
     *) echo "unexpected garage $*" >&2; exit 97 ;;
 esac
 STUB
 chmod +x "$work/bin/kubectl"
 export PATH="$work/bin:$PATH"
-export STUB_LOG="$work/creates.log"
+export STUB_LOG="$work/creates.log" STUB_INFO="$work/info.arg"
 
 : > "$STUB_LOG"
 STUB_KEYS="" garage_key_ensure velero-service-key "$work/a" >/dev/null 2>&1; rc=$?
@@ -47,6 +48,14 @@ check "absent key is created exactly once" "[ \$(wc -l < '$STUB_LOG') -eq 1 ]"
 STUB_KEYS="GKold  2026-09-16  velero-service-key  never" garage_key_ensure velero-service-key "$work/b" >/dev/null 2>&1; rc=$?
 check "existing key is read back with its secret" "[ $rc -eq 0 ] && grep -q 'Secret key: oldsecret' '$work/b'"
 check "existing key is not created again" "[ ! -s '$STUB_LOG' ]"
+check "existing key is read back by its ID, not its name" "[ \"\$(cat '$STUB_INFO')\" = GKold ]"
+
+# Another key whose name only starts the same sits beside the real one: the
+# lookup must still read back the exact match, by ID.
+: > "$STUB_LOG"
+STUB_KEYS="GKdecoy  2026-09-15  velero-service-key-old  never
+GKreal  2026-09-16  velero-service-key  never" garage_key_ensure velero-service-key "$work/b2" >/dev/null 2>&1; rc=$?
+check "a prefix-sharing neighbour does not change which key is read" "[ $rc -eq 0 ] && grep -q 'Key ID: GKreal' '$work/b2'"
 
 : > "$STUB_LOG"
 STUB_KEYS="GKone  2026-09-16  velero-service-key  never
