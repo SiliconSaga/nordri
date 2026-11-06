@@ -315,15 +315,10 @@ fi
 
 echo "✅ Configuration Updated."
 echo "🔄 Triggering ArgoCD refresh..."
-# This used to run `argocd app sync root-app --local`, which was wrong twice
-# over and silently skipped whenever the CLI was absent: there is no `root-app`
-# (the app-of-apps is `nordri-root`), and `--local` syncs from a local manifest
-# directory rather than from the seed we just pushed.
-#
-# A hard-refresh annotation needs no CLI and no login. It goes to every app
-# because a refresh does NOT cascade from a parent app to its children, and
-# this run may have hydrated several seed repos — refreshing only the root
-# leaves a changed leaf sitting on its cached revision until the next poll.
+# A hard-refresh annotation needs no argocd CLI and no login. It goes to every
+# app because a refresh does NOT cascade from a parent app (`nordri-root`) to
+# its children, and a run may hydrate several seed repos — refreshing only the
+# root leaves a changed leaf on its cached revision until the next poll.
 if kubectl get applications.argoproj.io -n argo -o name >/dev/null 2>&1; then
     if kubectl annotate applications.argoproj.io -n argo --all \
         argocd.argoproj.io/refresh=hard --overwrite >/dev/null 2>&1; then
