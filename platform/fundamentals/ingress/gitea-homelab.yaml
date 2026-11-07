@@ -43,5 +43,11 @@ spec:
             type: PathPrefix
             value: /
       backendRefs:
-        - name: gitea-http
+        # The Gateway API admission webhook adds `group: ""`, `kind: Service`
+        # and `weight: 1` on apply, so carrying them here is what keeps the
+        # manifest matching etcd and the app Synced. Same as the gke overlay.
+        - group: ""
+          kind: Service
+          name: gitea-http
           port: 3000
+          weight: 1

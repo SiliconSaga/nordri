@@ -33,11 +33,14 @@ kubectl get secret -n gitea gitea-admin-credentials \
   -o jsonpath='{.data.password}' | base64 --decode
 ```
 
-If ArgoCD doesn't auto-sync after push:
+If ArgoCD doesn't auto-sync after push, refresh the app that **owns the changed resource**. A refresh does not cascade from a parent app to its children, so hitting the root alone will not pick up a leaf's manifest change:
 
 ```bash
-kubectl annotate application vegvisir -n argo argocd.argoproj.io/refresh=hard --overwrite
+kubectl annotate application nordri-root -n argo argocd.argoproj.io/refresh=hard --overwrite  # app-of-apps (platform/argocd)
+kubectl annotate application keycloak    -n argo argocd.argoproj.io/refresh=hard --overwrite  # the leaf that owns the resource
 ```
+
+`kubectl get application -n argo -o custom-columns=NAME:.metadata.name,REPO:.spec.source.repoURL,PATH:.spec.source.path` maps a hydrated path back to the app to refresh. Note `vegvisir` is a leaf (cert-manager, the ClusterIssuer and the traefik Gateway), not the root.
 
 ### Run kuttl tests (GKE)
 ```bash
