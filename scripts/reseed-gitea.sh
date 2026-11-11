@@ -70,8 +70,9 @@ gitea_wait_ready 300 || exit 1
 
 echo "✅ Seed Gitea reinstalled. Its repositories are empty until you re-hydrate:"
 if [[ "$GITEA_PASS_FROM_ENV" -eq 1 ]]; then
-    echo "   GITEA_PASS=<the same value> ./update-embedded-git.sh $TARGET <realm>"
+    echo "   ./update-embedded-git.sh $TARGET <realm>   — with GITEA_PASS exported to the same value, as for this run"
     echo "   The $GITEA_CREDENTIALS_NAMESPACE/$GITEA_CREDENTIALS_SECRET Secret was not updated, so without GITEA_PASS the hydrate would read a password this Gitea no longer accepts."
+    echo "   Set it without echo ('read -rs GITEA_PASS; export GITEA_PASS'), not inline on the command line, where shell history keeps it."
 else
     echo "   ./update-embedded-git.sh $TARGET <realm>"
 fi

@@ -28,8 +28,12 @@ if [[ -n "${KUBE_CONTEXT:-}" && "$KUBE_CONTEXT" != "$current" ]]; then
 fi
 echo "🎯 kubectl context: $current"
 
+# kubectl has no request timeout of its own, so a server that accepts the
+# connection and never answers would hold the loop past the deadline. Every
+# request is bounded: by what is left of the deadline, and by 30s at most.
+request_timeout=30
 table() {
-    kubectl get applications -n argo -o custom-columns=NAME:.metadata.name,SYNC:.status.sync.status,HEALTH:.status.health.status"$1"
+    kubectl get applications -n argo --request-timeout="${request_timeout}s" -o custom-columns=NAME:.metadata.name,SYNC:.status.sync.status,HEALTH:.status.health.status"$1"
 }
 
 query_err=$(mktemp)
@@ -42,7 +46,9 @@ while true; do
     # shows up: it is as unsettled as an Unknown one. stderr goes to a file so a
     # kubectl warning cannot be read as a row, and a failed query is reported as
     # a failure rather than as "nothing Unknown".
-    if rows=$(kubectl get applications -n argo -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.status.sync.status}{"\n"}{end}' 2>"$query_err"); then
+    remaining=$(( timeout - elapsed ))
+    bounded=$(( remaining > 0 && remaining < request_timeout ? remaining : request_timeout ))
+    if rows=$(kubectl get applications -n argo --request-timeout="${bounded}s" -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.status.sync.status}{"\n"}{end}' 2>"$query_err"); then
         unsettled=0
         while IFS=$'\t' read -r _name s; do
             [[ -z "$_name" ]] && continue
