@@ -32,13 +32,17 @@ table() {
     kubectl get applications -n argo -o custom-columns=NAME:.metadata.name,SYNC:.status.sync.status,HEALTH:.status.health.status"$1"
 }
 
+query_err=$(mktemp)
+trap 'rm -f "$query_err"' EXIT
+
 start=$(date +%s)
 while true; do
     elapsed=$(( $(date +%s) - start ))
     # One line per Application, name first, so one with no sync status yet still
-    # shows up: it is as unsettled as an Unknown one. A failed query is reported
-    # as a failure rather than read as "nothing Unknown".
-    if rows=$(kubectl get applications -n argo -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.status.sync.status}{"\n"}{end}' 2>&1); then
+    # shows up: it is as unsettled as an Unknown one. stderr goes to a file so a
+    # kubectl warning cannot be read as a row, and a failed query is reported as
+    # a failure rather than as "nothing Unknown".
+    if rows=$(kubectl get applications -n argo -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.status.sync.status}{"\n"}{end}' 2>"$query_err"); then
         unsettled=0
         while IFS=$'\t' read -r _name s; do
             [[ -z "$_name" ]] && continue
@@ -51,7 +55,7 @@ while true; do
             exit 0
         fi
     else
-        echo "   ${elapsed}s: query failed: $rows" >&2
+        echo "   ${elapsed}s: query failed: $(tr -d '\r' < "$query_err" | tail -n 1)" >&2
     fi
     if [ "$elapsed" -ge "$timeout" ]; then
         echo "❌ Timeout: Applications still unsettled after ${timeout}s." >&2

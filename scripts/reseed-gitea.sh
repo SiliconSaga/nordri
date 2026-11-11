@@ -40,7 +40,12 @@ GITEA_CREDENTIALS_NAMESPACE="gitea"
 GITEA_CREDENTIALS_SECRET="gitea-admin-credentials"
 GITEA_USER="nordri-admin"
 
-if [[ -z "${GITEA_PASS:-}" ]]; then
+# An env override is used as given and NOT written to the Secret (rotation is
+# bootstrap.sh's job), so the re-hydrate has to be told the same password.
+GITEA_PASS_FROM_ENV=0
+if [[ -n "${GITEA_PASS:-}" ]]; then
+    GITEA_PASS_FROM_ENV=1
+else
     if ! kubectl get secret -n "$GITEA_CREDENTIALS_NAMESPACE" "$GITEA_CREDENTIALS_SECRET" >/dev/null 2>&1; then
         echo "❌ No $GITEA_CREDENTIALS_NAMESPACE/$GITEA_CREDENTIALS_SECRET Secret and no GITEA_PASS env var." >&2
         echo "   A reseed keeps the existing admin password. For a cluster that never had one, run bootstrap.sh." >&2
@@ -64,4 +69,9 @@ echo "⏳ Waiting for Gitea to become ready..."
 gitea_wait_ready 300 || exit 1
 
 echo "✅ Seed Gitea reinstalled. Its repositories are empty until you re-hydrate:"
-echo "   ./update-embedded-git.sh $TARGET <realm>"
+if [[ "$GITEA_PASS_FROM_ENV" -eq 1 ]]; then
+    echo "   GITEA_PASS=<the same value> ./update-embedded-git.sh $TARGET <realm>"
+    echo "   The $GITEA_CREDENTIALS_NAMESPACE/$GITEA_CREDENTIALS_SECRET Secret was not updated, so without GITEA_PASS the hydrate would read a password this Gitea no longer accepts."
+else
+    echo "   ./update-embedded-git.sh $TARGET <realm>"
+fi
