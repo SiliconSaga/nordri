@@ -1,5 +1,5 @@
 #!/bin/bash
-set -e
+set -eo pipefail
 
 # Reinstall the seed Gitea on a running cluster, without the rest of bootstrap.
 # Usage: scripts/reseed-gitea.sh [gke|homelab]
@@ -41,14 +41,20 @@ GITEA_CREDENTIALS_SECRET="gitea-admin-credentials"
 GITEA_USER="nordri-admin"
 
 if [[ -z "${GITEA_PASS:-}" ]]; then
-    if kubectl get secret -n "$GITEA_CREDENTIALS_NAMESPACE" "$GITEA_CREDENTIALS_SECRET" >/dev/null 2>&1; then
-        GITEA_PASS="$(kubectl get secret -n "$GITEA_CREDENTIALS_NAMESPACE" "$GITEA_CREDENTIALS_SECRET" -o jsonpath='{.data.password}' | base64 --decode)"
+    if ! kubectl get secret -n "$GITEA_CREDENTIALS_NAMESPACE" "$GITEA_CREDENTIALS_SECRET" >/dev/null 2>&1; then
+        echo "❌ No $GITEA_CREDENTIALS_NAMESPACE/$GITEA_CREDENTIALS_SECRET Secret and no GITEA_PASS env var." >&2
+        echo "   A reseed keeps the existing admin password. For a cluster that never had one, run bootstrap.sh." >&2
+        exit 1
     fi
-fi
-if [[ -z "${GITEA_PASS:-}" ]]; then
-    echo "❌ No $GITEA_CREDENTIALS_NAMESPACE/$GITEA_CREDENTIALS_SECRET Secret and no GITEA_PASS env var." >&2
-    echo "   A reseed keeps the existing admin password. For a cluster that never had one, run bootstrap.sh." >&2
-    exit 1
+    if ! GITEA_PASS="$(kubectl get secret -n "$GITEA_CREDENTIALS_NAMESPACE" "$GITEA_CREDENTIALS_SECRET" -o jsonpath='{.data.password}' | base64 --decode)"; then
+        echo "❌ Could not read the password from $GITEA_CREDENTIALS_NAMESPACE/$GITEA_CREDENTIALS_SECRET." >&2
+        exit 1
+    fi
+    if [[ -z "$GITEA_PASS" ]]; then
+        echo "❌ $GITEA_CREDENTIALS_NAMESPACE/$GITEA_CREDENTIALS_SECRET exists but its 'password' key is empty." >&2
+        echo "   Set GITEA_PASS explicitly, or run bootstrap.sh to recreate the Secret." >&2
+        exit 1
+    fi
 fi
 echo "🔑 Using the existing Gitea admin password (user: $GITEA_USER)."
 
