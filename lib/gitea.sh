@@ -18,6 +18,62 @@ gitea_build_urls() {
     GITEA_PROBE_URL="${GITEA_API_URL}/api/v1/version"
 }
 
+# Install (or upgrade) the seed Gitea in the slim, ephemeral shape: SQLite,
+# in-memory cache/session, level queue, no subcharts, no volume. bootstrap.sh
+# carries the reasoning for every flag; this is the one place the flags live, so
+# a reseed cannot drift from a bootstrap (the 08/09 seed wipes were drift).
+# Expects GITEA_USER / GITEA_PASS. GITEA_CHART_VERSION pins the chart (default:
+# latest, as bootstrap always has).
+gitea_install_seed() {
+    local version_args=()
+    if [[ -n "${GITEA_CHART_VERSION:-}" ]]; then
+        version_args=(--version "$GITEA_CHART_VERSION")
+    fi
+    helm repo add gitea-charts https://dl.gitea.io/charts/ >/dev/null 2>&1 || true
+    helm repo update gitea-charts >/dev/null
+    kubectl create namespace gitea --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+    helm upgrade --install gitea gitea-charts/gitea \
+      --namespace gitea \
+      ${version_args[@]+"${version_args[@]}"} \
+      --set-string gitea.admin.username="$GITEA_USER" \
+      --set-string gitea.admin.password="$GITEA_PASS" \
+      --set persistence.enabled=false \
+      --set postgresql-ha.enabled=false \
+      --set postgresql.enabled=false \
+      --set valkey-cluster.enabled=false \
+      --set valkey.enabled=false \
+      --set gitea.config.database.DB_TYPE=sqlite3 \
+      --set gitea.config.session.PROVIDER=memory \
+      --set gitea.config.cache.ADAPTER=memory \
+      --set gitea.config.queue.TYPE=level \
+      --set containerSecurityContext.runAsUser=1000 \
+      --set containerSecurityContext.runAsGroup=1000 \
+      --set podSecurityContext.fsGroup=1000 \
+      --set rootless=true
+}
+
+# Wait for the seed Gitea pod to report Ready. Returns non-zero on timeout.
+# gitea_wait_ready [timeout_seconds]   (default 300)
+gitea_wait_ready() {
+    local timeout=${1:-300} start elapsed status
+    start=$(date +%s)
+    while true; do
+        elapsed=$(( $(date +%s) - start ))
+        if [ "$elapsed" -gt "$timeout" ]; then
+            echo "❌ Timeout waiting for Gitea to start." >&2
+            return 1
+        fi
+        status=$(kubectl get pods -n gitea -l app.kubernetes.io/name=gitea -o jsonpath='{.items[0].status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
+        if [[ "$status" == "True" ]]; then
+            echo "✅ Gitea pod is Ready."
+            return 0
+        fi
+        echo "   ... waiting for Gitea pod to be Ready ($elapsed/${timeout}s)"
+        kubectl logs -n gitea -l app.kubernetes.io/name=gitea --tail=1 2>/dev/null || true
+        sleep 5
+    done
+}
+
 # Probe the Gitea endpoint. Returns 0 if Gitea answers /api/v1/version, non-zero
 # otherwise — confirms we're talking to actual Gitea, not just any listener on
 # this host:port, before sending credentials.

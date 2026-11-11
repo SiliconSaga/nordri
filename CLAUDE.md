@@ -19,6 +19,8 @@ GITEA_HOST=gitea.cmdbee.org ./update-embedded-git.sh gke
 GITEA_HOST=gitea.localhost  ./update-embedded-git.sh homelab
 ```
 
+On GKE, also pin the context and use HTTPS: `KUBE_CONTEXT=gke_<project>_<zone>_<cluster> GITEA_HOST=gitea.cmdbee.org GITEA_SCHEME=https ./update-embedded-git.sh gke realm-siliconsaga`. Afterwards `scripts/argo-settle.sh` waits (read-only) until no Application is `Unknown`. A seed that lost its repos needs only the re-hydrate; a broken or old-shape seed release is reinstalled with `scripts/reseed-gitea.sh <target>` (same install function as bootstrap, keeps the password), then re-hydrated.
+
 Admin credentials are read from `gitea/gitea-admin-credentials` (created by `bootstrap.sh` on fresh installs). Retrieve with:
 
 ```bash

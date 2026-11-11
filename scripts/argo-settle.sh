@@ -1,0 +1,45 @@
+#!/bin/bash
+set -uo pipefail
+
+# Read-only: wait until no ArgoCD Application reports sync status Unknown, then
+# print the Application table. Useful after a re-hydrate, when every app sourced
+# from the seed has to re-resolve its repository.
+# Usage: scripts/argo-settle.sh [timeout_seconds]   (default 900)
+#
+# Follows kubectl's current context (KUBE_CONTEXT, if set, must match it). Exits
+# 1 on timeout, with each Application's conditions in the table.
+
+timeout=${1:-900}
+interval=20
+
+current=$(kubectl config current-context 2>/dev/null | tr -d '\r') || current=""
+if [[ -n "${KUBE_CONTEXT:-}" && "$KUBE_CONTEXT" != "$current" ]]; then
+    echo "❌ KUBE_CONTEXT=$KUBE_CONTEXT but kubectl's current context is '$current'." >&2
+    exit 1
+fi
+echo "🎯 kubectl context: $current"
+
+table() {
+    kubectl get applications -n argo -o custom-columns=NAME:.metadata.name,SYNC:.status.sync.status,HEALTH:.status.health.status"$1"
+}
+
+start=$(date +%s)
+while true; do
+    statuses=$(kubectl get applications -n argo -o jsonpath='{range .items[*]}{.status.sync.status}{"\n"}{end}' 2>/dev/null) || statuses=""
+    unknown=0
+    while IFS= read -r s; do
+        [[ "${s%$'\r'}" == "Unknown" ]] && unknown=$((unknown + 1))
+    done <<< "$statuses"
+    elapsed=$(( $(date +%s) - start ))
+    echo "   ${elapsed}s: $unknown Unknown"
+    if [[ -n "$statuses" && "$unknown" -eq 0 ]]; then
+        table ""
+        exit 0
+    fi
+    if [ "$elapsed" -ge "$timeout" ]; then
+        echo "❌ Timeout: Applications still Unknown after ${timeout}s." >&2
+        table ",MSG:.status.conditions[*].message"
+        exit 1
+    fi
+    sleep "$interval"
+done
