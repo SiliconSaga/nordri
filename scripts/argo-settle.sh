@@ -16,6 +16,7 @@ if [[ ! "$timeout" =~ ^[0-9]+$ ]]; then
     echo "❌ Timeout must be a whole number of seconds, got '$timeout'." >&2
     exit 1
 fi
+timeout=$((10#$timeout))  # a leading zero would otherwise read as octal in $(( ))
 
 current=$(kubectl config current-context 2>/dev/null | tr -d '\r') || current=""
 if [[ -z "$current" ]]; then
