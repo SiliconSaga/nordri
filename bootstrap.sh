@@ -275,9 +275,10 @@ fi
 #   - See nidavellir/docs/platform-gitea.md for design notes.
 #   - Forgejo is the intended path for persistent GitOps; this seed should stay
 #     disposable rather than growing into the durable thing.
+#
+# The install itself is gitea_install_seed in lib/gitea.sh, shared with
+# scripts/reseed-gitea.sh so the two cannot drift.
 echo "📦 [Layer 2] Installing Seed Gitea..."
-helm repo add gitea-charts https://dl.gitea.io/charts/ >/dev/null 2>&1
-helm repo update
 kubectl create namespace gitea --dry-run=client -o yaml | kubectl apply -f -
 
 # We use a simple configuration for the seed instance.
@@ -379,50 +380,10 @@ kubectl create secret generic "$GITEA_CREDENTIALS_SECRET" \
 # the credentials-less base URL.
 gitea_build_urls
 
-# We use a simple configuration for the seed instance
-helm upgrade --install gitea gitea-charts/gitea \
-  --namespace gitea \
-  --set-string gitea.admin.username="$GITEA_USER" \
-  --set-string gitea.admin.password="$GITEA_PASS" \
-  --set persistence.enabled=false \
-  --set postgresql-ha.enabled=false \
-  --set postgresql.enabled=false \
-  --set valkey-cluster.enabled=false \
-  --set valkey.enabled=false \
-  --set gitea.config.database.DB_TYPE=sqlite3 \
-  --set gitea.config.session.PROVIDER=memory \
-  --set gitea.config.cache.ADAPTER=memory \
-  --set gitea.config.queue.TYPE=level \
-  --set containerSecurityContext.runAsUser=1000 \
-  --set containerSecurityContext.runAsGroup=1000 \
-  --set podSecurityContext.fsGroup=1000 \
-  --set rootless=true
+gitea_install_seed
 
 echo "⏳ Waiting for Gitea to become ready..."
-TIMEOUT=300
-START_TIME=$(date +%s)
-while true; do
-    CURRENT_TIME=$(date +%s)
-    ELAPSED=$((CURRENT_TIME - START_TIME))
-    if [ $ELAPSED -gt $TIMEOUT ]; then
-        echo "❌ Timeout waiting for Gitea to start."
-        exit 1
-    fi
-
-    # Check if pod is Ready
-    STATUS=$(kubectl get pods -n gitea -l app.kubernetes.io/name=gitea -o jsonpath='{.items[0].status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
-    
-    if [[ "$STATUS" == "True" ]]; then
-        echo "✅ Gitea pod is Ready."
-        break
-    fi
-
-    echo "   ... waiting for Gitea pod to be Ready ($ELAPSED/${TIMEOUT}s)"
-    # Optional: Tail a bit of logs to show activity
-    kubectl logs -n gitea -l app.kubernetes.io/name=gitea --tail=1 2>/dev/null || true
-    
-    sleep 5
-done
+gitea_wait_ready 300 || exit 1
 
 echo "✅ Gitea installed and running."
 

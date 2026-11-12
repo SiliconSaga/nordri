@@ -157,14 +157,22 @@ Nordri exposes substrate patterns that downstream components (Heimdall, Mimir,
 
 ## Operation & Maintenance
 
-### 1. Fast Iteration (`update.sh`)
-To push changes to the cluster without re-running the full bootstrap (which can be slow):
-1.  Edit files in `platform/` or `envs/`.
-2.  Run:
-    ```bash
-    ./update.sh homelab
-    ```
-    This hydrates the configuration, pushes it to the internal Gitea, and triggers an ArgoCD sync.
+### 1. Fast Iteration (`update-embedded-git.sh`)
+To push changes to the cluster without re-running the full bootstrap (which can be slow), switch kubectl to the target cluster and run:
+```bash
+./update-embedded-git.sh homelab realm-siliconsaga
+```
+It hydrates the component working trees (and the realm's `cluster/`), pushes them to the seed Gitea, recreating any repository the seed lost, and hard-refreshes every ArgoCD Application. On GKE, push over the seed's public route and name the context, so a mismatched current context is refused:
+```bash
+KUBE_CONTEXT=gke_<project>_<zone>_<cluster> GITEA_HOST=gitea.cmdbee.org GITEA_SCHEME=https \
+  ./update-embedded-git.sh gke realm-siliconsaga
+```
+Then wait for the Applications to re-resolve their repositories (read-only; exits 1 on timeout):
+```bash
+scripts/argo-settle.sh
+```
+
+The seed's storage is ephemeral by design, so a seed that lost its repositories only needs the re-hydrate above. A seed whose Helm release is broken or in an older shape is reinstalled in bootstrap's exact shape, keeping its admin password, with `scripts/reseed-gitea.sh <gke|homelab>`, then re-hydrated.
 
 ### 2. Validation (`validate.py`)
 To verify the health of all platform components (Pods, Ingress, Storage):
