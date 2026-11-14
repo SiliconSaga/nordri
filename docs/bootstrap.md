@@ -16,11 +16,11 @@ Provision the raw cluster before running any scripts.
 - **Homelab**: pre-existing k3s (Rancher Desktop) or Docker Desktop's built-in Kubernetes. Docker Desktop on Windows needs the WSL2 VM on cgroup v2 for Kubernetes 1.36+ (the kubelet refuses cgroup v1 by default); `wsl --update` and a reboot get there. Its storage classes are named `standard`/`hostpath`, so bootstrap Step 0b aliases the default one as `local-path`, the name cluster-identity promises.
 
 ### Layer 2 — The Seed (Gitea + Nidavellir hydration)
-`./bootstrap.sh [gke|homelab] [realm]`
+`./bootstrap.sh <realm> <cluster>`
 
-Both this script and `update-embedded-git.sh` use plain `kubectl`, which follows the kubeconfig's **current context** — not the `ws k8s` guard scope, which wraps only `ws k8s` and does not switch the context. Each refuses to start when the current context does not fit the target: `gke` needs a `gke_*` context, `homelab` refuses one, and `KUBE_CONTEXT=<name>` pins the exact context and fails on any other. Switch with `kubectl config use-context` first; the scripts never switch for you.
+Both this script and `update-embedded-git.sh` use plain `kubectl`, which follows the kubeconfig's **current context** — not the `ws k8s` guard scope, which wraps only `ws k8s` and does not switch the context. Each refuses to start when the current context does not fit the cluster's environment (resolved from its identity): `gke` needs a `gke_*` context, `homelab` refuses one, and `KUBE_CONTEXT=<name>` pins the exact context and fails on any other. A cluster whose live identity (`nordri/cluster-identity`) names a different cluster than the one given is refused too. Switch with `kubectl config use-context` first; the scripts never switch for you and take no `--context` flag.
 
-The optional second arg names an **owning realm** whose `cluster/` subtree carries realm-owned in-cluster config (e.g. the SiliconSaga keycloak realm-import). When given, bootstrap hydrates `realms/<realm>/cluster/` into a seed-Gitea repo named `<realm>` and registers a generic ArgoCD realm root-app pointed at it (after ArgoCD is up — see Layer 3). Omit it for a generic demo-only stack. `REALM_DIR` overrides the default `<workspace>/realms/<realm>` resolution.
+`<realm>` names the **owning realm**; `<cluster>` is this cluster's name. The cluster's identity (environment, role, maturity, storage class, domain, GCP project...) is resolved from the realm's `clusters/<cluster>.yaml` over the environment defaults (a cluster with no file is a homelab lab at bootstrap maturity) and written to the cluster as ConfigMap `nordri/cluster-identity` **before anything else** (Layer -1); a second `scripts/identity.sh apply` after Crossplane is ready also writes the EnvironmentConfig. Nothing per-cluster is stamped into the hydrated manifests. The whole realm checkout is hydrated into a seed-Gitea repo named `<realm>` under the realm's org, and the realm root-app reads its `cluster` path. `REALM_DIR` overrides the default `<workspace>/realms/<realm>` resolution.
 
 - Installs **Gitea** (Helm, `gitea` namespace, ephemeral — no persistence)
 - **Resolves Gitea admin credentials** and persists them to the
@@ -31,8 +31,8 @@ The optional second arg names an **owning realm** whose `cluster/` subtree carri
   passwords for you — `GITEA_PASS=<value>` is the user-supplied path
   for any case where you already know the live password (existing
   cluster from before this flow landed, post-rotation, etc.).
-- Creates Nordri and Nidavellir repos in Gitea via API
-- Hydrates both repos from local checkouts (applies target overlay for Nordri)
+- Creates the realm's orgs and the repos (nordri, nidavellir, mimir, heimdall, the realm) in Gitea via API
+- Hydrates the repos from local checkouts exactly as they are; each hydration commit carries a `Source-Commit: <sha>` trailer
 - Nidavellir is expected as a sibling directory; override with `NIDAVELLIR_DIR`
 
 Retrieve the active password:
@@ -161,7 +161,7 @@ Set these env vars before running `bootstrap.sh` to have DNS updated automatical
 export NAMECHEAP_API_USER=your-username
 export NAMECHEAP_API_KEY=your-api-key
 export NAMECHEAP_DOMAIN=cmdbee.org   # default; override for other domains
-./bootstrap.sh gke
+./bootstrap.sh realm-siliconsaga gke-prod
 ```
 
 The script updates `@` and `*` A records to the Traefik LB IP via the NameCheap API,
@@ -197,10 +197,10 @@ If credentials are not set, `bootstrap.sh` prints the LB IP and these steps:
 To push local changes to Gitea without reinstalling anything:
 
 ```bash
-./update-embedded-git.sh [gke|homelab]
+./update-embedded-git.sh <realm> [--target forgejo]
 ```
 
-This re-hydrates both the Nordri and Nidavellir repos and triggers an ArgoCD sync.
+This re-hydrates the Nordri, Nidavellir, Mimir and Heimdall repos, the vendor mirrors and the realm, and triggers an ArgoCD sync. The target defaults to whatever the `gitops/git` Service points at; `--target forgejo` pushes to the cluster's Forgejo instead and is refused on a graduated `prod` cluster.
 
 ### Talking to Gitea over a real ingress (skipping port-forward)
 
@@ -210,8 +210,8 @@ deployed (see `platform/fundamentals/ingress/gitea-{homelab,gke}.yaml`)
 you can skip the port-forward by setting `GITEA_HOST`:
 
 ```bash
-GITEA_HOST=gitea.cmdbee.org ./update-embedded-git.sh gke
-GITEA_HOST=gitea.localhost  ./update-embedded-git.sh homelab
+GITEA_HOST=gitea.cmdbee.org ./update-embedded-git.sh realm-siliconsaga
+GITEA_HOST=gitea.localhost  ./update-embedded-git.sh realm-siliconsaga
 ```
 
 Useful when:
@@ -256,7 +256,7 @@ preserves the existing admin user on upgrade. The supported flow:
      --dry-run=client -o yaml | kubectl apply -f -
    ```
 
-   Or run `GITEA_PASS="new-password" ./bootstrap.sh gke` once — same effect.
+   Or run `GITEA_PASS="new-password" ./bootstrap.sh <realm> <cluster>` once — same effect.
 
 This is a temporary state — the longer-term plan is to drive Gitea
 credentials through OpenBAO once it ships in Nidavellir.

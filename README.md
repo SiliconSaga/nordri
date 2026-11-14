@@ -16,12 +16,12 @@ k3d cluster create refr-k8s \
 
 **Run the bootstrap** from within a compatible bash shell:
 
-* Mac/Linux bash: `./bootstrap.sh homelab`
+* Mac/Linux bash: `./bootstrap.sh <realm> <cluster>` (e.g. `./bootstrap.sh realm-siliconsaga homelab-nano76win11`)
 * Windows: 
   * `cd "C:\Program Files\Git\bin"` or wherever Git Bash is installed
   * Run `bash` or `./bash.exe` if using a PowerShell terminal
   * `cd /d/Dev/GitWS/nordri` or wherever you cloned the repo
-  * Run `./bootstrap.sh`
+  * Run `./bootstrap.sh <realm> <cluster>`
 
 ### Accessing the Cluster
 
@@ -51,7 +51,7 @@ After bootstrapping, you can access the services:
         the password manually), pass the live password explicitly:
 
         ```bash
-        GITEA_PASS=<live-password> ./bootstrap.sh <target>
+        GITEA_PASS=<live-password> ./bootstrap.sh <realm> <cluster>
         ```
 
         The script trusts the override, writes it to the Secret, and uses
@@ -60,7 +60,7 @@ After bootstrapping, you can access the services:
         `update-embedded-git.sh` invocation) fail with 401, *and* the
         Secret has been poisoned with the wrong value. Recover by
         running with the correct password — `GITEA_PASS=<correct> ./bootstrap.sh
-        <target>` rewrites the Secret — or delete the Secret manually
+        <realm> <cluster>` rewrites the Secret — or delete the Secret manually
         (`kubectl delete secret -n gitea gitea-admin-credentials`) and
         run bootstrap.sh again with the right value. The fail-loud-and-
         recoverable trade-off is intentional vs. a silent fallback.
@@ -153,26 +153,26 @@ Nordri exposes substrate patterns that downstream components (Heimdall, Mimir,
 *   **In-cluster `keycloak.localhost`**: On homelab a CoreDNS rewrite lets *pods* resolve `keycloak.localhost` to Traefik, so server-side OIDC flows (e.g. OpenBao's token exchange) can reach Keycloak at its homelab issuer. See **[Resolving keycloak.localhost inside the cluster](docs/keycloak-localhost-coredns.md)**.
 *   **Argonception**: Most YAML files in `apps/` are `kind: Application`. They tell Argo to sync *another* Helm chart (e.g., the official Traefik chart).
 *   **Namespaces**: Any "loose" manifest (like `ClusterIssuer`) applied by the App-of-Apps will default to the `argo` namespace unless explicitly namespaced in the file.
-*   **Values**: Environment-specific values (e.g., LoadBalancer vs NodePort) are injected via the `envs/` directory, which the App-of-Apps or individual Applications reference.
+*   **Values**: Per-cluster values (environment, storage class, domain, GCP project...) live in the cluster-local `nordri/cluster-identity` ConfigMap, written by `bootstrap.sh` from the realm's cluster declaration. Nothing is stamped into the manifests that are hydrated to Git.
 
 ## Operation & Maintenance
 
 ### 1. Fast Iteration (`update-embedded-git.sh`)
 To push changes to the cluster without re-running the full bootstrap (which can be slow), switch kubectl to the target cluster and run:
 ```bash
-./update-embedded-git.sh homelab realm-siliconsaga
+./update-embedded-git.sh realm-siliconsaga
 ```
 It hydrates the component working trees (and the realm's `cluster/`), pushes them to the seed Gitea, recreating any repository the seed lost, and hard-refreshes every ArgoCD Application. On GKE, push over the seed's public route and name the context, so a mismatched current context is refused:
 ```bash
 KUBE_CONTEXT=gke_<project>_<zone>_<cluster> GITEA_HOST=gitea.cmdbee.org GITEA_SCHEME=https \
-  ./update-embedded-git.sh gke realm-siliconsaga
+  ./update-embedded-git.sh realm-siliconsaga
 ```
 Then wait for the Applications to re-resolve their repositories (read-only; exits 1 on timeout):
 ```bash
 scripts/argo-settle.sh
 ```
 
-The seed's storage is ephemeral by design, so a seed that lost its repositories only needs the re-hydrate above. A seed whose Helm release is broken or in an older shape is reinstalled in bootstrap's exact shape, keeping its admin password, with `scripts/reseed-gitea.sh <gke|homelab>`, then re-hydrated.
+The seed's storage is ephemeral by design, so a seed that lost its repositories only needs the re-hydrate above. A seed whose Helm release is broken or in an older shape is reinstalled in bootstrap's exact shape, keeping its admin password, with `scripts/reseed-gitea.sh <realm> <cluster>`, then re-hydrated.
 
 ### 2. Validation (`validate.py`)
 To verify the health of all platform components (Pods, Ingress, Storage):
@@ -203,6 +203,6 @@ For testing Crossplane Compositions (Infrastructure Logic), we recommend **KUTTL
 
 ## TODOs
 
-* The Issuer uses a hardcoded email admin@yggdrasil.cloud and Gateway name traefik-gateway. You may want to templated these using Kustomize overlays in envs/ later if they vary significantly.
+* The Issuer uses a hardcoded email admin@yggdrasil.cloud and Gateway name traefik-gateway. You may want to templated these using the cluster identity later if they vary significantly.
 * Need to compare Crossplane versions with what worked in Mimir.
 * Need to cover Velero in a later Day 2 step. Can fetch original details from outdated/setup.md

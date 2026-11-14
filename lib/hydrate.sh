@@ -1,17 +1,17 @@
 # components/nordri/lib/hydrate.sh
 # Shared seed-Gitea hydration helpers for bootstrap.sh and update-embedded-git.sh.
-# Depends on lib/gitea.sh (gitea_ensure_repo, $GITEA_GIT_BASE, $GITEA_USER),
-# lib/patch-urls.sh (patch_repo_urls_tree) and, for the working-tree helper,
-# the caller's $TARGET and TEMP_DIRS array.
+# Depends on lib/gitea.sh (gitea_ensure_repo, $GITEA_GIT_BASE, $GITEA_USER) and,
+# for the working-tree helper, the caller's TEMP_DIRS array. Trees are pushed as
+# they are: no manifest is rewritten on the way in.
 #
 # Per-script knobs (read here, set by the caller before use):
 #   HYDRATE_AUTO_INIT  "true" for fresh-cluster bootstrap (repos need an initial
 #                      commit + resolvable HEAD); unset/false for day-2 updates.
 #   HYDRATE_COMMITTER  git author name for the ephemeral hydration commit
 #                      (default "Nordri Bootstrap").
-#   HYDRATE_URL_MODE   seed (default) | forgejo | swap — passed to
-#                      patch_repo_urls_tree after the per-component patch;
-#                      see lib/patch-urls.sh.
+#
+# Every hydration commit records the source checkout's HEAD in a
+# `Source-Commit: <sha>` trailer (graduate.sh reads it).
 
 # Copy a source tree into a fresh dir, dropping its .git so we push a clean
 # orphan snapshot rather than the source history.
@@ -24,7 +24,7 @@ hydrate_prepare_tree() {
 # Push a prepared tree to the seed Gitea as a forced fresh main. Runs in a
 # subshell so the caller's cwd is untouched even on failure.
 hydrate_push_tree() {
-    local dir="$1" owner="$2" gitea_repo="$3" commit_msg="$4"
+    local dir="$1" owner="$2" gitea_repo="$3" commit_msg="$4" src_sha="${5:-unknown}"
     (
         cd "$dir" || exit 1
         git init
@@ -32,7 +32,7 @@ hydrate_push_tree() {
         git config user.name "${HYDRATE_COMMITTER:-Nordri Bootstrap}"
         git checkout -b main
         git add .
-        git commit -m "$commit_msg"
+        git commit -q -m "$commit_msg" -m "Source-Commit: $src_sha"
         git remote add origin "$GITEA_GIT_BASE/$owner/$gitea_repo.git"
         git push -u origin main --force
     )
@@ -49,11 +49,12 @@ hydrate_working_tree_repo() {
     fi
     echo "💧 Hydrating '$gitea_repo' to Seed Gitea..."
     gitea_ensure_repo "$owner" "$gitea_repo" "${HYDRATE_AUTO_INIT:-false}"
-    local tmp
+    local tmp src_sha
+    src_sha="$(git -C "$src_dir" rev-parse HEAD 2>/dev/null || echo unknown)"
     tmp="$(mktemp -d)"
     TEMP_DIRS+=("$tmp")
     hydrate_prepare_tree "$src_dir" "$tmp"
-    hydrate_push_tree "$tmp" "$owner" "$gitea_repo" "$commit_msg"
+    hydrate_push_tree "$tmp" "$owner" "$gitea_repo" "$commit_msg" "$src_sha"
     rm -rf "$tmp"
     echo "✅ '$gitea_repo' hydrated to Seed Gitea."
 }

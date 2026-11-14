@@ -95,7 +95,7 @@ kubectl get composition <name> -o yaml | yq '.metadata.managedFields[].manager'
 # Both `argocd-controller` AND `crossplane` writing the Composition = your flap.
 ```
 
-(The SiliconSaga re-hydrate workflow — push to in-cluster seed-gitea via `update-embedded-git.sh <env>` — lives in the realm's `siliconsaga-stack` skill.)
+(The SiliconSaga re-hydrate workflow — push to in-cluster seed-gitea via `update-embedded-git.sh <realm>` — lives in the realm's `siliconsaga-stack` skill.)
 
 ## CompositionRevision Flapping — Three Causes
 

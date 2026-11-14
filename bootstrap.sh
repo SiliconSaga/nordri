@@ -2,6 +2,13 @@
 set -e
 
 # Nordri Bootstrap Script
+# Usage: ./bootstrap.sh <realm> <cluster>
+#   <realm>   the owning realm (its checkout at ../../realms/<realm>, or REALM_DIR)
+#   <cluster> this cluster's name; its identity (environment, role, maturity...)
+#             is resolved from the realm's clusters/<cluster>.yaml and written to
+#             the cluster as ConfigMap nordri/cluster-identity BEFORE Layer 0.
+#             Nothing per-cluster is stamped into the hydrated manifests.
+#
 # Implements a layered infra build strategy:
 # 1.   Assume existing Kubernetes cluster available via kubectl
 # 2.   Install Seed Gitea + hydrate Nordri AND Nidavellir repos into it
@@ -50,10 +57,11 @@ set -e
 #                 • Otherwise, a strong random password is generated.
 #               After resolution, the Secret is rewritten to match.
 #
-#   HYDRATE_URL_MODE  seed (default) | forgejo | swap. Which repoURL form the
-#               hydrated manifests carry — see lib/patch-urls.sh. bootstrap
-#               always wants `seed`; the other modes exist for the Forgejo
-#               graduation flow (realm Forgejo day-2 design, Phase 3).
+#   REALM_DIR   The owning realm's checkout. Default: ../../realms/<realm>
+#               relative to this script (nordri lives at components/nordri).
+#
+#   VENDOR_MIRRORS  Space-separated vendor component dirs to mirror (real
+#               history + tags) into the seed. Default: keycloak-k8s-resources.
 #
 #   NIDAVELLIR_DIR / MIMIR_DIR / HEIMDALL_DIR
 #               Absolute path to each sibling component's checkout. Defaults
@@ -64,14 +72,15 @@ set -e
 #               on a live environment the shares belong in the password
 #               manager first (nidavellir docs/secrets-management.md).
 #   OPENBAO_SEEDS_FILE Path to the realm's seed declaration. Default:
-#               <REALM_DIR>/openbao-seeds when a realm is given; see
+#               <REALM_DIR>/openbao-seeds; see
 #               lib/openbao.sh for the one-line-per-path format.
 #
 #   KUBE_CONTEXT  Optional. The kubectl context this run is for; the script
 #               refuses to start if the current context differs (it never
-#               switches contexts itself). Set or not, a gke target requires a
-#               gke_* context and a homelab target refuses one — see
-#               lib/kube-context.sh.
+#               switches contexts itself — the context is a human act). Set or
+#               not, a gke environment requires a gke_* context and a homelab
+#               one refuses it — see lib/kube-context.sh. A cluster whose live
+#               identity names a different cluster is refused too.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # Helm 4 applies server-side by default, and a RE-RUN on a cluster where ArgoCD
@@ -89,14 +98,11 @@ esac
 # Shared hydration libraries (extracted from the duplicated inline blocks).
 . "$SCRIPT_DIR/lib/gitea.sh"
 . "$SCRIPT_DIR/lib/hydrate.sh"
-. "$SCRIPT_DIR/lib/patch-nidavellir.sh"
-. "$SCRIPT_DIR/lib/patch-mimir.sh"
-. "$SCRIPT_DIR/lib/patch-velero.sh"
-. "$SCRIPT_DIR/lib/patch-urls.sh"
+. "$SCRIPT_DIR/lib/identity.sh"
+. "$SCRIPT_DIR/lib/gitops.sh"
 . "$SCRIPT_DIR/lib/openbao.sh"
 . "$SCRIPT_DIR/lib/kube-context.sh"
 . "$SCRIPT_DIR/lib/garage.sh"
-TARGET=$1
 # Capture explicit GITEA_PASS env input here without applying a default —
 # the resolver populates the value below. Username is fixed to
 # "nordri-admin" inside the resolver (downstream ArgoCD Application
@@ -131,40 +137,36 @@ HYDRATE_AUTO_INIT=true
 # update-embedded-git.sh.
 VENDOR_MIRRORS="${VENDOR_MIRRORS:-keycloak-k8s-resources}"
 
-if [[ -z "$TARGET" ]]; then
-    echo "Usage: ./bootstrap.sh [gke|homelab] [realm]"
+REALM="${1:-}"; CLUSTER="${2:-}"
+if [[ -z "$REALM" || -z "$CLUSTER" ]]; then
+    echo "Usage: ./bootstrap.sh <realm> <cluster>"
+    echo "  <realm>   the owning realm (its checkout at ../../realms/<realm>, or REALM_DIR)"
+    echo "  <cluster> this cluster's name, e.g. homelab-prod, homelab-test, gke-prod, homelab-<hostname>"
+    echo "  A cluster with no clusters/<cluster>.yaml in the realm is a homelab lab at bootstrap maturity."
     exit 1
 fi
-
-if [[ "$TARGET" != "gke" && "$TARGET" != "homelab" ]]; then
-    echo "Error: Target must be 'gke' or 'homelab'"
-    exit 1
+for v in "$REALM" "$CLUSTER"; do
+    if [[ ! "$v" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]] || [[ ${#v} -gt 63 ]]; then
+        echo "❌ '$v' must be a DNS-1123 label (lowercase alphanumeric and '-', max 63 chars)." >&2; exit 1
+    fi
+done
+REALM_DIR="${REALM_DIR:-$(dirname "$(dirname "$SCRIPT_DIR")")/realms/$REALM}"
+if [[ ! -d "$REALM_DIR/cluster" ]]; then
+    echo "❌ Realm '$REALM' has no cluster/ config at: $REALM_DIR/cluster (set REALM_DIR or clone the realm)." >&2; exit 1
 fi
+# Resolve the identity now: the environment it yields drives the context guard
+# and every environment-specific layer below. Nothing is written yet.
+IDENTITY="$(IDENTITY_LIVE_TAILNET="$(identity_live_value tailnetNode)" identity_resolve "$REALM_DIR" "$CLUSTER")" || exit 1
+TARGET="$(printf '%s\n' "$IDENTITY" | sed -n 's/^environment=//p')"
+MATURITY="$(printf '%s\n' "$IDENTITY" | sed -n 's/^maturity=//p')"
+ROLE="$(printf '%s\n' "$IDENTITY" | sed -n 's/^role=//p')"
+GITOPS_ORG="$(gitops_canonical_org "$REALM")"
+GITOPS_VENDOR_ORG="$(gitops_vendor_org "$REALM")"
+echo "🪪 cluster $CLUSTER: environment=$TARGET role=$ROLE maturity=$MATURITY (realm $REALM)"
 
 # Every kubectl below follows the kubeconfig's current context, not the ws k8s
-# guard scope — refuse now if that context does not fit the target.
+# guard scope — refuse now if that context does not fit the environment.
 require_kube_context "$TARGET" || exit 1
-
-# Optional owning realm (arg 2): a realm whose cluster/ subtree carries
-# realm-owned in-cluster config (e.g. the siliconsaga keycloak realm-import).
-# Omit it for a generic demo-only stack. REALM_DIR overrides the default
-# <workspace>/realms/<realm> resolution (nordri lives at <workspace>/components/nordri).
-REALM="${2:-}"
-if [[ -n "$REALM" ]]; then
-    if [[ ! "$REALM" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]] || [[ ${#REALM} -gt 63 ]]; then
-        echo "❌ Realm '$REALM' must be a DNS-1123 label (lowercase alphanumeric and '-', max 63 chars) — it names a Gitea repo and a Kubernetes Application." >&2
-        exit 1
-    fi
-fi
-REALM_DIR="${REALM_DIR:-}"
-if [[ -n "$REALM" && -z "$REALM_DIR" ]]; then
-    REALM_DIR="$(dirname "$(dirname "$SCRIPT_DIR")")/realms/$REALM"
-fi
-if [[ -n "$REALM" && ! -d "$REALM_DIR/cluster" ]]; then
-    echo "❌ Owning realm '$REALM' has no cluster/ config at: $REALM_DIR/cluster" >&2
-    echo "   Pass a realm whose repo carries cluster/, set REALM_DIR, or omit the arg for demo-only." >&2
-    exit 1
-fi
 
 command -v jq >/dev/null 2>&1 || {
     echo "❌ This script requires 'jq' on PATH (used to URL-encode Gitea credentials)." >&2
@@ -172,7 +174,10 @@ command -v jq >/dev/null 2>&1 || {
     exit 1
 }
 
-echo "🚀 Bootstrapping Nordri for target: $TARGET"
+echo "🪪 [Layer -1] Writing the cluster identity..."
+IDENTITY_SKIP_ENVCONFIG=1 REALM_DIR="$REALM_DIR" bash "$SCRIPT_DIR/scripts/identity.sh" apply "$REALM" "$CLUSTER" || exit 1
+
+echo "🚀 Bootstrapping Nordri for cluster $CLUSTER (environment: $TARGET)"
 
 # --- Step 0: Pre-flight Checks (Rancher Desktop Specifics) ---
 # Only relevant when the TARGET is the local Rancher Desktop VM (homelab path).
@@ -352,7 +357,7 @@ resolve_gitea_credentials() {
         echo "❌ Existing Gitea release in '$GITEA_CREDENTIALS_NAMESPACE' but no $GITEA_CREDENTIALS_SECRET Secret and no GITEA_PASS env var." >&2
         echo "   Generating a random password here would silently disagree with the live admin user (the Helm chart preserves it on upgrade)." >&2
         echo "   Re-run with the live password to migrate this cluster:" >&2
-        echo "     GITEA_PASS=<live-password> $0 $TARGET" >&2
+        echo "     GITEA_PASS=<live-password> $0 $REALM $CLUSTER" >&2
         exit 1
     else
         # Fresh install: generate a strong random password.
@@ -390,11 +395,6 @@ echo "✅ Gitea installed and running."
 # --- Step 2: Hydrate Configuration (Layer 2) ---
 echo "💧 [Layer 2] Hydrating Configuration..."
 
-# Create a temporary directory for hydration
-HYDRATE_DIR=$(mktemp -d)
-TEMP_DIRS+=("$HYDRATE_DIR")
-echo "   Working in $HYDRATE_DIR"
-
 # Reach the Seed Gitea endpoint. By default that's localhost:3000 via a
 # kubectl port-forward; if GITEA_HOST is overridden (e.g. gitea.cmdbee.org
 # on a re-bootstrap of an existing cluster that already has the HTTPRoute
@@ -429,80 +429,33 @@ else
     fi
 fi
 
-# gitea_ensure_repo (create-if-missing; auto_init for fresh repos) lives in lib/gitea.sh.
+# The orgs, then the stable `git` Service every Application's repoURL goes
+# through (lib/gitops.sh). Repos are created by the hydrate calls below.
+gitops_ensure_org "$GITOPS_ORG" || exit 1
+gitops_ensure_org "$GITOPS_VENDOR_ORG" || exit 1
+gitops_ensure_git_service || exit 1
 
-# Create all repos upfront (sequential with retry to avoid Gitea init races)
-gitea_ensure_repo "$GITEA_REPO_NAME" true
+# nordri itself: the platform/ tree and root-app.yaml, verbatim. No overlay
+# sed, no project stamp, no envs/ — every per-cluster value is in the identity.
+hydrate_working_tree_repo "$SCRIPT_DIR" "$GITOPS_ORG" "$GITEA_REPO_NAME" "Hydration of nordri"
 
-# Prepare the content
-# Copy platform shared files
-cp -r "$SCRIPT_DIR/platform" "$HYDRATE_DIR/"
-# Copy environment specific values as the 'default' values for this cluster
-mkdir -p "$HYDRATE_DIR/envs"
-cp "$SCRIPT_DIR/envs/$TARGET/values.yaml" "$HYDRATE_DIR/envs/values.yaml"
-
-# Dynamic Patching: Point the App-of-Apps to the correct Kustomize Overlay
-# Use portable sed -i (macOS requires '' as backup extension, GNU sed does not)
-if [[ "$OSTYPE" == "darwin"* ]]; then
-  sed -i '' "s|path: platform/fundamentals|path: platform/fundamentals/overlays/$TARGET|g" "$HYDRATE_DIR/platform/argocd/app-of-apps.yaml"
-else
-  sed -i "s|path: platform/fundamentals|path: platform/fundamentals/overlays/$TARGET|g" "$HYDRATE_DIR/platform/argocd/app-of-apps.yaml"
-fi
-
-# Stamp the GCP project into the Velero Application (GKE only; no-op for
-# homelab). Committing a bare placeholder keeps the repo free of any one
-# project's identity — the value exists only in the hydrated copy pushed to the
-# Seed Gitea. Shared with update-embedded-git.sh; see lib/patch-velero.sh.
-patch_velero_tree "$HYDRATE_DIR" "$TARGET" || exit 1
-
-# Copy the root application — BEFORE the URL rewrite below, so it is covered.
-cp "$SCRIPT_DIR/platform/root-app.yaml" "$HYDRATE_DIR/"
-
-# Rewrite committed Forgejo repoURLs to the seed form. A no-op until the
-# manifests move to the durable form (realm Forgejo day-2 design, Phase 3).
-patch_repo_urls_tree "$HYDRATE_DIR" "${HYDRATE_URL_MODE:-seed}" >/dev/null || exit 1
-
-# Push Nordri to Gitea
-cd $HYDRATE_DIR
-git init
-git config user.email "bootstrap@nordri.local"
-git config user.name "Nordri Bootstrap"
-git checkout -b main
-git add .
-git commit -m "Hydration for $TARGET"
-git remote add origin "$GITEA_GIT_BASE/$GITEA_USER/$GITEA_REPO_NAME.git"
-git push -u origin main --force
-cd -
-# `git remote add` writes the admin password into .git/config; don't leave
-# that lying around on disk after the push completes.
-rm -rf "$HYDRATE_DIR"
-
-echo "✅ Nordri configuration hydrated to Seed Gitea."
-
-# Also push Nidavellir to Gitea so ArgoCD can manage Vegvísir (Gateway + TLS).
-# ArgoCD pulls from internal Gitea during bootstrap; can be swapped to GitHub later.
-# See nidavellir/vegvisir/README.md for the transition procedure.
-hydrate_working_tree_repo "$NIDAVELLIR_DIR" "$NIDAVELLIR_GITEA_REPO" "Hydration for $TARGET" patch_nidavellir_tree
-
-# Also push Mimir to Gitea so ArgoCD can deploy data service operators + XRDs.
-# Mimir is referenced by nidavellir/apps/mimir-app.yaml (sync-wave 6).
-hydrate_working_tree_repo "$MIMIR_DIR" "$MIMIR_GITEA_REPO" "Hydration for $TARGET" patch_mimir_tree
-
-# Also push Heimdall to Gitea so ArgoCD can deploy the observability stack.
-# Heimdall is referenced by nidavellir/apps/heimdall-app.yaml (sync-wave 10).
-hydrate_working_tree_repo "$HEIMDALL_DIR" "$HEIMDALL_GITEA_REPO" "Hydration for $TARGET"
+# Nidavellir (Vegvísir, the Gateway + TLS), Mimir (data service operators + XRDs,
+# sync-wave 6) and Heimdall (observability, sync-wave 10): ArgoCD pulls each from
+# the seed during bootstrap.
+hydrate_working_tree_repo "$NIDAVELLIR_DIR" "$GITOPS_ORG" "$NIDAVELLIR_GITEA_REPO" "Hydration of nidavellir"
+hydrate_working_tree_repo "$MIMIR_DIR" "$GITOPS_ORG" "$MIMIR_GITEA_REPO" "Hydration of mimir"
+hydrate_working_tree_repo "$HEIMDALL_DIR" "$GITOPS_ORG" "$HEIMDALL_GITEA_REPO" "Hydration of heimdall"
 
 # Vendor mirrors: push real history + tags so in-cluster apps can pin exact
 # upstream refs (e.g. keycloak-operator pins tag 26.6.3). Also run day-2 by
 # update-embedded-git.sh; running it here makes a fresh bootstrap reproducible.
-hydrate_vendor_mirrors "$VENDOR_MIRRORS"
+hydrate_vendor_mirrors "$GITOPS_VENDOR_ORG" "$VENDOR_MIRRORS"
 
-# Owning realm (optional): hydrate its cluster/ subtree so ArgoCD can sync
-# realm-owned config. The realm root-app that points ArgoCD at it is registered
-# after ArgoCD is installed (see the realm root-app step below).
-if [[ -n "$REALM" ]]; then
-    hydrate_working_tree_repo "$REALM_DIR/cluster" "$REALM" "Realm config for $TARGET"
-fi
+# The whole realm checkout, so the seed's realm repository has the same shape
+# as Forgejo's mirror and the realm root Application reads path cluster.
+hydrate_working_tree_repo "$REALM_DIR" "$GITOPS_ORG" "$REALM" "Hydration of $REALM"
+
+echo "✅ Seed Gitea hydrated."
 
 # --- Step 2.5: Install Crossplane Core (Layer 2.5) ---
 # Gateway API CRDs were installed here in earlier versions, but Traefik chart
@@ -547,6 +500,10 @@ while true; do
 done
 
 echo "✅ Crossplane Installed."
+
+# Second identity write, now that Crossplane's CRDs exist: this one also writes
+# the EnvironmentConfig, so it exists before the providers' configs reference it.
+REALM_DIR="$REALM_DIR" bash "$SCRIPT_DIR/scripts/identity.sh" apply "$REALM" "$CLUSTER" || exit 1
 
 # --- Step 2.6: Install Traefik (Layer 2.6) ---
 # Pre-install Traefik so its CRDs (IngressRoute, Middleware, etc.) exist before ArgoCD tries
@@ -633,6 +590,7 @@ helm upgrade --install argocd argo/argo-cd --namespace argo --version "$ARGOCD_C
   --set server.insecure=true \
   --set server.extraArgs={--insecure} \
   --set controller.metrics.enabled=true \
+  --set configs.params."applicationsetcontroller\.enable\.policy\.override"=true \
   --set configs.cm."kustomize\.buildOptions"="--load-restrictor LoadRestrictionsNone --enable-helm"
 
 echo "⏳ Waiting for ArgoCD to become ready..."
@@ -668,32 +626,13 @@ echo "🔗 [Layer 3] Connecting Argo to Seed Gitea..."
 # Since Gitea and Argo are in the same cluster, Argo can talk to Gitea via K8s DNS
 # We assume the repo is public inside the cluster for read access, or we configure creds
 
-# Apply the Root App. Applied from a patched COPY, never straight from the
-# source tree: the committed manifest carries the durable (Forgejo) repoURL
-# form once the Phase 3 URL train lands, and a bootstrap-maturity cluster has
-# no Forgejo to point at. Same rewrite the hydrated repos get.
-echo "🌱 [Layer 4] Applying Root Application..."
-ROOT_APP_DIR="$(mktemp -d)"
-TEMP_DIRS+=("$ROOT_APP_DIR")
-cp "$SCRIPT_DIR/platform/root-app.yaml" "$ROOT_APP_DIR/root-app.yaml"
-patch_repo_urls_file "$ROOT_APP_DIR/root-app.yaml" "${HYDRATE_URL_MODE:-seed}" platform/root-app.yaml >/dev/null || exit 1
-kubectl apply -f "$ROOT_APP_DIR/root-app.yaml" -n argo
+# Both root Applications go through the library: it renders them with the stable
+# in-cluster Git address (the `git` Service) and the realm's path, and applies
+# them. The realm's resources retry until the platform CRDs they depend on exist.
+echo "🌱 [Layer 4] Applying the root Applications..."
+gitops_apply_root_apps "$REALM" || exit 1
 
-echo "✅ Root Application applied. ArgoCD is now syncing from the internal Seed Gitea."
-
-# Owning realm (optional): register a generic root-app pointing ArgoCD at the
-# hydrated realm repo. Templated from the realm arg so nordri commits no
-# realm-specific value. The realm's resources retry until the platform CRDs
-# (Keycloak operator, ESO) they depend on exist.
-if [[ -n "$REALM" ]]; then
-    echo "🔗 [Layer 4] Registering realm root-app for '$REALM'..."
-    # Same patched-copy rule as the root app above: the template's repoURL is
-    # committed in the durable form and must be rewritten for the seed.
-    sed "s|__REALM_REPO__|$REALM|g" "$SCRIPT_DIR/platform/argocd/realm-root-app.template.yaml" \
-        > "$ROOT_APP_DIR/realm-root-app.yaml"
-    patch_repo_urls_file "$ROOT_APP_DIR/realm-root-app.yaml" "${HYDRATE_URL_MODE:-seed}" platform/argocd/realm-root-app.template.yaml >/dev/null || exit 1
-    kubectl apply -n argo -f "$ROOT_APP_DIR/realm-root-app.yaml"
-fi
+echo "✅ Root Applications applied. ArgoCD is now syncing from the internal Seed Gitea."
 
 # --- GKE: Velero readiness check ---
 # No credentials Secret is created here any more. GKE Velero authenticates via
@@ -925,7 +864,7 @@ if openbao_wait_running 600; then
     if [[ "$OPENBAO_READY_FOR_CONFIG" == "true" ]]; then
         openbao_configure || { echo "❌ OpenBao configuration failed." >&2; exit 1; }
         OPENBAO_SEEDS_FILE="${OPENBAO_SEEDS_FILE:-}"
-        if [[ -z "$OPENBAO_SEEDS_FILE" && -n "$REALM" && -f "$REALM_DIR/openbao-seeds" ]]; then
+        if [[ -z "$OPENBAO_SEEDS_FILE" && -f "$REALM_DIR/openbao-seeds" ]]; then
             OPENBAO_SEEDS_FILE="$REALM_DIR/openbao-seeds"
         fi
         if [[ -n "$OPENBAO_SEEDS_FILE" ]]; then

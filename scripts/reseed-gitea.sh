@@ -2,7 +2,7 @@
 set -eo pipefail
 
 # Reinstall the seed Gitea on a running cluster, without the rest of bootstrap.
-# Usage: scripts/reseed-gitea.sh [gke|homelab]
+# Usage: scripts/reseed-gitea.sh <realm> <cluster>
 #
 # For a seed whose Helm release is broken or in an older shape. A seed that only
 # lost its repositories (the pod restarted; storage is ephemeral by design) does
@@ -22,19 +22,36 @@ set -eo pipefail
 #   GITEA_CHART_VERSION  pin the chart version (default: latest)
 #   KUBE_CONTEXT         the context this run is for; see lib/kube-context.sh
 #
-# Afterwards, re-hydrate: ./update-embedded-git.sh <target> <realm>
+# Afterwards, re-hydrate: ./update-embedded-git.sh <realm>
 
 SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 . "$SCRIPT_DIR/lib/gitea.sh"
+. "$SCRIPT_DIR/lib/identity.sh"
 . "$SCRIPT_DIR/lib/kube-context.sh"
-TARGET=$1
+REALM="${1:-}"; CLUSTER="${2:-}"
 
-if [[ "$TARGET" != "gke" && "$TARGET" != "homelab" ]]; then
-    echo "Usage: scripts/reseed-gitea.sh [gke|homelab]" >&2
+if [[ -z "$REALM" || -z "$CLUSTER" ]]; then
+    echo "Usage: scripts/reseed-gitea.sh <realm> <cluster>" >&2
     exit 1
 fi
+REALM_DIR="${REALM_DIR:-$(dirname "$(dirname "$SCRIPT_DIR")")/realms/$REALM}"
+if [[ ! -d "$REALM_DIR/cluster" ]]; then
+    echo "❌ Realm '$REALM' has no cluster/ config at: $REALM_DIR/cluster (set REALM_DIR or clone the realm)." >&2
+    exit 1
+fi
+# The environment comes from the resolved identity, not the live cluster: the
+# seed being reinstalled may be the only thing left to ask.
+IDENTITY="$(identity_resolve "$REALM_DIR" "$CLUSTER")" || exit 1
+TARGET="$(printf '%s\n' "$IDENTITY" | sed -n 's/^environment=//p')"
 
 require_kube_context "$TARGET" || exit 1
+# The current context must be the named cluster: refuse when its live identity
+# says otherwise (a cluster with no identity yet is let through).
+LIVE_CLUSTER="$(identity_live_value cluster)"
+if [[ -n "$LIVE_CLUSTER" && "$LIVE_CLUSTER" != "$CLUSTER" ]]; then
+    echo "❌ The current kube context is cluster '$LIVE_CLUSTER', not '$CLUSTER'. Switch context first; this script never does." >&2
+    exit 1
+fi
 
 GITEA_CREDENTIALS_NAMESPACE="gitea"
 GITEA_CREDENTIALS_SECRET="gitea-admin-credentials"
@@ -70,9 +87,9 @@ gitea_wait_ready 300 || exit 1
 
 echo "✅ Seed Gitea reinstalled. Its repositories are empty until you re-hydrate:"
 if [[ "$GITEA_PASS_FROM_ENV" -eq 1 ]]; then
-    echo "   ./update-embedded-git.sh $TARGET <realm>   — with GITEA_PASS exported to the same value, as for this run"
+    echo "   ./update-embedded-git.sh $REALM   — with GITEA_PASS exported to the same value, as for this run"
     echo "   The $GITEA_CREDENTIALS_NAMESPACE/$GITEA_CREDENTIALS_SECRET Secret was not updated, so without GITEA_PASS the hydrate would read a password this Gitea no longer accepts."
     echo "   Set it without echo ('read -rs GITEA_PASS; export GITEA_PASS'), not inline on the command line, where shell history keeps it."
 else
-    echo "   ./update-embedded-git.sh $TARGET <realm>"
+    echo "   ./update-embedded-git.sh $REALM"
 fi

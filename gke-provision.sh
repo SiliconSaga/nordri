@@ -12,7 +12,7 @@
 #   ./gke-provision.sh [create|delete|credentials|velero-setup|openbao-seal-setup|openbao-backup-setup]
 #
 # After creating the cluster:
-#   ./bootstrap.sh gke
+#   ./bootstrap.sh <realm> <cluster>
 #
 # To start over with a clean cluster (recommended over fighting finalizers):
 #   ./gke-provision.sh delete   # then re-run create
@@ -115,7 +115,7 @@ create)
     echo "✅ Cluster ready. kubectl context is now: $(kubectl config current-context)"
     echo ""
     echo "Next: ./gke-provision.sh velero-setup   (backup storage + IAM)"
-    echo "      ./bootstrap.sh gke"
+    echo "      ./bootstrap.sh <realm> <cluster>"
     echo ""
     echo "⚠️  Remember: this cluster costs money. Delete it when done:"
     echo "   ./gke-provision.sh delete"
