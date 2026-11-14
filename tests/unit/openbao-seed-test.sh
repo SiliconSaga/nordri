@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2015
 # Unit test for lib/openbao.sh's realm-seed parser and write logic, with a
 # kubectl stub standing in for the cluster. The stub answers the two calls
 # the seeding path makes — the parked-token read and `exec -i … sh -c` — and

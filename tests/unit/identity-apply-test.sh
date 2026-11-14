@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2015
 # Unit test for scripts/identity.sh apply: the ConfigMap, the in-cluster
 # Secret's labels and annotations, the EnvironmentConfig handover, and the
 # cluster-name guard. kubectl is a recording stub.

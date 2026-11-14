@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2015
 # Unit test for lib/identity.sh: flat-file parsing, the three layers, the lab
 # default for an undeclared cluster, the gke gcpProject requirement, and the
 # tailnet default (realm Phase 3 design, Decision 3 and the 2026-11-13 review).

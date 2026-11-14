@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2015
 # Shape test for Phase 3a's bootstrap and update scripts: the <realm> <cluster>
 # contract, no patch libraries, no overlay sed, no envs copy, the identity
 # written first, the policy override in both ArgoCD install places.
@@ -52,4 +53,34 @@ check "reseed refuses a realm that is not a DNS-1123 label" "[[ $rc -eq 1 && \"\
 out=$(bash "$root/scripts/reseed-gitea.sh" realm-x 'Bad_Cluster' 2>&1); rc=$?
 check "reseed refuses a cluster that is not a DNS-1123 label" "[[ $rc -eq 1 && \"\$out\" == *'DNS-1123'* ]]"
 check "docs match the code: --target forgejo is refused on any prod cluster" "! grep -q 'refused on a graduated .prod. cluster' \"$root/CLAUDE.md\" \"$root/docs/bootstrap.md\" && ! grep -q 'Refused$' \"$root/update-embedded-git.sh\""
+# Behaviour of refuse_old_code_cluster, extracted and run against a kubectl stub.
+# K_CRD_ERR: error text for the CRD get (empty = installed); K_APP_FAIL=1: the
+# application get fails; K_ROW: what the application get prints.
+fn="$(sed -n '/^refuse_old_code_cluster()/,/^}/p' "$root/bootstrap.sh")"
+refuse() (
+    # shellcheck disable=SC2329
+    kubectl() {
+        case "$*" in
+            'get crd'*) [[ -z "${K_CRD_ERR:-}" ]] && return 0; echo "$K_CRD_ERR" >&2; return 1 ;;
+            'get application'*) [[ -n "${K_APP_FAIL:-}" ]] && return 1; printf '%s' "${K_ROW:-}" ;;
+        esac
+    }
+    GIT_STABLE_BASE="http://stable.example"; REALM=realm-x; CLUSTER=c1
+    eval "$fn"
+    refuse_old_code_cluster
+)
+K_CRD_ERR='Error from server (NotFound): customresourcedefinitions "applications.argoproj.io" not found' refuse >/dev/null 2>&1; rc=$?
+check "refuse_old_code_cluster: no Application CRD (fresh cluster) passes" "[[ $rc -eq 0 ]]"
+K_CRD_ERR='Unable to connect to the server' refuse >/dev/null 2>&1; rc=$?
+check "refuse_old_code_cluster: any other CRD error is refused" "[[ $rc -eq 1 ]]"
+K_APP_FAIL=1 refuse >/dev/null 2>&1; rc=$?
+check "refuse_old_code_cluster: an unreadable nordri-root is refused" "[[ $rc -eq 1 ]]"
+K_ROW='' refuse >/dev/null 2>&1; rc=$?
+check "refuse_old_code_cluster: no nordri-root passes" "[[ $rc -eq 0 ]]"
+K_ROW='nordri-root|http://stable.example/realm-x/nordri.git' refuse >/dev/null 2>&1; rc=$?
+check "refuse_old_code_cluster: a root at the stable base passes" "[[ $rc -eq 0 ]]"
+K_ROW='nordri-root|http://gitea-http.gitea:3000/nordri-admin/nordri.git' refuse >/dev/null 2>&1; rc=$?
+check "refuse_old_code_cluster: a root elsewhere is refused" "[[ $rc -eq 1 ]]"
+out="$(K_ROW='nordri-root|http://gitea-http.gitea:3000/nordri-admin/nordri.git' refuse 2>&1)"
+check "refuse_old_code_cluster: the refusal names scripts/migrate.sh with realm and cluster" "[[ \"\$out\" == *'scripts/migrate.sh realm-x c1'* ]]"
 echo "---"; [ "$fails" -eq 0 ] && echo "ALL PASS" || { echo "$fails FAILED"; exit 1; }

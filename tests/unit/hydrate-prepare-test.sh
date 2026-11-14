@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2015
 set -uo pipefail
 . "$(cd "$(dirname "$0")" && pwd)/../../lib/hydrate.sh"
 

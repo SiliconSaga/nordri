@@ -7,6 +7,6 @@
 #   file is linted on its own, so shellcheck sees neither side of either.
 # SC1091 "not following": the tests source the libs by a computed path, and the
 #   lint does not run with -x; each lib is linted in its own right.
-# SC2015 "A && B || C": the tests' closing line ([ ok ] && echo PASS || exit 1),
-#   where echo cannot fail.
-disable=SC2034,SC1091,SC2015
+# SC2015 ("A && B || C", the tests' closing line) is scoped to the test files
+#   that need it by a per-file directive, not disabled here.
+disable=SC2034,SC1091

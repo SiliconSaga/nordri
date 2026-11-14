@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2015
 # Every identity lookup in an ApplicationSet template is guarded (index on a
 # missing key yields "", which would render a path like overlays/), and every
 # ApplicationSet carries the two settings that keep an empty generator from

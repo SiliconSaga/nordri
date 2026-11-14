@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2015
 # Unit test for hydrate_prepare_tree in lib/hydrate.sh: a git source is copied
 # without its ignored files (no credential reaches the seed), a plain directory
 # falls back to cp -r, and .git is never carried over.

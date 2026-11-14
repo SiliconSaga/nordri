@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2015
 # Unit test for lib/argo.sh argo_remove_finalizer and argo_wait_refresh_consumed's
 # predicate, against a recording kubectl stub that keeps the Application's
 # finalizers in a state file. The helper must fail loud, keep every finalizer

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2015
 # Unit test for lib/gitops.sh and the org-aware gitea_ensure_repo: org names,
 # the stable address, the idempotent org and Service creation, the root
 # Applications rendered with the stable URL and path cluster. curl and kubectl
