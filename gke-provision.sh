@@ -467,17 +467,17 @@ openbao-seal-setup)
     # may be set for other gcloud reasons; if it disagrees, that is an error
     # rather than a second source of truth — an OpenBao whose seal names a key
     # in the wrong region is diagnosable only from the pod log.
-    IDENTITY_MANIFEST="$(dirname "$0")/platform/fundamentals/manifests/cluster-identity-gke.yaml"
-    SEAL_REGION="$(sed -n 's/^  gcpRegion:[[:space:]]*//p' "$IDENTITY_MANIFEST")"
+    IDENTITY_DEFAULTS="$(dirname "$0")/identity/defaults-gke.yaml"
+    SEAL_REGION="$(sed -n 's/^gcpRegion:[[:space:]]*//p' "$IDENTITY_DEFAULTS")"
     if [[ -z "$SEAL_REGION" ]]; then
-        echo "❌ Could not read gcpRegion from $IDENTITY_MANIFEST." >&2
+        echo "❌ Could not read gcpRegion from $IDENTITY_DEFAULTS." >&2
         echo "   The OpenBao composition renders that value into its seal stanza, so the key ring must be created there." >&2
         exit 1
     fi
     if [[ -n "${GCP_REGION:-}" && "$GCP_REGION" != "$SEAL_REGION" ]]; then
         echo "❌ GCP_REGION=$GCP_REGION disagrees with cluster-identity gcpRegion=$SEAL_REGION." >&2
         echo "   The seal key ring must live in the region cluster-identity names. Unset GCP_REGION," >&2
-        echo "   or change gcpRegion in $IDENTITY_MANIFEST and re-hydrate before running this." >&2
+        echo "   or change gcpRegion in $IDENTITY_DEFAULTS and re-hydrate before running this." >&2
         exit 1
     fi
     SEAL_KEYRING="openbao"
@@ -609,10 +609,10 @@ openbao-backup-setup)
     # from cluster-identity's gcpProject (<project>-openbao-backups). One
     # derivation. The bucket's region is cluster-identity's gcpRegion, read from
     # the same manifest openbao-seal-setup reads.
-    IDENTITY_MANIFEST="$(dirname "$0")/platform/fundamentals/manifests/cluster-identity-gke.yaml"
-    BACKUP_REGION="$(sed -n 's/^  gcpRegion:[[:space:]]*//p' "$IDENTITY_MANIFEST")"
+    IDENTITY_DEFAULTS="$(dirname "$0")/identity/defaults-gke.yaml"
+    BACKUP_REGION="$(sed -n 's/^gcpRegion:[[:space:]]*//p' "$IDENTITY_DEFAULTS")"
     if [[ -z "$BACKUP_REGION" ]]; then
-        echo "❌ Could not read gcpRegion from $IDENTITY_MANIFEST." >&2
+        echo "❌ Could not read gcpRegion from $IDENTITY_DEFAULTS." >&2
         exit 1
     fi
     BACKUP_BUCKET="${GCP_PROJECT}-openbao-backups"

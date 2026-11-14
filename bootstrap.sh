@@ -203,7 +203,7 @@ if [[ "$TARGET" == "homelab" ]] && command -v rdctl &> /dev/null; then
 fi
 
 # --- Step 0b: the storage class cluster-identity names (homelab) ---
-# cluster-identity-homelab.yaml pins `storageClass: local-path`, the name k3s
+# identity/defaults-homelab.yaml pins `storageClass: local-path`, the name k3s
 # and Rancher Desktop ship. Docker Desktop's built-in Kubernetes runs the SAME
 # rancher.io/local-path provisioner but calls its classes `standard` and
 # `hostpath`, so on that host every PVC in the stack would sit Pending with
@@ -221,7 +221,7 @@ if [[ "$TARGET" == "homelab" ]]; then
         DEFAULT_SC_COUNT="$(printf '%s' "$DEFAULT_SCS" | grep -c .)" || DEFAULT_SC_COUNT=0
         if [[ "$DEFAULT_SC_COUNT" -eq 0 ]]; then
             echo "❌ No StorageClass named local-path and no default StorageClass to alias it to." >&2
-            echo "   cluster-identity-homelab.yaml expects local-path; create it (or a default class) and re-run." >&2
+            echo "   identity/defaults-homelab.yaml expects local-path; create it (or a default class) and re-run." >&2
             exit 1
         elif [[ "$DEFAULT_SC_COUNT" -gt 1 ]]; then
             echo "❌ No StorageClass named local-path, and more than one class is marked default:" >&2
