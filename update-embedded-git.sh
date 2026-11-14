@@ -12,9 +12,10 @@ set -e
 #
 #   <realm>            the owning realm (checkout at ../../realms/<realm>, or REALM_DIR)
 #   --target forgejo   push to the cluster's Forgejo instead of the seed Gitea.
-#                      Default: whatever the gitops/git Service points at. Refused
-#                      on a graduated prod cluster, whose Forgejo is written only
-#                      by its puller.
+#                      Default (no --target): whatever the gitops/git Service
+#                      points at. forgejo is the only value. Refused on every
+#                      prod cluster: a prod Forgejo, once graduated, is written
+#                      only by its puller.
 #
 # Optional environment overrides:
 #
@@ -69,12 +70,16 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # Validate args before anything that touches the cluster, so wrong inputs
 # fail with a usage message instead of an obscure k8s/credential error.
-REALM="${1:-}"; TARGET_SERVER="service"
-[[ -n "$REALM" ]] || { echo "Usage: ./update-embedded-git.sh <realm> [--target forgejo]"; exit 1; }
+REALM="${1:-}"; TARGET_ARG=""
+USAGE="Usage: ./update-embedded-git.sh <realm> [--target forgejo]"
+[[ -n "$REALM" ]] || { echo "$USAGE"; exit 1; }
 shift
 while [[ $# -gt 0 ]]; do case "$1" in
-    --target) TARGET_SERVER="${2:-}"; shift 2 ;;
-    *) echo "❌ unknown argument '$1'" >&2; exit 1 ;;
+    --target)
+        [[ $# -ge 2 && -n "$2" ]] || { echo "❌ --target needs a value. $USAGE" >&2; exit 1; }
+        [[ "$2" == "forgejo" ]] || { echo "❌ --target must be forgejo (or omitted, to follow the gitops/git Service). $USAGE" >&2; exit 1; }
+        TARGET_ARG="$2"; shift 2 ;;
+    *) echo "❌ unknown argument '$1'. $USAGE" >&2; exit 1 ;;
 esac; done
 if [[ ! "$REALM" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]] || [[ ${#REALM} -gt 63 ]]; then
     echo "❌ Realm '$REALM' must be a DNS-1123 label (lowercase alphanumeric and '-', max 63 chars) — it names a Gitea repo and a Kubernetes Application." >&2
@@ -98,23 +103,20 @@ command -v jq >/dev/null 2>&1 || {
 CLUSTER="$(identity_live_value cluster)"; ROLE="$(identity_live_value role)"; TARGET="$(identity_live_value environment)"
 [[ -n "$CLUSTER" && -n "$TARGET" ]] || { echo "❌ no cluster identity on this cluster (ConfigMap nordri/cluster-identity). Bootstrap or migrate it first." >&2; exit 1; }
 require_kube_context "$TARGET" || exit 1
+gitops_require_manifest_org "$REALM" || exit 1
 GITOPS_ORG="$(gitops_canonical_org "$REALM")"; GITOPS_VENDOR_ORG="$(gitops_vendor_org "$REALM")"
 git_target="$(gitops_git_service_target)"
-case "$TARGET_SERVER" in
-    service)
-        if [[ "$git_target" == "$GIT_FORGEJO_SERVICE" ]]; then
-            if [[ "$ROLE" == "prod" ]]; then
-                echo "❌ cluster $CLUSTER has graduated: its Forgejo is written only by its puller. Change GitHub instead." >&2; exit 1
-            fi
-            TARGET_SERVER=forgejo
-        else
-            TARGET_SERVER=seed
-        fi ;;
-    forgejo)
-        [[ "$ROLE" != "prod" ]] || { echo "❌ --target forgejo is refused on a prod cluster ($CLUSTER)." >&2; exit 1; } ;;
-    seed) ;;
-    *) echo "❌ --target must be forgejo (or omitted)" >&2; exit 1 ;;
-esac
+if [[ "$TARGET_ARG" == "forgejo" ]]; then
+    [[ "$ROLE" != "prod" ]] || { echo "❌ --target forgejo is refused on a prod cluster ($CLUSTER)." >&2; exit 1; }
+    TARGET_SERVER=forgejo
+elif [[ "$git_target" == "$GIT_FORGEJO_SERVICE" ]]; then
+    if [[ "$ROLE" == "prod" ]]; then
+        echo "❌ cluster $CLUSTER has graduated: its Forgejo is written only by its puller. Change GitHub instead." >&2; exit 1
+    fi
+    TARGET_SERVER=forgejo
+else
+    TARGET_SERVER=seed
+fi
 echo "🎯 pushing to the $TARGET_SERVER on cluster $CLUSTER (git Service → ${git_target:-unset})"
 
 # Default to the historical localhost:3000 (kubectl port-forward path).

@@ -12,7 +12,7 @@ Nordri is the foundation layer: Traefik, Crossplane, Velero, Garage S3. (Longhor
 ```bash
 ./update-embedded-git.sh realm-siliconsaga
 ```
-The script follows kubectl's current context (switching it is a human act) and reads the cluster's identity from `nordri/cluster-identity`; it refuses a cluster with none. `--target forgejo` pushes to the cluster's Forgejo instead of the seed (refused on a graduated `prod` cluster).
+The script follows kubectl's current context (switching it is a human act) and reads the cluster's identity from `nordri/cluster-identity`; it refuses a cluster with none. `--target forgejo` pushes to the cluster's Forgejo instead of the seed (refused on every `prod` cluster: a graduated one's Forgejo is written only by its puller).
 By default the script kubectl-port-forwards to `localhost:3000`. To push via the Gitea HTTPRoute instead (recommended on clusters where the ingress is wired up — and required when the local git credential manager intercepts localhost):
 
 ```bash

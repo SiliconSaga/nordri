@@ -30,10 +30,10 @@ After bootstrapping, you can access the services:
 #### Credentials
 
 *   **Gitea**:
-    *   User: `nordri-admin`. Not currently a runtime knob — downstream
-        ArgoCD Application repoURLs hardcode this, so changing it would
-        also require a hydration-time substitution pass that the script
-        doesn't do today. Track via the OpenBAO migration.
+    *   User: `nordri-admin`. Not a runtime knob: the seed's admin is
+        created under that name and every script that pushes to the seed
+        uses the same literal (the repoURLs name the org, not the user).
+        Track via the OpenBAO migration.
     *   Password: stored in the Kubernetes Secret
         `gitea/gitea-admin-credentials`. Retrieve with:
 
@@ -156,7 +156,7 @@ To push changes to the cluster without re-running the full bootstrap (which can 
 ```bash
 ./update-embedded-git.sh realm-siliconsaga
 ```
-It hydrates the component working trees (and the realm's `cluster/`), pushes them to the seed Gitea, recreating any repository the seed lost, and hard-refreshes every ArgoCD Application. On GKE, push over the seed's public route and name the context, so a mismatched current context is refused:
+It hydrates the component working trees (and the whole realm checkout), pushes them to the seed Gitea, recreating any repository the seed lost, and hard-refreshes every ArgoCD Application. On GKE, push over the seed's public route and name the context, so a mismatched current context is refused:
 ```bash
 KUBE_CONTEXT=gke_<project>_<zone>_<cluster> GITEA_HOST=gitea.cmdbee.org GITEA_SCHEME=https \
   ./update-embedded-git.sh realm-siliconsaga

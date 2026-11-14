@@ -15,6 +15,20 @@ GITOPS_NAMESPACE="gitops"
 # Decision 2, rule 5: the canonical org keeps the realm's bare name; every other
 # class is <realm>-<class>. "realm-siliconsaga" → "siliconsaga".
 gitops_canonical_org() { printf '%s' "${1#realm-}"; }
+
+# The org nordri's own manifests commit in their stable-address repoURLs
+# (platform/argocd/app-of-apps.yaml, nidavellir-apps.yaml, fundamentals/apps/
+# garage.yaml). The scripts derive the org from the realm, so a realm deriving
+# any other org would hydrate into one those Applications never read: refuse
+# it before anything is written, rather than leave a cluster syncing nothing.
+GITOPS_MANIFEST_ORG="siliconsaga"
+gitops_require_manifest_org() {
+    local org; org="$(gitops_canonical_org "$1")"
+    [[ "$org" == "$GITOPS_MANIFEST_ORG" ]] && return 0
+    echo "❌ realm '$1' hydrates into org '$org', but nordri's manifests read '$GITOPS_MANIFEST_ORG/' (platform/argocd/app-of-apps.yaml, nidavellir-apps.yaml, fundamentals/apps/garage.yaml)." >&2
+    echo "   nordri is siliconsaga-specific until those repoURLs are derived too; this realm would leave the cluster reading repositories nothing pushes to." >&2
+    return 1
+}
 gitops_vendor_org() { printf '%s-vendor' "$(gitops_canonical_org "$1")"; }
 gitops_repo_url() { printf '%s/%s/%s.git' "$GIT_STABLE_BASE" "$1" "$2"; }
 
@@ -38,8 +52,10 @@ gitops_ensure_org() {
     echo "❌ creating org $org returned HTTP $status" >&2; return 1
 }
 
+# The git Service's target, or nothing when there is no Service. Status 0
+# either way, also under the callers' pipefail (migrate.sh).
 gitops_git_service_target() {
-    kubectl get service git -n "$GITOPS_NAMESPACE" -o 'jsonpath={.spec.externalName}' 2>/dev/null | tr -d '\r'
+    kubectl get service git -n "$GITOPS_NAMESPACE" -o 'jsonpath={.spec.externalName}' 2>/dev/null | tr -d '\r' || true
 }
 
 # Create the Service pointing at the seed when it does not exist. With an

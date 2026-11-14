@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # components/nordri/lib/seed-access.sh
 # The Git-server credential resolution and reachability block shared by
 # update-embedded-git.sh, scripts/migrate.sh (and graduate.sh): admin

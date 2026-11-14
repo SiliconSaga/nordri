@@ -8,6 +8,8 @@ check() { if eval "$2"; then echo "ok - $1"; else echo "NOT OK - $1"; fails=$((f
 # Stub the cluster tools: record helm's install args, swallow everything else.
 HELM_ARGS=""
 helm() { if [[ "$1" == "upgrade" ]]; then HELM_ARGS="$*"; fi; return 0; }
+# Stubs are called by the lib, which shellcheck does not follow.
+# shellcheck disable=SC2329
 kubectl() { return 0; }
 
 GITEA_USER='nordri-admin'; GITEA_PASS='pw'
@@ -33,6 +35,7 @@ CLOCK=$(mktemp); echo 0 > "$CLOCK"
 date() { local n; n=$(( $(cat "$CLOCK") + 1 )); echo "$n" > "$CLOCK"; echo "$n"; }
 sleep() { :; }
 
+# shellcheck disable=SC2329
 kubectl() { [[ "$1" == "get" ]] && echo "True"; return 0; }
 out=$(gitea_wait_ready 10 2>/dev/null); rc=$?
 check "wait_ready returns 0 once the pod is Ready" "[[ $rc -eq 0 ]]"

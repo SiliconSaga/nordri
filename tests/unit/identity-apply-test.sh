@@ -27,7 +27,12 @@ case "$*" in
   *"get configmap -n nordri cluster-identity -o jsonpath={.data.cluster}"*) printf '%s' "$STUB_LIVE_CLUSTER" ;;
   *"get configmap -n nordri cluster-identity -o jsonpath={.data.tailnetNode}"*) printf '' ;;
   *"get crd environmentconfigs.apiextensions.crossplane.io"*)
-      [[ -n "${STUB_NO_CRD:-}" ]] || printf 'customresourcedefinition.apiextensions.k8s.io/environmentconfigs.apiextensions.crossplane.io' ;;
+      if [[ -n "${STUB_NO_CRD:-}" ]]; then
+          [[ "$*" == *--ignore-not-found* ]] && exit 0
+          echo 'Error from server (NotFound): customresourcedefinitions.apiextensions.k8s.io "environmentconfigs.apiextensions.crossplane.io" not found' >&2; exit 1
+      fi
+      [[ -n "${STUB_CRD_ERR:-}" ]] && { echo 'Unable to connect to the server' >&2; exit 1; }
+      printf 'customresourcedefinition.apiextensions.k8s.io/environmentconfigs.apiextensions.crossplane.io' ;;
   *"get environmentconfig cluster-identity"*)
       [[ -n "$STUB_EC_PRESENT" ]] || exit 0
       jq -n --arg l "$STUB_EC_LABEL" --arg t "$STUB_EC_TID" '{metadata: {name: "cluster-identity",
@@ -122,5 +127,15 @@ check "the refusal names both" "grep -q 'homelab-test' \"\$work/err\" && grep -q
 # Skip the EC projection on request
 STUB_LIVE_CLUSTER="" STUB_EC_PRESENT="" IDENTITY_SKIP_ENVCONFIG=1 run apply realm-x homelab-prod >/dev/null 2>&1
 check "IDENTITY_SKIP_ENVCONFIG skips the EC" "! grep -q 'kind: EnvironmentConfig' \"\$STUB_LOG.applied\""
+
+# Important 7: without IDENTITY_SKIP_ENVCONFIG a missing CRD is an error, so
+# bootstrap's second apply cannot finish with no EnvironmentConfig.
+STUB_LIVE_CLUSTER="" STUB_NO_CRD=1 run apply realm-x homelab-prod >/dev/null 2>"$work/err"; rc=$?
+check "a missing EnvironmentConfig CRD fails apply" "[[ $rc -ne 0 ]]"
+check "the error names the CRD" "grep -q 'environmentconfigs.apiextensions.crossplane.io' \"\$work/err\""
+STUB_LIVE_CLUSTER="" STUB_NO_CRD=1 IDENTITY_SKIP_ENVCONFIG=1 run apply realm-x homelab-prod >/dev/null 2>&1; rc=$?
+check "with IDENTITY_SKIP_ENVCONFIG a missing CRD is fine" "[[ $rc -eq 0 ]]"
+STUB_LIVE_CLUSTER="" STUB_CRD_ERR=1 run apply realm-x homelab-prod >/dev/null 2>&1; rc=$?
+check "a failed CRD lookup fails apply, never reads as absent" "[[ $rc -ne 0 ]] && ! written"
 
 echo "---"; [ "$fails" -eq 0 ] && echo "ALL PASS" || { echo "$fails FAILED"; exit 1; }

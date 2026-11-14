@@ -13,14 +13,17 @@
 # names a different cluster: identity-changing scripts never rename a cluster.
 # REALM_DIR overrides where the realm checkout is (default: ../../realms/<realm>
 # from this repo, as bootstrap.sh). IDENTITY_SKIP_ENVCONFIG=1 skips the
-# EnvironmentConfig, for bootstrap's first call before Crossplane's CRDs exist.
+# EnvironmentConfig, for bootstrap's first call before Crossplane's CRDs exist;
+# without it, a missing EnvironmentConfig CRD is an error, so no apply finishes
+# without the EnvironmentConfig the compositions read.
 # IDENTITY_TAKEOVER_ENVCONFIG=1 (migrate.sh step 7) takes an ArgoCD-tracked
 # EnvironmentConfig over, but only once ArgoCD no longer wants it.
 set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 . "$SCRIPT_DIR/lib/identity.sh"
 
-usage() { sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-1}"; }
+# The whole header comment, however long it grows.
+usage() { awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$0"; exit "${1:-1}"; }
 cmd="${1:-}"; shift || true
 case "$cmd" in apply|diff) [[ $# -eq 2 ]] || usage ;; show) ;; *) usage ;; esac
 
@@ -125,9 +128,13 @@ argo_wants_envconfig() {
 #   - a take-over strips both markers, then writes. The written object always
 #     carries Prune=false too.
 apply_envconfig() {
-    local json label tid apps app ns wants
-    if ! kubectl get crd environmentconfigs.apiextensions.crossplane.io >/dev/null 2>&1; then
-        echo "   EnvironmentConfig CRD not installed yet — skipped (re-run apply after Crossplane is up)"; return 0
+    local crd json label tid apps app ns wants
+    crd="$(kubectl get crd environmentconfigs.apiextensions.crossplane.io --ignore-not-found -o name)" \
+        || { echo "❌ could not check for the EnvironmentConfig CRD (environmentconfigs.apiextensions.crossplane.io)" >&2; exit 1; }
+    if [[ -z "${crd//[[:space:]]/}" ]]; then
+        echo "❌ the EnvironmentConfig CRD (environmentconfigs.apiextensions.crossplane.io) is not installed, so EnvironmentConfig $IDENTITY_CONFIGMAP cannot be written." >&2
+        echo "   Install Crossplane first, or set IDENTITY_SKIP_ENVCONFIG=1 to write only the ConfigMap and the cluster Secret." >&2
+        exit 1
     fi
     json="$(kubectl get environmentconfig "$IDENTITY_CONFIGMAP" -o json --ignore-not-found)" \
         || { echo "❌ could not read EnvironmentConfig $IDENTITY_CONFIGMAP" >&2; exit 1; }

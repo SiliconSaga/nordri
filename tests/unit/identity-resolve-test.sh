@@ -53,6 +53,19 @@ printf 'environment: homelab\nrole: prod\nmaturity: durable\nbackups:\n  enabled
 identity_resolve "$work/realm" homelab-nested >/dev/null 2>&1; rc=$?
 check "a nested realm file fails identity_resolve" "[[ $rc -eq 1 ]]"
 
+# A typo'd key is refused, not silently ignored
+printf 'environment: homelab\nrole: prod\nmaturity: durable\nstorageclass: fast\n' > "$work/realm/clusters/homelab-typo.yaml"
+err=$(identity_resolve "$work/realm" homelab-typo 2>&1 >/dev/null); rc=$?
+check "an unknown realm-file key is refused" "[[ $rc -eq 1 && \"\$err\" == *storageclass* ]]"
+# The environment names a defaults file, so it is validated before it is used as a path
+printf 'environment: ../identity/defaults-gke\nrole: prod\nmaturity: durable\n' > "$work/realm/clusters/homelab-path.yaml"
+err=$(identity_resolve "$work/realm" homelab-path 2>&1 >/dev/null); rc=$?
+check "an environment that is not [a-z0-9-]+ is refused" "[[ $rc -eq 1 && \"\$err\" == *\"environment '../identity/defaults-gke'\"* ]]"
+check "the refusal is the validation, not the missing-file message" "[[ \"\$err\" != *'no '*defaults-* ]]"
+printf 'environment: Homelab\nrole: prod\nmaturity: durable\n' > "$work/realm/clusters/homelab-upper.yaml"
+identity_resolve "$work/realm" homelab-upper >/dev/null 2>&1; rc=$?
+check "an upper-case environment is refused" "[[ $rc -eq 1 ]]"
+
 # Layer 1 + 2: realm file over environment defaults
 out=$(identity_resolve "$work/realm" homelab-prod)
 check "cluster name recorded" "[[ \"\$out\" == *'cluster=homelab-prod'* ]]"

@@ -1,13 +1,11 @@
-# Velero for GKE — native GCP plugin, GCS backend, Workload Identity.
-#
-# Homelab uses velero-homelab.yaml instead (AWS plugin against in-cluster Garage).
-# See docs/velero-gke.md for the design and the one-time GCS/IAM setup, which is
+# Velero for GKE — native GCP plugin, GCS backend, Workload Identity — as an
+# ApplicationSet: rendered only on a cluster whose identity says environment
+# gke, with the project and the per-cluster prefix read from the identity
+# (realm Phase 3 design, Decision 4). Nothing project-specific is committed, and
+# two clusters in one project never share a backup path. Homelab uses
+# velero-homelab.yaml instead (AWS plugin against in-cluster Garage). See
+# docs/velero-gke.md for the design and the one-time GCS/IAM setup,
 # `./gke-provision.sh velero-setup`.
-#
-# Velero for GKE as an ApplicationSet: rendered only on a cluster whose identity
-# says environment gke, with the project and the per-cluster prefix read from the
-# identity (realm Phase 3 design, Decision 4). Nothing project-specific is
-# committed, and two clusters in one project never share a backup path.
 apiVersion: argoproj.io/v1alpha1
 kind: ApplicationSet
 metadata:

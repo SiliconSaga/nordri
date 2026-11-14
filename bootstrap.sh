@@ -105,9 +105,10 @@ esac
 . "$SCRIPT_DIR/lib/garage.sh"
 # Capture explicit GITEA_PASS env input here without applying a default —
 # the resolver populates the value below. Username is fixed to
-# "nordri-admin" inside the resolver (downstream ArgoCD Application
-# repoURLs hardcode that literal, so any drift would break sync); only
-# password accepts an env override.
+# "nordri-admin" inside the resolver: the seed's admin is created under that
+# name, and update-embedded-git.sh, migrate.sh and reseed-gitea.sh all use the
+# same literal (the repoURLs name the org, not the user). Only the password
+# accepts an env override.
 GITEA_PASS="${GITEA_PASS:-}"
 GITEA_HOST="${GITEA_HOST:-localhost:3000}"
 GITEA_SCHEME="${GITEA_SCHEME:-http}"
@@ -160,6 +161,7 @@ IDENTITY="$(IDENTITY_LIVE_TAILNET="$(identity_live_value tailnetNode)" identity_
 TARGET="$(printf '%s\n' "$IDENTITY" | sed -n 's/^environment=//p')"
 MATURITY="$(printf '%s\n' "$IDENTITY" | sed -n 's/^maturity=//p')"
 ROLE="$(printf '%s\n' "$IDENTITY" | sed -n 's/^role=//p')"
+gitops_require_manifest_org "$REALM" || exit 1
 GITOPS_ORG="$(gitops_canonical_org "$REALM")"
 GITOPS_VENDOR_ORG="$(gitops_vendor_org "$REALM")"
 echo "🪪 cluster $CLUSTER: environment=$TARGET role=$ROLE maturity=$MATURITY (realm $REALM)"
@@ -253,7 +255,7 @@ if [[ "$TARGET" == "homelab" ]]; then
             exit 1
         elif [[ "$DEFAULT_SC_COUNT" -gt 1 ]]; then
             echo "❌ No StorageClass named local-path, and more than one class is marked default:" >&2
-            printf '   %s\n' $DEFAULT_SCS >&2
+            printf '%s\n' "$DEFAULT_SCS" | sed 's/^/   /' >&2
             echo "   Kubernetes picks between them by creation time, which is not a choice to encode here. Keep one default and re-run." >&2
             exit 1
         fi
@@ -347,9 +349,9 @@ trap cleanup EXIT
 #
 # Password priority:  GITEA_PASS env  >  Secret  >  random (only when this
 #                     looks like a fresh install)
-# Username:           always "nordri-admin" — downstream ArgoCD app
-#                     repoURLs hardcode this, so any drift would break
-#                     ArgoCD sync. The Secret records the username for
+# Username:           always "nordri-admin" — the seed admin's name, which
+#                     every script that pushes to the seed uses as a
+#                     literal. The Secret records the username for
 #                     introspection but the script never reads it back.
 #
 # Existing-cluster guard: if a Helm release named 'gitea' is already
@@ -409,8 +411,8 @@ kubectl create secret generic "$GITEA_CREDENTIALS_SECRET" \
 # Now that user/pass are settled, build the URL bases reused below.
 # `git remote add` requires the credentials embedded in the URL — so we
 # percent-encode user/pass to handle special chars (@, :, /, #) without
-# corrupting the URL. API calls go through curl -u instead and just use
-# the credentials-less base URL.
+# corrupting the URL. API calls use the credentials-less base URL and
+# take the credential from a 0600 curl config file (-K), never argv.
 gitea_build_urls
 
 gitea_install_seed
@@ -616,7 +618,7 @@ ARGOCD_CHART_VERSION="10.9.1"
 helm upgrade --install argocd argo/argo-cd --namespace argo --version "$ARGOCD_CHART_VERSION" "${HELM_APPLY_FLAGS[@]}" \
   --set dex.enabled=false \
   --set server.insecure=true \
-  --set server.extraArgs={--insecure} \
+  --set 'server.extraArgs={--insecure}' \
   --set controller.metrics.enabled=true \
   --set configs.params."applicationsetcontroller\.enable\.policy\.override"=true \
   --set configs.cm."kustomize\.buildOptions"="--load-restrictor LoadRestrictionsNone --enable-helm"

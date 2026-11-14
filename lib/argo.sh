@@ -1,12 +1,17 @@
 #!/usr/bin/env bash
-# lib/argo.sh — read-mostly helpers over ArgoCD Applications in namespace argo.
+# lib/argo.sh — helpers over ArgoCD Applications in namespace argo: the waits
+# (read-only), plus the two writes migrate.sh needs, Prune=false and the
+# resources-finalizer removal.
 ARGO_NS="${ARGO_NS:-argo}"
 ARGO_REQUEST_TIMEOUT=30
 
 # One line per Application, name first, so one with no sync status yet still
-# shows up: name<TAB>sync<TAB>health<TAB>opphase<TAB>refresh-annotation
+# shows up: name<TAB>sync<TAB>health<TAB>opphase<TAB>refresh-annotation<TAB>operation
+# The last column is the requested .operation itself (compact JSON, empty when
+# none is pending): it is set before operationState.phase turns Running, and
+# the phase still shows the previous operation's result in that window.
 _argo_rows() {
-    kubectl get applications -n "$ARGO_NS" --request-timeout="${1:-30}s" -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.status.sync.status}{"\t"}{.status.health.status}{"\t"}{.status.operationState.phase}{"\t"}{.metadata.annotations.argocd\.argoproj\.io/refresh}{"\n"}{end}' | tr -d '\r'
+    kubectl get applications -n "$ARGO_NS" --request-timeout="${1:-30}s" -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.status.sync.status}{"\t"}{.status.health.status}{"\t"}{.status.operationState.phase}{"\t"}{.metadata.annotations.argocd\.argoproj\.io/refresh}{"\t"}{.operation}{"\n"}{end}' | tr -d '\r'
 }
 
 # argo_wait <timeout> <label> <predicate-fn>: the predicate reads the rows on
@@ -33,7 +38,7 @@ argo_wait() {
 }
 _pred_settled() { awk -F'\t' '$1!="" && ($2=="" || $2=="Unknown") {n++} END {print n+0}'; }
 _pred_synced_healthy() { awk -F'\t' '$1!="" && ($2!="Synced" || $3!="Healthy") {n++} END {print n+0}'; }
-_pred_ops_done() { awk -F'\t' '$1!="" && ($4=="Running" || $4=="Terminating") {n++} END {print n+0}'; }
+_pred_ops_done() { awk -F'\t' '$1!="" && ($4=="Running" || $4=="Terminating" || $6!="") {n++} END {print n+0}'; }
 argo_wait_settled() { argo_wait "${1:-900}" "settled (not Unknown)" _pred_settled; }
 argo_wait_synced_healthy() { argo_wait "${1:-900}" "Synced and Healthy" _pred_synced_healthy; }
 argo_wait_operations_done() { argo_wait "${1:-900}" "done syncing" _pred_ops_done; }
@@ -92,8 +97,12 @@ argo_remove_finalizer() {
     body=$(jq -cn --argjson f "$keep" '{metadata:{finalizers:$f}}') || return 1
     kubectl patch application -n "$ARGO_NS" "$app" --type merge -p "$body" >/dev/null \
         || { echo "❌ $app: patching the finalizers failed" >&2; return 1; }
-    fins=$(kubectl get application -n "$ARGO_NS" "$app" -o jsonpath='{.metadata.finalizers}' 2>/dev/null | tr -d '\r') \
-        || { echo "❌ $app: could not re-read its finalizers after the patch" >&2; return 1; }
+    # Two checked steps, not a pipe: without the caller's pipefail a failed get
+    # would read as an empty list, a false "removed".
+    if ! fins=$(kubectl get application -n "$ARGO_NS" "$app" -o jsonpath='{.metadata.finalizers}' 2>/dev/null); then
+        echo "❌ $app: could not re-read its finalizers after the patch" >&2; return 1
+    fi
+    fins=$(printf '%s' "$fins" | tr -d '\r')
     [[ -n "$fins" ]] || fins='[]'
     n=$(printf '%s' "$fins" | jq --arg p "$prefix" '[.[] | select(startswith($p))] | length') || return 1
     [[ "$n" -eq 0 ]] || { echo "❌ $app: a resources finalizer is still present after the patch: $fins" >&2; return 1; }

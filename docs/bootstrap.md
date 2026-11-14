@@ -205,7 +205,7 @@ To push local changes to Gitea without reinstalling anything:
 ./update-embedded-git.sh <realm> [--target forgejo]
 ```
 
-This re-hydrates the Nordri, Nidavellir, Mimir and Heimdall repos, the vendor mirrors and the realm, and triggers an ArgoCD sync. The target defaults to whatever the `gitops/git` Service points at; `--target forgejo` pushes to the cluster's Forgejo instead and is refused on a graduated `prod` cluster.
+This re-hydrates the Nordri, Nidavellir, Mimir and Heimdall repos, the vendor mirrors and the realm, and triggers an ArgoCD sync. The target defaults to whatever the `gitops/git` Service points at; `--target forgejo` pushes to the cluster's Forgejo instead and is refused on every `prod` cluster (a graduated one's Forgejo is written only by its puller). `forgejo` is the only `--target` value.
 
 ### Talking to Gitea over a real ingress (skipping port-forward)
 
@@ -235,9 +235,9 @@ Both `bootstrap.sh` and `update-embedded-git.sh` read the Gitea admin
 password from the `gitea/gitea-admin-credentials` Secret. Pass
 `GITEA_PASS=<value>` to override the password (used for fresh
 installs against an existing cluster, post-rotation, etc.). The
-username is hardcoded to `nordri-admin` in both scripts — downstream
-ArgoCD app repoURLs assume that literal, so any drift would break
-sync. The Secret is written with a `username` field for introspection
+username is hardcoded to `nordri-admin` in both scripts — the seed's
+admin is created under that name (the repoURLs name the org, not the
+user). The Secret is written with a `username` field for introspection
 but neither script reads it back.
 
 `bootstrap.sh` *writes* the Secret based on env-var-or-Secret-or-random

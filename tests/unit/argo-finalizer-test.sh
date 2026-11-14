@@ -16,6 +16,7 @@ echo "KUBECTL $*" >> "$STUB_LOG"
 case "$1" in
   get)
     if [[ -n "${STUB_GET_ERR:-}" ]]; then echo "$STUB_GET_ERR" >&2; exit 1; fi
+    if [[ -n "${STUB_GET_ERR_AFTER_PATCH:-}" && -e "$STUB_PATCH_BODY" ]]; then echo "Unable to connect to the server" >&2; exit 1; fi
     if [[ "$*" == *sync-options* ]]; then cat "$STUB_ANN" 2>/dev/null; exit 0; fi
     cat "$STUB_STATE"; exit 0 ;;
   annotate)
@@ -39,7 +40,7 @@ export STUB_LOG="$work/log" STUB_STATE="$work/state" STUB_PATCH_BODY="$work/body
 run() {
     local state="$1"; shift
     printf '%s' "$state" > "$STUB_STATE"; : > "$STUB_LOG"; rm -f "$STUB_PATCH_BODY"
-    ( for kv in "$@"; do export "$kv"; done; . "$root/lib/argo.sh"; argo_remove_finalizer demo ) > "$work/out" 2>&1
+    ( for kv in "$@"; do export "${kv?}"; done; . "$root/lib/argo.sh"; argo_remove_finalizer demo ) > "$work/out" 2>&1
 }
 R='resources-finalizer.argocd.argoproj.io'
 
@@ -75,6 +76,13 @@ check "a failing patch returns 1" "[[ $rc -eq 1 ]]"
 run "[\"$R\",\"other.example/keep\"]" STUB_PATCH_NOOP=1; rc=$?
 check "a finalizer still present after the patch returns 1" "[[ $rc -eq 1 ]]"
 
+# The post-patch re-read must fail loud on its own, not lean on the caller's
+# pipefail: bootstrap and update-embedded-git run without it.
+printf '%s' "[\"$R\"]" > "$STUB_STATE"; : > "$STUB_LOG"; rm -f "$STUB_PATCH_BODY"
+( set +o pipefail; export STUB_GET_ERR_AFTER_PATCH=1; . "$root/lib/argo.sh"; argo_remove_finalizer demo ) > "$work/out" 2>&1; rc=$?
+check "a failed re-read after the patch returns 1 even without pipefail" "[[ $rc -eq 1 ]]"
+check "a failed re-read is not reported as removed" "! grep -q 'resources finalizer removed' \"\$work/out\""
+
 # argo_hold_prune: Prune=false on the Application, other sync options kept
 export STUB_ANN="$work/ann"
 hold() {
@@ -99,5 +107,13 @@ check "hold: a failing annotate returns 1" "[[ $rc -eq 1 ]]"
 pred_n() { ( . "$root/lib/argo.sh"; _pred_refresh_pending <<< "$1" ); }
 check "predicate counts rows with the refresh annotation" "[[ \"\$(pred_n \$'a\tSynced\tHealthy\t\thard\nb\tSynced\tHealthy\t\t\n')\" == 1 ]]"
 check "predicate is 0 when none carries it" "[[ \"\$(pred_n \$'a\tSynced\tHealthy\t\t\n')\" == 0 ]]"
+
+# the operations-done predicate: .operation set (column 6) counts even while
+# operationState.phase still shows the previous operation's result
+ops_n() { ( . "$root/lib/argo.sh"; _pred_ops_done <<< "$1" ); }
+check "ops: Running counts" "[[ \"\$(ops_n \$'a\tSynced\tHealthy\tRunning\t\t\n')\" == 1 ]]"
+check "ops: .operation set before the phase reads Running counts" "[[ \"\$(ops_n \$'a\tSynced\tHealthy\tSucceeded\t\t{\"sync\":{}}\n')\" == 1 ]]"
+check "ops: done with no .operation is 0" "[[ \"\$(ops_n \$'a\tSynced\tHealthy\tSucceeded\t\t\n')\" == 0 ]]"
+check "the rows query carries .operation" "grep -qF '{.operation}' \"\$root/lib/argo.sh\""
 
 echo "---"; [ "$fails" -eq 0 ] && echo "ALL PASS" || { echo "$fails FAILED"; exit 1; }

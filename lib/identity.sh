@@ -14,6 +14,12 @@ IDENTITY_REQUIRED="cluster environment role maturity"
 IDENTITY_KEYS="cluster environment role maturity sourceRef tailnetNode storageClass domain harborRole harborCentral gcpProject gcpRegion pullerSchedule"
 NORDRI_LIB_DIR="${NORDRI_LIB_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 
+# Is <key> one of IDENTITY_KEYS? A typo'd key would otherwise be dropped silently.
+identity_known_key() {
+    case " $IDENTITY_KEYS " in *" $1 "*) return 0 ;; esac
+    return 1
+}
+
 # Print key=value per line. Flat scalars only: a line that ends in ':' or
 # starts with '-' is nesting, and nesting is refused because the readers of
 # these files have jq, not yq, and a silently dropped subtree is worse than a
@@ -72,20 +78,33 @@ identity_resolve() {
     if [[ -f "$realm_file" ]]; then
         local parsed
         parsed="$(identity_read_flat "$realm_file")" || return 1
-        while IFS='=' read -r key value; do [[ -n "$key" ]] && id["$key"]="$value"; done <<< "$parsed"
-        for key in environment role maturity; do
+        while IFS='=' read -r key value; do
+            [[ -n "$key" ]] || continue
+            identity_known_key "$key" || { echo "identity: $realm_file sets '$key', which is not an identity key ($IDENTITY_KEYS)" >&2; return 1; }
+            id["$key"]="$value"
+        done <<< "$parsed"
+        # cluster is required of the result, not of the file: it is the file's name.
+        for key in $IDENTITY_REQUIRED; do
+            [[ "$key" == cluster ]] && continue
             [[ -n "${id[$key]:-}" ]] || { echo "identity: $realm_file must set $key" >&2; return 1; }
         done
     else
         echo "identity: no clusters/$cluster.yaml in $realm_dir — lab defaults (homelab, lab, bootstrap)" >&2
         id[environment]=homelab; id[role]=lab; id[maturity]=bootstrap
     fi
+    # The environment names a file below, so it is checked before it becomes a path.
+    [[ "${id[environment]}" =~ ^[a-z0-9-]+$ ]] \
+        || { echo "identity: environment '${id[environment]}' must be lowercase alphanumeric and '-'" >&2; return 1; }
     env_file="$NORDRI_LIB_DIR/../identity/defaults-${id[environment]}.yaml"
     [[ -f "$env_file" ]] || { echo "identity: unknown environment '${id[environment]}' (no $env_file)" >&2; return 1; }
     declare -A merged=()
     local parsed
     parsed="$(identity_read_flat "$env_file")" || return 1
-    while IFS='=' read -r key value; do [[ -n "$key" ]] && merged["$key"]="$value"; done <<< "$parsed"
+    while IFS='=' read -r key value; do
+        [[ -n "$key" ]] || continue
+        identity_known_key "$key" || { echo "identity: $env_file sets '$key', which is not an identity key" >&2; return 1; }
+        merged["$key"]="$value"
+    done <<< "$parsed"
     for key in "${!id[@]}"; do merged["$key"]="${id[$key]}"; done
     for key in $IDENTITY_KEYS; do
         value="$(printenv "NORDRI_IDENTITY_$(printf '%s' "$key" | tr '[:lower:]' '[:upper:]')" 2>/dev/null || true)"

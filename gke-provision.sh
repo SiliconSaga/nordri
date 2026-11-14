@@ -462,8 +462,10 @@ openbao-seal-setup)
     # gcpProject/gcpRegion. Two sources of truth for a key name would mean an
     # OpenBao that cannot decrypt its own barrier.
     #
-    # The REGION is read from the same manifest the composition reads, so the
-    # key ring is created where the seal stanza will look for it. GCP_REGION
+    # The REGION is read from identity/defaults-gke.yaml, the layer the
+    # cluster-identity EnvironmentConfig takes gcpRegion from (scripts/identity.sh
+    # apply projects it), so the key ring is created where the seal stanza the
+    # composition renders from that EnvironmentConfig will look for it. GCP_REGION
     # may be set for other gcloud reasons; if it disagrees, that is an error
     # rather than a second source of truth — an OpenBao whose seal names a key
     # in the wrong region is diagnosable only from the pod log.
@@ -477,7 +479,7 @@ openbao-seal-setup)
     if [[ -n "${GCP_REGION:-}" && "$GCP_REGION" != "$SEAL_REGION" ]]; then
         echo "❌ GCP_REGION=$GCP_REGION disagrees with cluster-identity gcpRegion=$SEAL_REGION." >&2
         echo "   The seal key ring must live in the region cluster-identity names. Unset GCP_REGION," >&2
-        echo "   or change gcpRegion in $IDENTITY_DEFAULTS and re-hydrate before running this." >&2
+        echo "   or change gcpRegion in $IDENTITY_DEFAULTS and re-apply the identity (scripts/identity.sh apply <realm> <cluster>) before running this." >&2
         exit 1
     fi
     SEAL_KEYRING="openbao"
@@ -608,7 +610,7 @@ openbao-backup-setup)
     # Bucket name NOT overridable: the nidavellir openbao composition derives it
     # from cluster-identity's gcpProject (<project>-openbao-backups). One
     # derivation. The bucket's region is cluster-identity's gcpRegion, read from
-    # the same manifest openbao-seal-setup reads.
+    # identity/defaults-gke.yaml as openbao-seal-setup reads it.
     IDENTITY_DEFAULTS="$(dirname "$0")/identity/defaults-gke.yaml"
     BACKUP_REGION="$(sed -n 's/^gcpRegion:[[:space:]]*//p' "$IDENTITY_DEFAULTS")"
     if [[ -z "$BACKUP_REGION" ]]; then

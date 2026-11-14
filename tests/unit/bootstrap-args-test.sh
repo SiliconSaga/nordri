@@ -34,4 +34,22 @@ check "the refusal names scripts/migrate.sh" "grep -q 'refuse_old_code_cluster' 
 check "the refusal runs before Layer -1 (the first identity write)" "[[ -n \"\$(line_of 'refuse_old_code_cluster || exit 1')\" && \$(line_of 'refuse_old_code_cluster || exit 1') -lt \$(line_of 'scripts/identity.sh\" apply') ]]"
 check "README no longer sends an existing cluster to bootstrap.sh" "! grep -q 'GITEA_PASS=<live-password> ./bootstrap.sh' \"$root/README.md\""
 check "docs/bootstrap.md no longer rotates through bootstrap.sh" "! grep -q 'GITEA_PASS=\"new-password\" ./bootstrap.sh' \"$root/docs/bootstrap.md\""
+# Important 5: every script that derives the org refuses one the manifests do not read,
+# before it first uses the org. The patterns are literal source text:
+# shellcheck disable=SC2016
+for f in bootstrap.sh update-embedded-git.sh scripts/migrate.sh; do
+    g=$(grep -n -F -m1 'gitops_require_manifest_org "$REALM" || exit 1' "$root/$f" | cut -d: -f1)
+    o=$(grep -n -F -m1 'GITOPS_ORG="$(gitops_canonical_org' "$root/$f" | cut -d: -f1)
+    check "$f refuses a realm whose org the manifests do not read, before deriving it" "[[ -n '$g' && -n '$o' && '$g' -lt '$o' ]]"
+done
+# update-embedded-git.sh --target: a missing value and anything but forgejo are usage errors
+out=$(bash "$root/update-embedded-git.sh" realm-x --target 2>&1); rc=$?
+check "update --target with no value is a usage error" "[[ $rc -eq 1 && \"\$out\" == *'--target needs a value'* ]]"
+out=$(bash "$root/update-embedded-git.sh" realm-x --target seed 2>&1); rc=$?
+check "update --target seed is refused" "[[ $rc -eq 1 && \"\$out\" == *'--target must be forgejo'* ]]"
+out=$(bash "$root/scripts/reseed-gitea.sh" 'Realm_X' homelab-prod 2>&1); rc=$?
+check "reseed refuses a realm that is not a DNS-1123 label" "[[ $rc -eq 1 && \"\$out\" == *'DNS-1123'* ]]"
+out=$(bash "$root/scripts/reseed-gitea.sh" realm-x 'Bad_Cluster' 2>&1); rc=$?
+check "reseed refuses a cluster that is not a DNS-1123 label" "[[ $rc -eq 1 && \"\$out\" == *'DNS-1123'* ]]"
+check "docs match the code: --target forgejo is refused on any prod cluster" "! grep -q 'refused on a graduated .prod. cluster' \"$root/CLAUDE.md\" \"$root/docs/bootstrap.md\" && ! grep -q 'Refused$' \"$root/update-embedded-git.sh\""
 echo "---"; [ "$fails" -eq 0 ] && echo "ALL PASS" || { echo "$fails FAILED"; exit 1; }

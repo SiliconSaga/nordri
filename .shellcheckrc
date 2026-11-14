@@ -1,0 +1,12 @@
+# shellcheck settings for nordri (bash tests/run.sh lint). Only codes that are
+# false positives by construction here; real findings are fixed in the code.
+#
+# SC2034 "appears unused": the libs set globals their callers read (lib/gitea.sh
+#   GITEA_GIT_BASE, lib/seed-access.sh PF_PID, lib/gitops.sh GIT_FORGEJO_SERVICE),
+#   and the tests read variables inside the strings their check() evals. Each
+#   file is linted on its own, so shellcheck sees neither side of either.
+# SC1091 "not following": the tests source the libs by a computed path, and the
+#   lint does not run with -x; each lib is linted in its own right.
+# SC2015 "A && B || C": the tests' closing line ([ ok ] && echo PASS || exit 1),
+#   where echo cannot fail.
+disable=SC2034,SC1091,SC2015

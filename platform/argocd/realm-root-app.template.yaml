@@ -1,8 +1,11 @@
-# Generic realm root-app. bootstrap.sh substitutes __REALM_REPO__ with the
-# owning realm's seed-Gitea repo name and applies it. nordri never commits a
-# realm-specific value — this file stays realm-agnostic.
+# Generic realm root-app. lib/gitops.sh (gitops_apply_root_apps, run by
+# bootstrap.sh and migrate.sh) substitutes __REALM_REPO__ with the owning
+# realm's name and __REALM_REPO_URL__ with that repository's URL under the
+# realm's org at the stable git address, then applies it. nordri never commits
+# a realm-specific value — this file stays realm-agnostic.
 #
-# The seed's realm repository holds the WHOLE realm checkout, as Forgejo's mirror does, so path is "cluster" (Phase 3 design, Decision 5).
+# The realm repository holds the WHOLE realm checkout, as Forgejo's mirror
+# does, so path is "cluster" (Phase 3 design, Decision 5).
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:

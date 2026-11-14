@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# The stubs below are shell source in single quotes, expanded when sourced:
+# shellcheck disable=SC2016
 # Unit test for scripts/migrate.sh: the order of the eight 3a-5 steps and its
 # refusals. migrate.sh runs from a scratch copy of the component whose libs and
 # identity.sh are recording stubs; kubectl is a stub too. Every stub writes to the
@@ -23,7 +25,8 @@ stub lib/gitops.sh 'gitops_canonical_org() { printf "%s" "${1#realm-}"; }
 gitops_vendor_org() { printf "%s-vendor" "${1#realm-}"; }
 gitops_ensure_org() { echo "CALL gitops_ensure_org $1"; }
 gitops_ensure_git_service() { echo "CALL gitops_ensure_git_service"; }
-gitops_apply_root_apps() { echo "CALL gitops_apply_root_apps $1"; }'
+gitops_apply_root_apps() { echo "CALL gitops_apply_root_apps $1"; }
+gitops_require_manifest_org() { echo "CALL gitops_require_manifest_org $1"; [[ -z "${STUB_FOREIGN_ORG:-}" ]]; }'
 stub lib/seed-access.sh 'seed_access_open() { echo "CALL seed_access_open"; }'
 stub lib/argo.sh 'argo_wait_operations_done() { echo "CALL argo_wait_operations_done $1"; }
 argo_wait_synced_healthy() { echo "CALL argo_wait_synced_healthy $1"; }
@@ -105,19 +108,24 @@ check "a live identity naming another cluster is refused" "[[ $rc -eq 1 ]]"
 check "the refusal names both clusters" "grep -q 'homelab-test' \"\$work/out\" && grep -q 'homelab-prod' \"\$work/out\""
 check "nothing runs after the mismatch" "! grep -q 'CALL identity.sh' \"\$work/out\" && ! grep -q 'CALL argo' \"\$work/out\""
 
+# Important 5: a realm whose org the manifests do not read is refused before step 1
+STUB_FOREIGN_ORG=1 run realm-x homelab-prod; rc=$?
+check "a realm the manifests do not read is refused" "[[ $rc -eq 1 ]] && grep -q 'CALL gitops_require_manifest_org realm-x' \"\$work/out\""
+check "nothing changes after the org refusal" "! grep -q 'CALL identity.sh' \"\$work/out\" && ! grep -q 'CALL argo' \"\$work/out\" && ! grep -q 'argocd-cmd-params-cm' \"\$work/kube.log\""
+
 # A failed finalizer removal stops the migration before anything after step 3
 STUB_FAIL_FINALIZER=vegvisir run realm-x homelab-prod; rc=$?
 check "a failed finalizer removal exits non-zero" "[[ $rc -ne 0 ]]"
 check "the failing app was attempted" "grep -q 'CALL argo_remove_finalizer vegvisir' \"\$work/out\""
 check "velero's finalizer is not attempted after the failure" "! grep -q 'CALL argo_remove_finalizer velero' \"\$work/out\""
-check "nothing after the finalizer step runs" "! grep -q 'CALL seed_access_open' \"\$work/out\" && ! grep -q 'CALL gitops_' \"\$work/out\" && ! grep -q 'CALL argo_hard_refresh_all' \"\$work/out\""
+check "nothing after the finalizer step runs" "! grep -q 'CALL seed_access_open' \"\$work/out\" && ! grep -qE 'CALL gitops_(ensure|apply)' \"\$work/out\" && ! grep -q 'CALL argo_hard_refresh_all' \"\$work/out\""
 check "the identity step before it did run" "grep -q 'CALL identity.sh apply' \"\$work/out\""
 
 # A failed Prune=false hold stops the migration before the finalizer goes
 STUB_FAIL_HOLD=vegvisir run realm-x homelab-prod; rc=$?
 check "a failed Prune=false hold exits non-zero" "[[ $rc -ne 0 ]]"
 check "vegvisir's finalizer is not touched after its hold failed" "! grep -q 'CALL argo_remove_finalizer vegvisir' \"\$work/out\""
-check "nothing after step 3 runs after a failed hold" "! grep -q 'CALL seed_access_open' \"\$work/out\" && ! grep -q 'CALL gitops_' \"\$work/out\""
+check "nothing after step 3 runs after a failed hold" "! grep -q 'CALL seed_access_open' \"\$work/out\" && ! grep -qE 'CALL gitops_(ensure|apply)' \"\$work/out\""
 
 # A failed second finalizer pass stops the migration before the take-over.
 # (The stub fails every call for the app, so the first pass fails too; that

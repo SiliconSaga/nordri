@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # components/nordri/lib/hydrate.sh
 # Shared seed-Gitea hydration helpers for bootstrap.sh and update-embedded-git.sh.
 # Depends on lib/gitea.sh (gitea_ensure_repo, $GITEA_GIT_BASE, $GITEA_USER) and,
@@ -135,7 +136,7 @@ hydrate_vendor_mirrors() {
             # branch (remote-tracking, minus the HEAD symref), each mapped to a seed head.
             local -a refspecs=("+refs/heads/*:refs/heads/*")
             while IFS= read -r vref; do
-                vbranch="${vref#refs/remotes/$vendor_remote/}"
+                vbranch="${vref#refs/remotes/"$vendor_remote"/}"
                 [[ "$vbranch" == "HEAD" ]] && continue
                 refspecs+=("+$vref:refs/heads/$vbranch")
             done < <(git -C "$vendor_dir" for-each-ref --format='%(refname)' "refs/remotes/$vendor_remote")

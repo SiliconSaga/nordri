@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # components/nordri/lib/kube-context.sh
 # Refuse to run a target against the wrong cluster. bootstrap.sh and
 # update-embedded-git.sh call plain `kubectl`, which follows the kubeconfig's

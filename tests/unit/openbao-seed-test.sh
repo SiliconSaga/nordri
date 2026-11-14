@@ -115,6 +115,8 @@ check "path with .. is an error" "[ $rc -ne 0 ]"
 printf "secret/x'; id; echo ' key\n" > "$work/bad4"
 openbao_seed_file "$work/bad4" >/dev/null 2>&1; rc=$?
 check "path with shell metacharacters is an error" "[ $rc -ne 0 ]"
+# A literal $(id) on purpose: the seed parser must refuse it unexpanded.
+# shellcheck disable=SC2016
 printf 'secret/x $(id)\n' > "$work/bad5"
 openbao_seed_file "$work/bad5" >/dev/null 2>&1; rc=$?
 check "key with shell metacharacters is an error" "[ $rc -ne 0 ]"

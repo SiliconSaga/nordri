@@ -18,6 +18,12 @@ set -eo pipefail
 # gitea/gitea-admin-credentials Secret, so update-embedded-git.sh keeps working.
 # A cluster with neither needs bootstrap.sh, not this.
 #
+# Not on a cluster the pre-Phase-3 code bootstrapped (its root Application still
+# reads the old nordri-admin repositories): a reseed wipes those repositories,
+# update-embedded-git.sh then refuses (that cluster has no identity), and
+# bootstrap.sh refuses it too, so scripts/migrate.sh is the only way forward
+# from there. Migrate such a cluster first; reseed after, if it still needs it.
+#
 # Optional environment:
 #   GITEA_CHART_VERSION  pin the chart version (default: latest)
 #   KUBE_CONTEXT         the context this run is for; see lib/kube-context.sh
@@ -34,6 +40,11 @@ if [[ -z "$REALM" || -z "$CLUSTER" ]]; then
     echo "Usage: scripts/reseed-gitea.sh <realm> <cluster>" >&2
     exit 1
 fi
+for v in "$REALM" "$CLUSTER"; do
+    if [[ ! "$v" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]] || [[ ${#v} -gt 63 ]]; then
+        echo "❌ '$v' must be a DNS-1123 label (lowercase alphanumeric and '-', max 63 chars)." >&2; exit 1
+    fi
+done
 REALM_DIR="${REALM_DIR:-$(dirname "$(dirname "$SCRIPT_DIR")")/realms/$REALM}"
 if [[ ! -d "$REALM_DIR/cluster" ]]; then
     echo "❌ Realm '$REALM' has no cluster/ config at: $REALM_DIR/cluster (set REALM_DIR or clone the realm)." >&2

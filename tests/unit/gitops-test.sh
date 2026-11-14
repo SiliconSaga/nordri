@@ -15,6 +15,16 @@ check "canonical org drops the realm- prefix" "[[ \$(gitops_canonical_org realm-
 check "vendor org" "[[ \$(gitops_vendor_org realm-siliconsaga) == siliconsaga-vendor ]]"
 check "stable repo url" "[[ \$(gitops_repo_url siliconsaga nordri) == http://git.gitops.svc.cluster.local:3000/siliconsaga/nordri.git ]]"
 
+# Important 5: the manifests commit the org; a realm that derives another is refused
+gitops_require_manifest_org realm-siliconsaga >/dev/null 2>&1; rc=$?
+check "realm-siliconsaga's org matches the manifests" "[[ $rc -eq 0 ]]"
+err=$(gitops_require_manifest_org realm-other 2>&1 >/dev/null); rc=$?
+check "a realm whose org the manifests do not read is refused" "[[ $rc -eq 1 ]]"
+check "the refusal names both orgs" "[[ \"\$err\" == *other* && \"\$err\" == *siliconsaga* ]]"
+manifest_orgs=$(grep -rhoE 'git\.gitops\.svc\.cluster\.local:3000/[a-z0-9-]+/' "$root/platform" | sed -E 's#.*:3000/([^/]+)/#\1#' | sort -u)
+check "every committed stable-address repoURL uses GITOPS_MANIFEST_ORG" "[[ -n \"\$manifest_orgs\" && \"\$manifest_orgs\" == \"\$GITOPS_MANIFEST_ORG\" ]]"
+check "gitops_git_service_target is 0 with no Service, under pipefail" "( kubectl() { return 1; }; gitops_git_service_target >/dev/null )"
+
 # curl stub: GET /orgs/<x> → 404 the first time, 200 after a POST; POST → 201.
 # Prints the status like the real -w '%{http_code}' call does.
 # State lives in files: the real call runs inside $(...), so a shell variable

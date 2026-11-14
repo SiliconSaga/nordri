@@ -43,6 +43,7 @@ if [[ -n "$LIVE_CLUSTER" && "$LIVE_CLUSTER" != "$CLUSTER" ]]; then
     echo "❌ This cluster's identity says it is '$LIVE_CLUSTER' (ConfigMap nordri/cluster-identity), not '$CLUSTER'. Check kubectl's current context." >&2
     exit 1
 fi
+gitops_require_manifest_org "$REALM" || exit 1
 GITOPS_ORG="$(gitops_canonical_org "$REALM")"; GITOPS_VENDOR_ORG="$(gitops_vendor_org "$REALM")"
 
 echo "1/8 ApplicationSet policy override"

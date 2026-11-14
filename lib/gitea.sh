@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # components/nordri/lib/gitea.sh
 # Shared Gitea plumbing for bootstrap.sh and update-embedded-git.sh.
 # Expects GITEA_SCHEME / GITEA_HOST / GITEA_USER / GITEA_PASS to be set by the

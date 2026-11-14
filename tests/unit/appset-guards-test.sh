@@ -15,9 +15,10 @@ for f in $files; do
     check "$rel: missingkey=error" "grep -q 'missingkey=error' \"$f\""
     check "$rel: preserveResourcesOnDeletion" "grep -q 'preserveResourcesOnDeletion: true' \"$f\""
     check "$rel: applicationsSync create-update" "grep -q 'applicationsSync: create-update' \"$f\""
-    for key in $(grep -o 'index .metadata.[a-z]* "nordri.siliconsaga.org/[a-z-]*"' "$f" | grep -o '"nordri[^"]*"' | sort -u); do
+    while IFS= read -r key; do
+        [[ -n "$key" ]] || continue
         check "$rel: $key is guarded" "grep -q \"if not (index .metadata.[a-z]* \$key)\" \"$f\""
-    done
+    done < <(grep -o 'index .metadata.[a-z]* "nordri.siliconsaga.org/[a-z-]*"' "$f" | grep -o '"nordri[^"]*"' | sort -u)
 done
 check "no identity manifest left in platform/" "! ls \"$root\"/platform/fundamentals/manifests/cluster-identity-*.yaml 2>/dev/null | grep -q ."
 echo "---"; [ "$fails" -eq 0 ] && echo "ALL PASS" || { echo "$fails FAILED"; exit 1; }
