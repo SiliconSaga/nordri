@@ -13,11 +13,26 @@
 # Every hydration commit records the source checkout's HEAD in a
 # `Source-Commit: <sha>` trailer (graduate.sh reads it).
 
-# Copy a source tree into a fresh dir, dropping its .git so we push a clean
-# orphan snapshot rather than the source history.
+# Copy a source tree into a fresh dir as a clean orphan snapshot (no .git, no
+# source history). When the source is a git checkout only tracked and
+# untracked-but-not-ignored files are copied, so whatever its .gitignore
+# excludes (.env*, kubeconfig, *.key, secrets/ ...) never reaches the seed: no
+# credential leaves the operator's machine except inside the pod. A source that
+# is not a git checkout is copied whole.
 hydrate_prepare_tree() {
-    local src="$1" dst="$2"
-    cp -r "$src/." "$dst/"
+    local src="$1" dst="$2" list
+    if git -C "$src" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        list="$(mktemp)" || return 1
+        if ! git -C "$src" ls-files -co --exclude-standard -z > "$list"; then
+            rm -f "$list"; return 1
+        fi
+        if ! tar --null -C "$src" -cf - -T "$list" | tar -C "$dst" -xf -; then
+            rm -f "$list"; return 1
+        fi
+        rm -f "$list"
+    else
+        cp -r "$src/." "$dst/" || return 1
+    fi
     rm -rf "$dst/.git"
 }
 
