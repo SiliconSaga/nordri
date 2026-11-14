@@ -65,6 +65,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$SCRIPT_DIR/lib/identity.sh"
 . "$SCRIPT_DIR/lib/gitops.sh"
 . "$SCRIPT_DIR/lib/kube-context.sh"
+. "$SCRIPT_DIR/lib/seed-access.sh"
 
 # Validate args before anything that touches the cluster, so wrong inputs
 # fail with a usage message instead of an obscure k8s/credential error.
@@ -141,74 +142,6 @@ HYDRATE_COMMITTER="Nordri Update"
 # rotation-recovery path this script is explicitly resilient to.
 HYDRATE_AUTO_INIT=true
 
-# Resolve the admin credentials of the server being pushed to.
-#
-# Password priority:  GITEA_PASS env  >  the target's Secret  >  fail with a
-#                     helpful message
-# Seed username:      always "nordri-admin" (matches downstream ArgoCD app
-#                     repoURLs; see bootstrap.sh header). Forgejo's admin
-#                     username comes from its own Secret.
-#
-# This script does not generate or rotate passwords — that's bootstrap.sh's
-# job. If neither env var nor Secret has a value, the user needs to either
-# run bootstrap.sh (with GITEA_PASS=<live> for an existing cluster) or
-# pass GITEA_PASS=<value> here for one-shot use.
-explicit_pass="${GITEA_PASS:-}"
-if [[ "$TARGET_SERVER" == "forgejo" ]]; then
-    GITEA_CREDENTIALS_NAMESPACE="forgejo"
-    GITEA_CREDENTIALS_SECRET="forgejo-admin"
-    GITEA_PF_SERVICE="svc/forgejo-http"
-    GITEA_PF_NAMESPACE="forgejo"
-else
-    GITEA_CREDENTIALS_NAMESPACE="gitea"
-    GITEA_CREDENTIALS_SECRET="gitea-admin-credentials"
-    GITEA_PF_SERVICE="svc/gitea-http"
-    GITEA_PF_NAMESPACE="gitea"
-fi
-secret_pass=""
-if kubectl get secret -n "$GITEA_CREDENTIALS_NAMESPACE" "$GITEA_CREDENTIALS_SECRET" >/dev/null 2>&1; then
-    secret_pass="$(kubectl get secret -n "$GITEA_CREDENTIALS_NAMESPACE" "$GITEA_CREDENTIALS_SECRET" -o jsonpath='{.data.password}' | base64 --decode)"
-fi
-
-if [[ "$TARGET_SERVER" == "forgejo" ]]; then
-    GITEA_USER="$(kubectl get secret -n forgejo forgejo-admin -o jsonpath='{.data.username}' | base64 -d)"
-    [[ -n "$GITEA_USER" ]] || { echo "❌ forgejo/forgejo-admin has no username." >&2; exit 1; }
-else
-    # Username is fixed (see bootstrap.sh header for rationale).
-    GITEA_USER="nordri-admin"
-fi
-
-# Password
-if [[ -n "$explicit_pass" ]]; then
-    GITEA_PASS="$explicit_pass"
-elif [[ -n "$secret_pass" ]]; then
-    GITEA_PASS="$secret_pass"
-    echo "🔑 Loaded credentials from $GITEA_CREDENTIALS_NAMESPACE/$GITEA_CREDENTIALS_SECRET (user: $GITEA_USER)."
-else
-    echo "❌ No $GITEA_CREDENTIALS_NAMESPACE/$GITEA_CREDENTIALS_SECRET Secret and no GITEA_PASS env var." >&2
-    echo "   For a cluster bootstrapped before the Secret-backed flow landed:" >&2
-    echo "     • One-shot:  GITEA_PASS=<live-pw> $0 $REALM" >&2
-    echo "     • Persist:   GITEA_PASS=<live-pw> $(dirname "$0")/bootstrap.sh $REALM $CLUSTER" >&2
-    echo "   For a fresh cluster, run bootstrap.sh first." >&2
-    exit 1
-fi
-unset explicit_pass secret_pass
-# Scheme defaults to http intentionally — see GITEA_SCHEME header docs.
-GITEA_SCHEME="${GITEA_SCHEME:-http}"
-# Guard: the kubectl port-forward target only speaks plain HTTP, so
-# GITEA_SCHEME=https against localhost:3000 will fail. Force http and warn
-# loudly if the caller mistakenly mixed them.
-if [[ "$GITEA_HOST" == "localhost:3000" && "$GITEA_SCHEME" != "http" ]]; then
-    echo "⚠️  Ignoring GITEA_SCHEME=$GITEA_SCHEME with default localhost:3000 — the port-forwarded service is HTTP-only. Forcing http."
-    GITEA_SCHEME="http"
-fi
-# Build URL bases. `git remote add` requires creds embedded in the URL,
-# so we percent-encode user/pass to handle special chars (@, :, /, #).
-# API calls go through a curl config file, never argv.
-gitea_build_urls
-
-# gitea_ensure_repo (create-if-missing; auto_init for fresh repos) lives in lib/gitea.sh.
-
 echo "🚀 Updating Nordri Configuration for cluster $CLUSTER (environment: $TARGET)"
 
 # Cleanup on every script exit (success or failure) — kills the
@@ -234,36 +167,8 @@ trap cleanup EXIT
 
 echo "💧 [Layer 2] Hydrating Configuration..."
 
-# Ensure the server is reachable. Either way (localhost port-forward or
-# overridden public host) we probe /api/v1/version before continuing —
-# `nc` only proves *something* is on the port; we want to confirm it's
-# actually Gitea/Forgejo before sending credentials.
-if [[ "$GITEA_HOST" == "localhost:3000" ]]; then
-    if probe_gitea; then
-        echo "   Reusing existing endpoint at $GITEA_HOST."
-    else
-        echo "   Starting Port Forward to $GITEA_PF_SERVICE ($GITEA_PF_NAMESPACE)..."
-        kubectl port-forward "$GITEA_PF_SERVICE" -n "$GITEA_PF_NAMESPACE" 3000:3000 > /dev/null 2>&1 &
-        PF_PID=$!
-        # Poll until the port-forward serves the API, or fail loudly.
-        ATTEMPTS=0
-        until probe_gitea; do
-            ATTEMPTS=$((ATTEMPTS + 1))
-            if [[ $ATTEMPTS -ge 30 ]]; then
-                echo "❌ The server did not become reachable on $GITEA_HOST within 30s." >&2
-                exit 1
-            fi
-            sleep 1
-        done
-    fi
-else
-    echo "   Using GITEA_HOST=$GITEA_HOST (skipping port-forward)."
-    if ! probe_gitea; then
-        echo "❌ The server is not answering at $GITEA_PROBE_URL." >&2
-        echo "   Verify the HTTPRoute is deployed and DNS resolves." >&2
-        exit 1
-    fi
-fi
+# Credentials, URL bases and the port-forward or probe (lib/seed-access.sh).
+seed_access_open || exit 1
 
 # The seed runs without persistence; if the pod ever rotates (or was reseeded)
 # its orgs and repos are gone, and a `git push` would fail with a misleading
