@@ -34,7 +34,8 @@ argo_wait_synced_healthy() { echo "CALL argo_wait_synced_healthy $1"; }
 argo_hard_refresh_all() { echo "CALL argo_hard_refresh_all"; }
 argo_wait_refresh_consumed() { echo "CALL argo_wait_refresh_consumed $1"; }
 argo_remove_finalizer() { echo "CALL argo_remove_finalizer $1"; [[ "${STUB_FAIL_FINALIZER:-}" != "$1" ]]; }
-argo_hold_prune() { echo "CALL argo_hold_prune $1"; [[ "${STUB_FAIL_HOLD:-}" != "$1" ]]; }'
+argo_hold_prune() { echo "CALL argo_hold_prune $1"; [[ "${STUB_FAIL_HOLD:-}" != "$1" ]]; }
+argo_release_prune() { echo "CALL argo_release_prune $1"; [[ "${STUB_FAIL_RELEASE:-}" != "$1" ]]; }'
 stub scripts/identity.sh 'echo "CALL identity.sh $* takeover=${IDENTITY_TAKEOVER_ENVCONFIG:-0}"'
 
 cat > "$work/bin/kubectl" <<'STUB'
@@ -136,6 +137,7 @@ argo_wait_synced_healthy() { echo "CALL argo_wait_synced_healthy $1"; }
 argo_hard_refresh_all() { echo "CALL argo_hard_refresh_all"; }
 argo_wait_refresh_consumed() { echo "CALL argo_wait_refresh_consumed $1"; }
 argo_hold_prune() { echo "CALL argo_hold_prune $1"; }
+argo_release_prune() { echo "CALL argo_release_prune $1"; }
 argo_remove_finalizer() { echo "CALL argo_remove_finalizer $1"; if [[ "$1" == vegvisir ]]; then n=$(( ${n:-0} + 1 )); [[ $n -lt 2 ]]; fi; }'
 run realm-x homelab-prod; rc=$?
 check "a failed second finalizer pass exits non-zero" "[[ $rc -ne 0 ]]"
@@ -151,6 +153,7 @@ argo_wait_synced_healthy() { echo "CALL argo_wait_synced_healthy $1"; }
 argo_hard_refresh_all() { echo "CALL argo_hard_refresh_all"; }
 argo_wait_refresh_consumed() { echo "CALL argo_wait_refresh_consumed $1"; }
 argo_hold_prune() { echo "CALL argo_hold_prune $1"; }
+argo_release_prune() { echo "CALL argo_release_prune $1"; [[ "${STUB_FAIL_RELEASE:-}" != "$1" ]]; }
 argo_remove_finalizer() { echo "CALL argo_remove_finalizer $1"; }'
 count() { grep -c -F -- "$1" "$work/out"; }
 
@@ -158,18 +161,39 @@ count() { grep -c -F -- "$1" "$work/out"; }
 STUB_ENV=homelab STUB_TAILNET='' run realm-x homelab-prod; rc=$?
 check "homelab without a tailnet node migrates" "[[ $rc -eq 0 ]]"
 check "the decision is printed (adopted)" "grep -q 'adopted (held + finalizer cleared): vegvisir\$' \"\$work/out\""
-check "the decision is printed (orphaned)" "grep -q 'orphaned (finalizer cleared only):  tailscale-operator\$' \"\$work/out\""
+check "the decision is printed (orphaned)" "grep -q 'orphaned (held, cleared, released after the switch):  tailscale-operator\$' \"\$work/out\""
 check "vegvisir is held" "[[ \$(count 'CALL argo_hold_prune vegvisir') -eq 1 ]]"
 check "vegvisir is cleared twice (step 3 and the second pass)" "[[ \$(count 'CALL argo_remove_finalizer vegvisir') -eq 2 ]]"
-check "tailscale-operator is cleared once (step 3 only)" "[[ \$(count 'CALL argo_remove_finalizer tailscale-operator') -eq 1 ]]"
-check "tailscale-operator is not held" "! grep -q 'CALL argo_hold_prune tailscale-operator' \"\$work/out\" && ! grep -q 'sync-options' \"\$work/kube.log\""
-check "velero is neither held nor cleared" "! grep -q 'argo_hold_prune velero' \"\$work/out\" && ! grep -q 'argo_remove_finalizer velero' \"\$work/out\""
-check "the orphaned app's clear precedes the seed" "[[ \$(first 'CALL argo_remove_finalizer tailscale-operator') -lt \$(first 'CALL seed_access_open') ]]"
+check "vegvisir is never released (the ApplicationSet strips its hold)" "! grep -q 'argo_release_prune vegvisir' \"\$work/out\""
+check "tailscale-operator is held once (step 3)" "[[ \$(count 'CALL argo_hold_prune tailscale-operator') -eq 1 ]]"
+check "tailscale-operator is cleared twice (step 3 and the second pass)" "[[ \$(count 'CALL argo_remove_finalizer tailscale-operator') -eq 2 ]]"
+check "tailscale-operator is released once" "[[ \$(count 'CALL argo_release_prune tailscale-operator') -eq 1 ]]"
+ts_h=$(first 'CALL argo_hold_prune tailscale-operator'); ts_f1=$(first 'CALL argo_remove_finalizer tailscale-operator'); ts_f2=$(last 'CALL argo_remove_finalizer tailscale-operator')
+ts_r=$(first 'CALL argo_release_prune tailscale-operator'); a_ops=$(first 'CALL argo_wait_operations_done'); a_i2=$(last 'CALL identity.sh apply realm-x homelab-prod'); a_seed=$(first 'CALL seed_access_open')
+check "tailscale-operator: hold, then clear, both before the seed" "[[ -n '$ts_h' && '$ts_h' -lt '$ts_f1' && '$ts_f1' -lt '$a_seed' ]]"
+check "tailscale-operator: the second clear follows the operations wait" "[[ -n '$ts_f2' && '$a_ops' -lt '$ts_f2' ]]"
+check "tailscale-operator: the release follows the second clear and precedes the identity take-over" "[[ -n '$ts_r' && '$ts_f2' -lt '$ts_r' && '$ts_r' -lt '$a_i2' ]]"
+check "velero is neither held, cleared nor released" "! grep -q 'argo_hold_prune velero' \"\$work/out\" && ! grep -q 'argo_remove_finalizer velero' \"\$work/out\" && ! grep -q 'argo_release_prune velero' \"\$work/out\""
+
+# A failing release stops the migration before the identity take-over
+STUB_FAIL_RELEASE=tailscale-operator STUB_ENV=homelab STUB_TAILNET='' run realm-x homelab-prod; rc=$?
+check "a failed release exits non-zero" "[[ $rc -ne 0 ]] && grep -q 'CALL argo_release_prune tailscale-operator' \"\$work/out\""
+check "no take-over after a failed release" "[[ \$(grep -c 'CALL identity.sh apply' \"\$work/out\") -eq 1 ]] && ! grep -q 'CALL argo_wait_synced_healthy' \"\$work/out\""
+
+# (c) homelab WITH a tailnet node: tailscale-operator adopted, nothing orphaned
+STUB_ENV=homelab STUB_TAILNET=homelab-prod run realm-x homelab-prod; rc=$?
+check "homelab with a tailnet node migrates" "[[ $rc -eq 0 ]]"
+check "the decision is printed for homelab with a tailnet node" "grep -q 'adopted (held + finalizer cleared): vegvisir tailscale-operator\$' \"\$work/out\" && grep -q 'orphaned (held, cleared, released after the switch):  none' \"\$work/out\""
+for app in vegvisir tailscale-operator; do
+    check "homelab+tailnet: $app is held once, cleared twice, never released" "[[ \$(count 'CALL argo_hold_prune $app') -eq 1 && \$(count 'CALL argo_remove_finalizer $app') -eq 2 && \$(count 'CALL argo_release_prune $app') -eq 0 ]]"
+done
+check "homelab+tailnet: nothing is released at all" "! grep -q 'CALL argo_release_prune' \"\$work/out\""
+check "homelab+tailnet: velero is untouched" "! grep -qE 'CALL argo_(hold_prune|remove_finalizer|release_prune) velero' \"\$work/out\""
 
 # (b) gke with a tailnet node: all three adopted
 STUB_ENV=gke STUB_TAILNET=node-1 run realm-x gke-prod; rc=$?
 check "gke with a tailnet node migrates" "[[ $rc -eq 0 ]]"
-check "the decision is printed for gke" "grep -q 'adopted (held + finalizer cleared): vegvisir tailscale-operator velero\$' \"\$work/out\" && grep -q 'orphaned (finalizer cleared only):  none' \"\$work/out\""
+check "the decision is printed for gke" "grep -q 'adopted (held + finalizer cleared): vegvisir tailscale-operator velero\$' \"\$work/out\" && grep -q 'orphaned (held, cleared, released after the switch):  none' \"\$work/out\""
 for app in vegvisir tailscale-operator velero; do
     check "gke: $app is held once and cleared twice" "[[ \$(count 'CALL argo_hold_prune $app') -eq 1 && \$(count 'CALL argo_remove_finalizer $app') -eq 2 ]]"
 done

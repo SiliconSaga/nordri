@@ -5,15 +5,17 @@
 # the live identity (if any) names another cluster. Hydrates from the local
 # checkouts like update-embedded-git.sh, so run it from the branches you mean to
 # migrate to. Nothing is deleted: the Applications the new Git adopts as
-# ApplicationSets (which ones depends on the cluster's identity, see step 3) are
-# held with Prune=false and have only their resources finalizer dropped, so the
-# ApplicationSets can adopt them without a cascade. Their old parents still
+# ApplicationSets (which ones depends on the cluster's identity, see step 3), and
+# the ones it drops, are held with Prune=false and have only their resources
+# finalizer dropped, so adoption or the later prune cannot cascade. Their old parents still
 # self-heal from the old repos until step 6 and can put the finalizer back, so
 # the finalizers are cleared again once the parents read the new Git.
 # Prune=false afterwards: the EnvironmentConfig written by identity.sh keeps it
 # deliberately (inert after take-over, a safety plus). Adopted Applications lose
 # it on adoption, since the ApplicationSet replaces non-preserved annotations.
-# Nothing else carries it after this script.
+# Orphaned Applications (the new Git no longer declares them) carry it only from
+# step 3 until the release after the second finalizer pass in step 6. Nothing
+# else carries it after this script.
 # MIGRATE_SKIP_HYDRATE=1 is a test seam, not a dry run: it skips only the hydrate.
 # Every other step (identity, finalizers, orgs, Service, root Applications,
 # refreshes) still changes the cluster.
@@ -57,7 +59,7 @@ override=$(kubectl get configmap -n argo argocd-cmd-params-cm -o 'jsonpath={.dat
 echo "2/8 identity (ConfigMap, cluster Secret; a tracked EnvironmentConfig is marked Prune=false, values untouched)"
 REALM_DIR="$REALM_DIR" bash "$SCRIPT_DIR/scripts/identity.sh" apply "$REALM" "$CLUSTER" || exit 1
 
-echo "3/8 Applications that carry a finalizer: held and cleared where the new Git adopts them, cleared where it drops them"
+echo "3/8 Applications that carry a finalizer: held and cleared where the new Git adopts or drops them"
 # Which Applications the new Git adopts as ApplicationSets depends on identity:
 # vegvisir always; tailscale-operator where there is a tailnet node; velero where
 # the environment is gke (elsewhere velero stays a plain Application the overlay
@@ -67,19 +69,23 @@ ADOPTED_APPS="vegvisir"
 [[ -n "$TAILNET_NODE" ]] && ADOPTED_APPS="$ADOPTED_APPS tailscale-operator"
 [[ "$TARGET" == "gke" ]] && ADOPTED_APPS="$ADOPTED_APPS velero"
 # Orphaned: an old-Git Application the new Git no longer declares at all for this
-# cluster (today tailscale-operator without a tailnet node). Its finalizer is
-# cleared and it is not held, so the parent's prune orphans its resources.
+# cluster. Today the ONLY one is tailscale-operator on a cluster without a
+# tailnet node. Any future app the new Git stops declaring for a cluster class
+# must be added here, or the parent's step-6 prune cascade-deletes it.
+# Orphans are held like adopted apps (the old Git still declares them with the
+# finalizer and self-heals it back); after the switch the hold is released, once
+# the finalizer is verifiably gone, so the parent's prune removes only the
+# Application object and leaves its resources in place.
 ORPHANED_APPS=""
 [[ -z "$TAILNET_NODE" ]] && ORPHANED_APPS="tailscale-operator"
 echo "   adopted (held + finalizer cleared): $ADOPTED_APPS"
-echo "   orphaned (finalizer cleared only):  ${ORPHANED_APPS:-none}"
+echo "   orphaned (held, cleared, released after the switch):  ${ORPHANED_APPS:-none}"
 # Prune=false is what holds: the old parents (selfHeal, old repos) re-add the
 # finalizer within seconds, and in step 6 they prune these Applications.
-for app in $ADOPTED_APPS; do
+for app in $ADOPTED_APPS $ORPHANED_APPS; do
     argo_hold_prune "$app" || exit 1
     argo_remove_finalizer "$app" || exit 1
 done
-for app in $ORPHANED_APPS; do argo_remove_finalizer "$app" || exit 1; done
 
 echo "4/8 seed orgs and the git Service"
 # Seed credentials and port-forward exactly as update-embedded-git.sh (lib/seed-access.sh)
@@ -106,6 +112,13 @@ argo_wait_operations_done 900 || exit 1
 # the old parents' self-heal re-added, and fail if one remains.
 echo "   finalizers again, now that the parents are on the new Git"
 for app in $ADOPTED_APPS; do argo_remove_finalizer "$app" || exit 1; done
+# An orphan is not declared by the new Git, so nothing re-adds its finalizer: with
+# it verified gone, release the hold and the parent's next sync prunes only the
+# finalizer-less Application object, leaving its resources in place.
+for app in $ORPHANED_APPS; do
+    argo_remove_finalizer "$app" || exit 1
+    argo_release_prune "$app" || exit 1
+done
 
 echo "7/8 identity again: take over the EnvironmentConfig (refused unless ArgoCD has let it go)"
 IDENTITY_TAKEOVER_ENVCONFIG=1 REALM_DIR="$REALM_DIR" bash "$SCRIPT_DIR/scripts/identity.sh" apply "$REALM" "$CLUSTER" || exit 1

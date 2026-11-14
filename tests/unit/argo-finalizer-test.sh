@@ -22,7 +22,11 @@ case "$1" in
     cat "$STUB_STATE"; exit 0 ;;
   annotate)
     if [[ -n "${STUB_ANNOTATE_FAIL:-}" ]]; then echo "annotate denied" >&2; exit 1; fi
-    for a in "$@"; do [[ "$a" == argocd.argoproj.io/sync-options=* ]] && printf '%s' "${a#*=}" > "$STUB_ANN"; done
+    if [[ -n "${STUB_ANNOTATE_ERR:-}" ]]; then echo "$STUB_ANNOTATE_ERR" >&2; exit 1; fi
+    for a in "$@"; do
+      [[ "$a" == argocd.argoproj.io/sync-options=* ]] && printf '%s' "${a#*=}" > "$STUB_ANN"
+      [[ "$a" == argocd.argoproj.io/sync-options- ]] && rm -f "$STUB_ANN"
+    done
     exit 0 ;;
   patch)
     if [[ -n "${STUB_PATCH_FAIL:-}" ]]; then echo "patch denied" >&2; exit 1; fi
@@ -103,6 +107,20 @@ hold '' STUB_GET_ERR='Unable to connect to the server: dial tcp: i/o timeout'; r
 check "hold: any other get failure returns 1" "[[ $rc -eq 1 ]] && ! grep -q 'KUBECTL annotate' \"\$STUB_LOG\""
 hold '' STUB_ANNOTATE_FAIL=1; rc=$?
 check "hold: a failing annotate returns 1" "[[ $rc -eq 1 ]]"
+
+# argo_release_prune: the sync-options annotation comes off again
+release() {
+    printf '%s' 'Prune=false' > "$STUB_ANN"; : > "$STUB_LOG"
+    ( for kv in "$@"; do export "${kv?}"; done; . "$root/lib/argo.sh"; argo_release_prune demo ) > "$work/out" 2>&1
+}
+release; rc=$?
+check "release: removes the annotation, returns 0" "[[ $rc -eq 0 && ! -e \"\$STUB_ANN\" ]]"
+check "release: uses the trailing-dash removal form" "grep -q 'KUBECTL annotate application -n argo demo argocd.argoproj.io/sync-options-\$' \"\$STUB_LOG\""
+release STUB_ANNOTATE_ERR='Error from server (NotFound): applications.argoproj.io "demo" not found'; rc=$?
+check "release: NotFound is tolerated: returns 0" "[[ $rc -eq 0 ]]"
+release STUB_ANNOTATE_ERR='Unable to connect to the server: dial tcp: i/o timeout'; rc=$?
+check "release: any other error returns 1" "[[ $rc -eq 1 ]]"
+check "release: the error is printed" "grep -q 'i/o timeout' \"\$work/out\""
 
 # the refresh-consumed predicate: counts Applications still carrying the annotation (column 5)
 pred_n() { ( . "$root/lib/argo.sh"; _pred_refresh_pending <<< "$1" ); }

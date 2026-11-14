@@ -74,6 +74,23 @@ argo_hold_prune() {
     echo "   $app: marked Prune=false"
 }
 
+# Remove the argocd.argoproj.io/sync-options annotation again (the counterpart
+# of argo_hold_prune), so the parent's next sync may prune the Application. Only
+# call it once no resources finalizer can come back. Returns 0 when the
+# annotation is gone (or the Application does not exist), 1 otherwise.
+argo_release_prune() {
+    local app="$1" errf
+    errf=$(mktemp) || return 1
+    if ! kubectl annotate application -n "$ARGO_NS" "$app" argocd.argoproj.io/sync-options- >/dev/null 2>"$errf"; then
+        if grep -q 'NotFound' "$errf"; then
+            rm -f "$errf"; echo "   $app: not found, nothing to release"; return 0
+        fi
+        echo "❌ $app: removing the sync-options annotation failed:" >&2; cat "$errf" >&2; rm -f "$errf"; return 1
+    fi
+    rm -f "$errf"
+    echo "   $app: Prune=false released"
+}
+
 # Drop ArgoCD's resources finalizer(s) so a later prune orphans the resources
 # instead of deleting them (design, Decision 4 step 1). Every other finalizer is
 # kept. Returns 0 only when no resources finalizer remains (or the Application
