@@ -81,6 +81,21 @@ probe_gitea() {
     curl -fsS --max-time 5 "$GITEA_PROBE_URL" >/dev/null 2>&1
 }
 
+# Print the path of a curl config file (0600, inside a fresh 0700 dir) holding
+# the admin credential, for `curl -K`. Keeps the password out of argv and URLs.
+# Backslash and double quote are escaped for curl's config quoting. The caller
+# removes the file's directory (dirname of the printed path) when done.
+gitea_curl_auth_file() {
+    local dir user pass
+    dir=$(mktemp -d) || return 1
+    chmod 700 "$dir"
+    user=${GITEA_USER//\\/\\\\}; user=${user//\"/\\\"}
+    pass=${GITEA_PASS//\\/\\\\}; pass=${pass//\"/\\\"}
+    printf 'user = "%s:%s"\n' "$user" "$pass" > "$dir/auth.curl"
+    chmod 600 "$dir/auth.curl"
+    printf '%s' "$dir/auth.curl"
+}
+
 # Ensure a Gitea repo exists (create if missing). Treats 201 (Created) and 409
 # (already exists) as success; retries transport errors up to 5x with a short
 # backoff, then prints the response body and fails.
@@ -93,23 +108,26 @@ probe_gitea() {
 gitea_ensure_repo() {
     local owner=$1 repo_name=$2 auto_init=${3:-false}
     local max_retries=5
-    local i status response_file body
+    local i status response_file body auth_file auth_dir
+    auth_file=$(gitea_curl_auth_file) || return 1
+    auth_dir=$(dirname "$auth_file")
     # Build the body with jq so a repo name containing quotes/backslashes can't
     # corrupt the JSON. auto_init ("true"/"false") is injected as a JSON boolean.
     body=$(jq -n --arg name "$repo_name" --argjson auto_init "$auto_init" \
         '{name: $name, private: false} + (if $auto_init then {auto_init: true, default_branch: "main"} else {} end)')
     for i in $(seq 1 $max_retries); do
         response_file=$(mktemp)
-        # `-u user:pass` keeps credentials out of the URL so special chars in
-        # $GITEA_PASS can't corrupt URL parsing.
+        # `-K` reads the credential from a 0600 config file: nothing in argv or
+        # the URL.
         status=$(curl -sS -o "$response_file" -w "%{http_code}" \
-            -u "$GITEA_USER:$GITEA_PASS" \
+            -K "$auth_file" \
             -X POST "$GITEA_API_URL/api/v1/orgs/$owner/repos" \
             -H "Content-Type: application/json" \
             -d "$body") || true
         case "$status" in
             201|409)
                 rm -f "$response_file"
+                rm -rf "$auth_dir"
                 return 0
                 ;;
         esac
@@ -123,6 +141,7 @@ gitea_ensure_repo() {
         cat "$response_file" >&2
         echo >&2
         rm -f "$response_file"
+        rm -rf "$auth_dir"
         return 1
     done
 }

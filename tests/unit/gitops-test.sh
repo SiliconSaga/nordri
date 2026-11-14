@@ -9,7 +9,7 @@ root="$(cd "$(dirname "$0")/../.." && pwd)"
 fails=0
 check() { if eval "$2"; then echo "ok - $1"; else echo "NOT OK - $1"; fails=$((fails+1)); fi; }
 work="$(mktemp -d)"; trap 'rm -rf "$work"' EXIT
-LOG="$work/log"; : > "$LOG"; APPLIED="$work/applied"; : > "$APPLIED"
+LOG="$work/log"; : > "$LOG"; ARGV_LOG="$work/argv"; : > "$ARGV_LOG"; APPLIED="$work/applied"; : > "$APPLIED"
 
 check "canonical org drops the realm- prefix" "[[ \$(gitops_canonical_org realm-siliconsaga) == siliconsaga ]]"
 check "vendor org" "[[ \$(gitops_vendor_org realm-siliconsaga) == siliconsaga-vendor ]]"
@@ -23,6 +23,7 @@ curl() {
     local method="GET" url="" a
     for a in "$@"; do case "$a" in -X) method=next ;; GET|POST|PATCH|DELETE) [[ $method == next ]] && method=$a ;; http*) url=$a ;; esac; done
     printf '%s %s\n' "$method" "$url" >> "$LOG"
+    printf '%s\n' "$*" >> "$ARGV_LOG"
     case "$method $url" in
         "GET "*/api/v1/orgs/*) [[ -e "$work/org-${url##*/}" ]] && printf 200 || printf 404 ;;
         "POST "*/api/v1/orgs) : > "$work/org-siliconsaga"; : > "$work/org-siliconsaga-vendor"; printf 201 ;;
@@ -39,12 +40,13 @@ kubectl() {
     esac
     return 0
 }
-GITEA_USER=nordri-admin GITEA_PASS=pw GITEA_HOST=localhost:3000 GITEA_SCHEME=http; gitea_build_urls
+GITEA_USER=nordri-admin GITEA_PASS='s3cr3t-p@ss"q' GITEA_HOST=localhost:3000 GITEA_SCHEME=http; gitea_build_urls
 
 gitops_ensure_org siliconsaga >/dev/null; gitops_ensure_org siliconsaga >/dev/null
 check "org created once, then found" "[[ \$(grep -c 'POST .*/api/v1/orgs$' \"\$LOG\") -eq 1 ]]"
 gitea_ensure_repo siliconsaga nordri true >/dev/null
 check "repo created under the org" "grep -q 'POST .*/api/v1/orgs/siliconsaga/repos' \"\$LOG\""
+check "credentials reach curl via -K, never argv" "grep -q -- '-K' \"\$ARGV_LOG\" && ! grep -qF -- \"\$GITEA_PASS\" \"\$ARGV_LOG\""
 
 GIT_TARGET="" gitops_ensure_git_service >/dev/null
 check "Service git created pointing at the seed" "grep -q 'externalName: gitea-http.gitea.svc.cluster.local' \"\$APPLIED\""

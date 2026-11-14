@@ -18,18 +18,22 @@ gitops_canonical_org() { printf '%s' "${1#realm-}"; }
 gitops_vendor_org() { printf '%s-vendor' "$(gitops_canonical_org "$1")"; }
 gitops_repo_url() { printf '%s/%s/%s.git' "$GIT_STABLE_BASE" "$1" "$2"; }
 
-# Same API on Gitea and Forgejo. Credentials go through -u, never the URL.
+# Same API on Gitea and Forgejo. Credentials go through a 0600 `-K` config file
+# (gitea_curl_auth_file), never argv or the URL.
 gitops_ensure_org() {
-    local org="$1" status body
-    status=$(curl -sS -o /dev/null -w '%{http_code}' -u "$GITEA_USER:$GITEA_PASS" -X GET "$GITEA_API_URL/api/v1/orgs/$org") || status=000
+    local org="$1" status body auth_file auth_dir
+    auth_file=$(gitea_curl_auth_file) || return 1
+    auth_dir=$(dirname "$auth_file")
+    status=$(curl -sS -o /dev/null -w '%{http_code}' -K "$auth_file" -X GET "$GITEA_API_URL/api/v1/orgs/$org") || status=000
     case "$status" in
-        200) echo "   org $org: present"; return 0 ;;
+        200) rm -rf "$auth_dir"; echo "   org $org: present"; return 0 ;;
         404) ;;
-        *) echo "❌ GET /orgs/$org returned HTTP $status" >&2; return 1 ;;
+        *) rm -rf "$auth_dir"; echo "❌ GET /orgs/$org returned HTTP $status" >&2; return 1 ;;
     esac
     body=$(jq -n --arg u "$org" '{username: $u, visibility: "public", repo_admin_change_team_access: false}')
-    status=$(curl -sS -o /dev/null -w '%{http_code}' -u "$GITEA_USER:$GITEA_PASS" -X POST "$GITEA_API_URL/api/v1/orgs" \
+    status=$(curl -sS -o /dev/null -w '%{http_code}' -K "$auth_file" -X POST "$GITEA_API_URL/api/v1/orgs" \
         -H 'Content-Type: application/json' -d "$body") || status=000
+    rm -rf "$auth_dir"
     [[ "$status" == 201 ]] && { echo "   org $org: created"; return 0; }
     echo "❌ creating org $org returned HTTP $status" >&2; return 1
 }
