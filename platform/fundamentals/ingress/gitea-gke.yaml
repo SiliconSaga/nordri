@@ -1,6 +1,6 @@
 # Gitea ingress for the GKE overlay — Gateway API HTTPRoute.
 #
-# Hostname matches `cluster-identity-gke.yaml` (domain: cmdbee.org) so the
+# Hostname matches the GKE cluster identity (domain: cmdbee.org) so the
 # in-cluster Gitea is reachable via the wildcard A record that already
 # points at the Traefik LB.
 #
@@ -14,7 +14,7 @@
 # ephemeral HTTPRoute on the Gateway's port-80 listener; that's the
 # Gateway's concern, not gitea's.
 #
-# Operational note: `update-embedded-git.sh gke` should now use
+# Operational note: `update-embedded-git.sh <realm>` (e.g. `realm-siliconsaga`) should now use
 # `GITEA_HOST=gitea.cmdbee.org GITEA_SCHEME=https` (defaults still work
 # via the kubectl port-forward path which is HTTP, but that's
 # in-cluster, not over the LB).

@@ -1,54 +1,89 @@
-# Cluster Identity (`EnvironmentConfig/cluster-identity`)
+# Cluster Identity
 
-Nordri provisions a workspace-scoped `EnvironmentConfig` named `cluster-identity`
-on every cluster it bootstraps. Downstream Crossplane compositions read it via
-`function-environment-configs` so claim authors don't have to thread cluster
-facts (storage class, ingress domain, environment kind) through every claim,
-and templates don't have to branch on a `parameters.environment` ternary.
+Every cluster Nordri bootstraps carries one set of per-cluster facts — its name,
+environment, role, maturity, domain, storage class, GCP project, tailnet node. They
+live **on the cluster**, not in Git: nothing is stamped into manifests at hydration,
+and the same Git content applies identically to every cluster.
+
+`scripts/identity.sh apply <realm> <cluster>` resolves the facts and writes them in
+three places: a ConfigMap, an ArgoCD cluster Secret, and a Crossplane
+`EnvironmentConfig`.
 
 ## The problem it solves
 
-Without cluster identity, a single composition needs to know — at template
-render time — *which* cluster it's running on so it can pick the right
-StorageClass, ingress domain, and replica count. The historical pattern was a
-required `parameters.environment` field on the claim plus per-step ternaries:
+A composition or an Application needs to know *which* cluster it is on to pick the
+right StorageClass, ingress domain, overlay or backup path. The historical answers
+were a required `parameters.environment` field on every claim, per-step ternaries in
+every composition, and placeholders substituted into manifests per cluster at
+hydration. None scales, and the last one meant the same Git repo could not be applied
+identically to homelab and GKE.
+
+Cluster identity inverts the relationship: the *cluster* declares its facts once, and
+everything else reads them.
+
+## The ConfigMap and its three layers
+
+The source of truth on the cluster is `ConfigMap nordri/cluster-identity`. Its keys
+are resolved from three layers, later winning:
+
+1. `identity/defaults-<environment>.yaml` in nordri — what every cluster of that
+   environment shares (storage class, domain, region).
+2. The realm's `clusters/<cluster>.yaml` — what is specific to this cluster.
+3. `NORDRI_IDENTITY_<KEY>` environment variables — for values that must never be
+   committed. None exist today.
+
+Files are flat `key: value` only; nesting is refused.
+
+Worked example, `clusters/homelab-prod.yaml` in the realm:
 
 ```yaml
-storageClassName: {{ if eq .observed.composite.resource.spec.parameters.environment "gke" }}standard-rwo{{ else }}local-path{{ end }}
+environment: homelab
+role: prod
+maturity: durable
 ```
 
-That works for two environments but doesn't scale: every composition repeats
-the same branching, every claim repeats the same value, and every new
-environment adds another `else if`. Worse, the same Git repo can't be applied
-identically to homelab and GKE — claims have to be hydrated with environment
-values per cluster.
+The `homelab` defaults supply `storageClass: local-path` and the homelab domain; the
+cluster file supplies the role and maturity; the cluster name comes from the file name
+(and the argument to `identity.sh`). `environment`, `role` and `maturity` are
+required in a realm file. `role` is `lab`, `test` or `prod`; `maturity` is
+`bootstrap`, `durable` or `full` and gates the durable tier (realm design
+`2026-09-07-forgejo-day2-design.md`). A `gke` cluster must also declare `gcpProject`.
+A `prod` cluster carries a `sourceRef` (`main` or `live`).
 
-Cluster identity inverts the relationship: the *cluster* declares its facts
-once, and compositions read them.
+A cluster with no realm file is a bootstrap lab: `homelab`, `lab`, `bootstrap`. There
+is nothing to write to try Nordri out.
 
-## What's in cluster-identity
+**Name guard.** The cluster name must be a DNS-1123 label of at most 63 characters,
+because it ends up in label values, paths (the Velero prefix) and tailnet names.
+`identity.sh` also never renames a cluster: if the live ConfigMap names a different
+cluster, it refuses, and the answer is to re-bootstrap.
 
-```yaml
-apiVersion: apiextensions.crossplane.io/v1beta1
-kind: EnvironmentConfig
-metadata:
-  name: cluster-identity
-data:
-  environment: homelab    # or "gke" — controls replica counts, etc.
-  storageClass: local-path # or "standard-rwo" — used by all PVC-bound resources
-  domain: homelab.local   # or "cmdbee.org" — base domain for ingress hosts
-  maturity: bootstrap     # bootstrap | durable | full — gates the durable tier
-  gcpProject: <stamped>   # gke only; stamped at hydration from GCP_PROJECT
-  gcpRegion: us-east1     # gke only; where the OpenBao KMS key ring lives
-```
+**`tailnetNode`.**
 
-`maturity` is the platform's graduation switch (realm design `2026-09-07-forgejo-day2-design.md`). `bootstrap.sh` always produces a `bootstrap` cluster; compositions that belong to the durable tier render nothing until an operator commits a bump and hydrates it. `gcpProject` is a hydration-time stamp: the committed manifest carries only the `__GCP_PROJECT__` placeholder, and `lib/patch-velero.sh` fills the real id into the hydrated copy from `GCP_PROJECT`, the same way it stamps the Velero Application.
+- unset on a `prod` cluster: the node is the cluster name (unique in the realm);
+- unset on `lab` or `test`: empty, meaning no tailnet operator;
+- `stamped`: `<cluster>-<yyyymmdd-HHMM>`, for lab and test clusters that come and go.
+  A live stamp is kept on re-apply, so a device is never renamed under a running
+  cluster.
 
-Per-environment definitions live in
-`platform/fundamentals/manifests/cluster-identity-{homelab,gke}.yaml`. Each
-overlay's `kustomization.yaml` includes only its own (the same file pattern as
-`garage` for homelab-only apps). The resource name is identical in
-both — only the values differ — so compositions stay environment-agnostic.
+**Graduation** is "edit the realm file, merge, `identity.sh apply`" — for example
+raising `maturity` from `bootstrap` to `durable`. The apply prints a diff of resolved
+versus live before writing.
+
+## The two projections, and who reads which
+
+| Projection | Holds | Read by |
+|---|---|---|
+| `EnvironmentConfig/cluster-identity` (Crossplane) | the identity's non-empty values as `data:` | compositions, via `function-environment-configs` |
+| ArgoCD cluster Secret `argo/in-cluster` | labels `nordri.siliconsaga.org/{cluster,environment,role,tailnet}`; annotations `nordri.siliconsaga.org/{tailnet-node,gcp-project,maturity}` | ApplicationSets, via the cluster generator |
+
+Nordri's two ApplicationSets read the Secret: `layer4-fundamentals` picks
+`platform/fundamentals/overlays/<environment>`, and `velero` generates only where the
+environment is `gke`, taking the project from `gcp-project` and the backup prefix from
+the cluster name. Both guard every lookup with `fail` (an absent key would otherwise
+render as an empty string), and both set `preserveResourcesOnDeletion` and
+`applicationsSync: create-update` so a generator that matches nothing cannot delete
+what it deployed.
 
 ## How a composition consumes it
 
@@ -129,12 +164,14 @@ across compositions. Examples that would belong:
 
 To add one:
 
-1. Add the field to both `cluster-identity-homelab.yaml` and
-   `cluster-identity-gke.yaml` under `data:`. Always extend both at once —
-   they're parallel; missing keys cause "<no value>" surprises in templates.
-2. Compositions that want it read it the same way:
+1. Add the key to `IDENTITY_KEYS` in `lib/identity.sh` and give it a value in each
+   `identity/defaults-<environment>.yaml` (or leave it to the realm's cluster files).
+   The resolver prints every key, empty when unset, so readers can rely on the shape.
+2. If an ApplicationSet needs it, project it onto the cluster Secret in
+   `scripts/identity.sh` and guard the lookup with `fail`.
+3. Compositions that want it read it the same way:
    `{{ $identity.objectStoreEndpoint }}`.
-3. Update this doc.
+4. Update this doc.
 
 Avoid putting per-claim or per-workload settings here. Cluster identity is
 about cluster-wide facts; resource sizing, retention, feature flags belong on

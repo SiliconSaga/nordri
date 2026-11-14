@@ -1,22 +1,48 @@
+# Layer 4 fundamentals, as an ApplicationSet (realm Phase 3 design, Decision 4).
+# One cluster, one Application — the cluster generator reads the identity that
+# scripts/identity.sh projects onto ArgoCD's in-cluster Secret, so the overlay
+# is chosen by the cluster, not stamped into Git at hydration.
+#
+# Every identity lookup is guarded with fail: index on a missing key renders ""
+# (missingkey=error does not cover it), and "overlays/" would deploy nothing.
+# preserveResourcesOnDeletion + applicationsSync create-update: a generator
+# that matches nothing (a deleted label, a typo) cannot delete the Application
+# or what it deployed. The controller honours applicationsSync only with
+# applicationsetcontroller.enable.policy.override on, set in bootstrap.sh and
+# apps/argocd.yaml.
 apiVersion: argoproj.io/v1alpha1
-kind: Application
+kind: ApplicationSet
 metadata:
   name: layer4-fundamentals
   namespace: argo
 spec:
-  project: default
-  source:
-    repoURL: 'http://gitea-http.gitea.svc.cluster.local:3000/nordri-admin/nordri.git'
-    targetRevision: HEAD
-    path: platform/fundamentals
-
-  destination:
-    server: https://kubernetes.default.svc
-    namespace: argo
+  goTemplate: true
+  goTemplateOptions: ["missingkey=error"]
   syncPolicy:
-    automated:
-      prune: true
-      selfHeal: true
-    syncOptions:
-      - SkipDryRunOnMissingResource=true
-      - ServerSideApply=true
+    preserveResourcesOnDeletion: true
+    applicationsSync: create-update
+  generators:
+    - clusters:
+        selector:
+          matchExpressions:
+            - {key: nordri.siliconsaga.org/cluster, operator: Exists}
+  template:
+    metadata:
+      name: layer4-fundamentals
+      namespace: argo
+    spec:
+      project: default
+      source:
+        repoURL: 'http://git.gitops.svc.cluster.local:3000/siliconsaga/nordri.git'
+        targetRevision: HEAD
+        path: '{{ if not (index .metadata.labels "nordri.siliconsaga.org/environment") }}{{ fail "identity: environment label missing on the in-cluster Secret" }}{{ end }}platform/fundamentals/overlays/{{ index .metadata.labels "nordri.siliconsaga.org/environment" }}'
+      destination:
+        server: https://kubernetes.default.svc
+        namespace: argo
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - SkipDryRunOnMissingResource=true
+          - ServerSideApply=true

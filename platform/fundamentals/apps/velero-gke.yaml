@@ -4,264 +4,286 @@
 # See docs/velero-gke.md for the design and the one-time GCS/IAM setup, which is
 # `./gke-provision.sh velero-setup`.
 #
-# The GCP project placeholder below is substituted at hydration time by bootstrap.sh,
-# the same way app-of-apps.yaml gets its overlay path, so nothing project-specific is
-# committed. bootstrap fails closed if the value is unset or any placeholder survives.
+# Velero for GKE as an ApplicationSet: rendered only on a cluster whose identity
+# says environment gke, with the project and the per-cluster prefix read from the
+# identity (realm Phase 3 design, Decision 4). Nothing project-specific is
+# committed, and two clusters in one project never share a backup path.
 apiVersion: argoproj.io/v1alpha1
-kind: Application
+kind: ApplicationSet
 metadata:
   name: velero
   namespace: argo
-  finalizers:
-    - resources-finalizer.argocd.argoproj.io
 spec:
-  project: default
-  source:
-    repoURL: 'https://vmware-tanzu.github.io/helm-charts'
-    chart: velero
-    targetRevision: 11.3.1 # Corresponds to Velero v1.17.1
-    helm:
-      values: |
-        # ── CRD upgrade hook: OFF, deliberately ──
-        # The chart ships a pre-install/pre-upgrade Job that re-applies Velero's
-        # CRDs. It runs on EVERY sync, including a values-only change, and it is
-        # a hard gate: ArgoCD blocks the whole sync on "waiting for completion of
-        # hook batch/Job/velero-upgrade-crds" and will not converge if the Job
-        # cannot start.
-        #
-        # It has nothing to do here. All 13 Velero CRDs have been installed on
-        # this cluster since 2026-03-21, and the chart version is not moving —
-        # this repo pins targetRevision 11.3.1 and the previous Application
-        # pinned the same. So the hook was re-applying identical CRDs while
-        # standing between us and every future configuration change.
-        #
-        # It also breaks: the Job's init container pulls
-        # docker.io/bitnamilegacy/kubectl:<tag>, and the tag defaults to the
-        # CLUSTER's Kubernetes version. This cluster is 1.35 and that repo has no
-        # 1.35 tag, so the Job sat in ImagePullBackOff and the sync stalled
-        # behind it. The kubectl pin below is the belt to this braces — either
-        # alone fixes today's failure, and both together mean a chart bump does
-        # not resurrect it.
-        #
-        # ⚠ THE TRADE: with this false, bumping `targetRevision` no longer
-        # upgrades CRDs. A chart bump that changes them needs a manual step
-        # first:
-        #     velero install --crds-only --dry-run -o yaml | kubectl apply -f -
-        # See docs/velero-gke.md. Re-enable this instead if that ever becomes
-        # routine enough to be worth the coupling.
-        upgradeCRDs: false
-
-        # The kubectl pin is REQUIRED here too, not an AWS-plugin quirk.
-        #
-        # This was briefly removed on the reasoning that the pin was only for the
-        # AWS plugin helper. It is not: the chart's `upgrade-crds` hook Job runs
-        # an init container from `docker.io/bitnamilegacy/kubectl:<tag>`, and the
-        # default tag tracks the CLUSTER's Kubernetes version. This cluster is on
-        # 1.35, and `bitnamilegacy/kubectl:1.35` does not exist — Bitnami moved
-        # their images and the legacy repo stopped gaining tags — so the hook
-        # died with ImagePullBackOff and the whole sync stalled behind it.
-        #
-        # 1.32.2 is the last tag confirmed present in that repo. kubectl is only
-        # used to `apply` CRDs here, and the client-vs-server skew that implies
-        # is harmless for that. Re-check this if the hook ever fails again.
-        kubectl:
-          image:
-            tag: "1.32.2"
-        initContainers:
-          - name: velero-plugin-for-gcp
-            # Plugin minor tracks Velero minor: v1.13.x ↔ Velero v1.17.x, per the
-            # plugin's compatibility matrix. Chart 11.3.1 is appVersion 1.17.1
-            # (confirmed with `helm show chart`), so this must stay on v1.13.x —
-            # bump chart and plugin together. The v1.11.0 this inherited from the
-            # design doc pairs with Velero 1.15, two minors behind the chart.
-            image: velero/velero-plugin-for-gcp:v1.13.2
-            volumeMounts:
-              - mountPath: /target
-                name: plugins
-        serviceAccount:
-          server:
-            annotations:
-              iam.gke.io/gcp-service-account: velero@__GCP_PROJECT__.iam.gserviceaccount.com
-        configuration:
-          backupStorageLocation:
-            - name: default
-              provider: gcp
-              bucket: __GCP_PROJECT__-velero
-              # NO `config.project` here. The GCP OBJECT STORE plugin rejects it:
-              #   config has invalid keys [project]; valid keys are
-              #   [kmsKeyName serviceAccount credentialsFile storeEndpoint
-              #    universeDomain bucket prefix caCert]
-              # and the BackupStorageLocation goes Unavailable, which stops every
-              # backup. The bucket already identifies the project, so nothing is
-              # lost by omitting it.
-              #
-              # It IS valid on the volumeSnapshotLocation below — that plugin
-              # talks to the Compute API and needs to know which project's disks
-              # to snapshot. Same provider name, two different plugins, two
-              # different config schemas. Carried here from the original design
-              # doc and only caught when the BSL failed validation live.
-              config:
-                # REQUIRED under Workload Identity, and the reason the custom
-                # role carries iam.serviceAccounts.signBlob. With a key file the
-                # plugin signs URLs locally; with WI there is no key, so it asks
-                # IAM to sign as this account and therefore has to be told which
-                # account that is. Omitting it fails validation outright:
-                #   serviceAccount is expected to be provided as an item in
-                #   BackupStorageLocation's config
-                # Same identity as the ServiceAccount annotation above.
-                serviceAccount: velero@__GCP_PROJECT__.iam.gserviceaccount.com
-          volumeSnapshotLocation:
-            - name: default
-              provider: gcp
-              config:
-                # Valid and required here, unlike above.
-                project: __GCP_PROJECT__
-        # Workload Identity: the pod authenticates via GKE's metadata server, so
-        # there is no Secret to create, rotate, or leak.
-        credentials:
-          useSecret: false
-
-        # Without this the metrics port is exposed but nothing scrapes it, and
-        # the heimdall alerts on velero_backup_* would evaluate against a metric
-        # that never appears — silently never firing. Heimdall's Prometheus sets
-        # serviceMonitorSelectorNilUsesHelmValues: false, so its selector is
-        # empty and matches every ServiceMonitor cluster-wide; no `release:`
-        # label is needed here.
-        metrics:
-          enabled: true
-          serviceMonitor:
-            enabled: true
-
-        # ── Per-volume selection ──
-        # excludedNamespaces is all-or-nothing: a namespace in scope has EVERY
-        # PVC in it snapshotted. That is the wrong granularity whenever a
-        # workload splits durable state from a cache it can refetch — Valheim
-        # keeps its world on valheim-data and the SteamCMD install on
-        # valheim-game, and without this policy backing up the world would
-        # snapshot the install beside it (~1.76 GB x 3 instances, protecting
-        # ~0.5 GB of world).
-        #
-        # Matching on a LABEL rather than a name keeps this generic: any volume
-        # whose contents can be re-fetched from upstream carries
-        # backup.siliconsaga.org/content=reconstructible and is skipped, with no
-        # entry here per workload. ARK's install volumes are the next candidate,
-        # and are the reason this exists now rather than later — the ark
-        # namespace cannot be re-included until per-volume selection works.
-        #
-        # The chart names this ConfigMap `velero-<key>` in the release
-        # namespace, which is what the schedule's resourcePolicy refers to.
-        configMaps:
-          volume-policy:
-            data:
-              # Single key; Velero reads the whole file as the policy document.
-              policy.yaml: |
-                version: v1
-                volumePolicies:
-                  - conditions:
-                      pvcLabels:
-                        backup.siliconsaga.org/content: reconstructible
-                    action:
-                      type: skip
-
-        # A Velero install with no Schedule takes no backups. That is not a
-        # hypothetical failure here — Velero has been installed on this cluster
-        # and storing nothing, and the only reason anyone noticed is that
-        # somebody went looking. Ship the schedule with the install.
-        schedules:
-          daily-full:
-            disabled: false
-            # Velero evaluates cron in the CONTROLLER's timezone, which is UTC.
-            # 06:00 UTC is 02:00 US/Eastern under EDT and 01:00 under EST —
-            # overnight local either way, which is the point. The same
-            # UTC-vs-local trap already bit the Valheim Jenkins jobs, where
-            # "nightly 03:30" actually ran at 23:30 Eastern.
-            schedule: "0 6 * * *"
-            useOwnerReferencesInBackup: false
-            template:
-              # 30 days of daily backups. Storage is cheap next to the thing this
-              # protects against; three PVs have already been lost to a Delete
-              # reclaim policy.
-              ttl: "720h"
-              # GCP persistent-disk snapshots for every PVC in scope.
-              #
-              # IMPORTANT: a snapshot of a LIVE database volume is crash-consistent,
-              # not transaction-consistent — it is a disaster-recovery net, never a
-              # substitute for the engine's own backup (PXC xtrabackup, pgBackRest).
-              # Restore those from their own backups; use this to get the cluster
-              # and its non-database volumes back.
-              snapshotVolumes: true
-              # Applies the volume-policy ConfigMap above. Volume policies are
-              # the FINAL filter — a matching `skip` overrides snapshotVolumes
-              # for that volume only, leaving every other PVC in scope.
-              resourcePolicy:
-                kind: configmap
-                name: velero-volume-policy
-              includedNamespaces:
-                - '*'
-              excludedNamespaces:
-                # Recreated by bootstrap/ArgoCD, and large or churny enough that
-                # backing them up costs more than it returns.
-                - kube-system
-                - kube-public
-                - kube-node-lease
-                - gmp-system
-                - gmp-public
-                - velero
-                # ── ark: excluded until its volume layout is fixed ──
-                # 161Gi provisioned across four bound PVCs — the three per-map
-                # claims (island 100Gi, fjordur 30Gi, lost 30Gi) plus
-                # ark-shared-pv-claim at 1Gi. By far the largest claim on the
-                # cluster, and almost all of it is the ARK server INSTALL rather
-                # than world saves. The game files are persisted so a pod roll
-                # does not re-download tens of GB, and the saves sit somewhere
-                # inside that same volume.
-                #
-                # Backing that up means paying to snapshot a game install that
-                # Steam can re-fetch, in order to protect a save file that is a
-                # rounding error beside it. Evidence: the fjordur snapshot of a
-                # 30Gi disk stored 10.85 GB, which is install-shaped, not
-                # save-shaped.
-                #
-                # No ARK server is running today, and Fjordur has an off-cluster
-                # copy.
-                #
-                # RE-INCLUSION TAKES TWO CHANGES, NOT ONE. Splitting install from
-                # saves the way Valheim now does (separate game / data / backups
-                # PVCs) is necessary but not sufficient: with snapshotVolumes
-                # true, putting `ark` back here would snapshot EVERY PVC in the
-                # namespace, install volume included, and the split would have
-                # bought nothing. Selecting one volume needs a Velero
-                # VolumePolicy (v1.17 resource policies: `skip` / `snapshot`
-                # actions matched per volume), which this install does not
-                # configure yet. Do both, in that order, or leave the namespace
-                # excluded — the first full backup is what sets the stored
-                # baseline.
-                - ark
-                # ── heimdall: telemetry, deliberately not protected ──
-                # Third-largest at 21.5 GB used, and 19.7 GB of that is the two
-                # Prometheus TSDBs. It is the worst possible shape for a daily
-                # snapshot: unlike Artifactory's mostly-static blobs a TSDB
-                # rewrites continuously, so it would dominate every incremental
-                # forever rather than only the first full backup.
-                #
-                # What that buys is nothing anyone wants. Retention is 7 days,
-                # so a restore recovers a week of metrics that have already aged
-                # out of usefulness, and every object in this namespace —
-                # dashboards, rules, datasources — is generated by the Crossplane
-                # composition in the heimdall repo and rebuilt by ArgoCD.
-                #
-                # Excluded on the explicit judgement that losing telemetry
-                # history is acceptable and will stay acceptable well past the
-                # point where several other parts of the platform have matured.
-                # Revisit only if Prometheus ever holds something not
-                # reconstructible from git.
-                - heimdall
-  destination:
-    server: https://kubernetes.default.svc
-    namespace: velero
+  goTemplate: true
+  goTemplateOptions: ["missingkey=error"]
   syncPolicy:
-    automated:
-      prune: true
-      selfHeal: true
-    syncOptions:
-      - CreateNamespace=true
+    preserveResourcesOnDeletion: true
+    applicationsSync: create-update
+  generators:
+    - clusters:
+        selector:
+          matchLabels:
+            nordri.siliconsaga.org/environment: gke
+  template:
+    metadata:
+      name: velero
+      namespace: argo
+    spec:
+      project: default
+      source:
+        repoURL: 'https://vmware-tanzu.github.io/helm-charts'
+        chart: velero
+        targetRevision: 11.3.1 # Corresponds to Velero v1.17.1
+        helm:
+          values: |
+            {{- if not (index .metadata.annotations "nordri.siliconsaga.org/gcp-project") }}{{ fail "identity: gcp-project annotation missing on the in-cluster Secret" }}{{ end }}
+            {{- if not (index .metadata.labels "nordri.siliconsaga.org/cluster") }}{{ fail "identity: cluster label missing on the in-cluster Secret" }}{{ end }}
+            {{- $project := index .metadata.annotations "nordri.siliconsaga.org/gcp-project" }}
+            {{- $cluster := index .metadata.labels "nordri.siliconsaga.org/cluster" }}
+            # ── CRD upgrade hook: OFF, deliberately ──
+            # The chart ships a pre-install/pre-upgrade Job that re-applies Velero's
+            # CRDs. It runs on EVERY sync, including a values-only change, and it is
+            # a hard gate: ArgoCD blocks the whole sync on "waiting for completion of
+            # hook batch/Job/velero-upgrade-crds" and will not converge if the Job
+            # cannot start.
+            #
+            # It has nothing to do here. All 13 Velero CRDs have been installed on
+            # this cluster since 2026-03-21, and the chart version is not moving —
+            # this repo pins targetRevision 11.3.1 and the previous Application
+            # pinned the same. So the hook was re-applying identical CRDs while
+            # standing between us and every future configuration change.
+            #
+            # It also breaks: the Job's init container pulls
+            # docker.io/bitnamilegacy/kubectl:<tag>, and the tag defaults to the
+            # CLUSTER's Kubernetes version. This cluster is 1.35 and that repo has no
+            # 1.35 tag, so the Job sat in ImagePullBackOff and the sync stalled
+            # behind it. The kubectl pin below is the belt to this braces — either
+            # alone fixes today's failure, and both together mean a chart bump does
+            # not resurrect it.
+            #
+            # ⚠ THE TRADE: with this false, bumping `targetRevision` no longer
+            # upgrades CRDs. A chart bump that changes them needs a manual step
+            # first:
+            #     velero install --crds-only --dry-run -o yaml | kubectl apply -f -
+            # See docs/velero-gke.md. Re-enable this instead if that ever becomes
+            # routine enough to be worth the coupling.
+            upgradeCRDs: false
+
+            # The kubectl pin is REQUIRED here too, not an AWS-plugin quirk.
+            #
+            # This was briefly removed on the reasoning that the pin was only for the
+            # AWS plugin helper. It is not: the chart's `upgrade-crds` hook Job runs
+            # an init container from `docker.io/bitnamilegacy/kubectl:<tag>`, and the
+            # default tag tracks the CLUSTER's Kubernetes version. This cluster is on
+            # 1.35, and `bitnamilegacy/kubectl:1.35` does not exist — Bitnami moved
+            # their images and the legacy repo stopped gaining tags — so the hook
+            # died with ImagePullBackOff and the whole sync stalled behind it.
+            #
+            # 1.32.2 is the last tag confirmed present in that repo. kubectl is only
+            # used to `apply` CRDs here, and the client-vs-server skew that implies
+            # is harmless for that. Re-check this if the hook ever fails again.
+            kubectl:
+              image:
+                tag: "1.32.2"
+            initContainers:
+              - name: velero-plugin-for-gcp
+                # Plugin minor tracks Velero minor: v1.13.x ↔ Velero v1.17.x, per the
+                # plugin's compatibility matrix. Chart 11.3.1 is appVersion 1.17.1
+                # (confirmed with `helm show chart`), so this must stay on v1.13.x —
+                # bump chart and plugin together. The v1.11.0 this inherited from the
+                # design doc pairs with Velero 1.15, two minors behind the chart.
+                image: velero/velero-plugin-for-gcp:v1.13.2
+                volumeMounts:
+                  - mountPath: /target
+                    name: plugins
+            serviceAccount:
+              server:
+                annotations:
+                  iam.gke.io/gcp-service-account: velero@{{ $project }}.iam.gserviceaccount.com
+            configuration:
+              backupStorageLocation:
+                - name: default
+                  provider: gcp
+                  bucket: {{ $project }}-velero
+                  # Per-cluster prefix: gke-prod/ holds this cluster's backups,
+                  # a gke-test never writes beside them. The 3b-4 sequence
+                  # copies the pre-existing root-level backups under it first.
+                  prefix: {{ $cluster }}
+                  # NO `config.project` here. The GCP OBJECT STORE plugin rejects it:
+                  #   config has invalid keys [project]; valid keys are
+                  #   [kmsKeyName serviceAccount credentialsFile storeEndpoint
+                  #    universeDomain bucket prefix caCert]
+                  # and the BackupStorageLocation goes Unavailable, which stops every
+                  # backup. The bucket already identifies the project, so nothing is
+                  # lost by omitting it.
+                  #
+                  # It IS valid on the volumeSnapshotLocation below — that plugin
+                  # talks to the Compute API and needs to know which project's disks
+                  # to snapshot. Same provider name, two different plugins, two
+                  # different config schemas. Carried here from the original design
+                  # doc and only caught when the BSL failed validation live.
+                  config:
+                    # REQUIRED under Workload Identity, and the reason the custom
+                    # role carries iam.serviceAccounts.signBlob. With a key file the
+                    # plugin signs URLs locally; with WI there is no key, so it asks
+                    # IAM to sign as this account and therefore has to be told which
+                    # account that is. Omitting it fails validation outright:
+                    #   serviceAccount is expected to be provided as an item in
+                    #   BackupStorageLocation's config
+                    # Same identity as the ServiceAccount annotation above.
+                    serviceAccount: velero@{{ $project }}.iam.gserviceaccount.com
+              volumeSnapshotLocation:
+                - name: default
+                  provider: gcp
+                  config:
+                    # Valid and required here, unlike above.
+                    project: {{ $project }}
+            # Workload Identity: the pod authenticates via GKE's metadata server, so
+            # there is no Secret to create, rotate, or leak.
+            credentials:
+              useSecret: false
+
+            # Without this the metrics port is exposed but nothing scrapes it, and
+            # the heimdall alerts on velero_backup_* would evaluate against a metric
+            # that never appears — silently never firing. Heimdall's Prometheus sets
+            # serviceMonitorSelectorNilUsesHelmValues: false, so its selector is
+            # empty and matches every ServiceMonitor cluster-wide; no `release:`
+            # label is needed here.
+            metrics:
+              enabled: true
+              serviceMonitor:
+                enabled: true
+
+            # ── Per-volume selection ──
+            # excludedNamespaces is all-or-nothing: a namespace in scope has EVERY
+            # PVC in it snapshotted. That is the wrong granularity whenever a
+            # workload splits durable state from a cache it can refetch — Valheim
+            # keeps its world on valheim-data and the SteamCMD install on
+            # valheim-game, and without this policy backing up the world would
+            # snapshot the install beside it (~1.76 GB x 3 instances, protecting
+            # ~0.5 GB of world).
+            #
+            # Matching on a LABEL rather than a name keeps this generic: any volume
+            # whose contents can be re-fetched from upstream carries
+            # backup.siliconsaga.org/content=reconstructible and is skipped, with no
+            # entry here per workload. ARK's install volumes are the next candidate,
+            # and are the reason this exists now rather than later — the ark
+            # namespace cannot be re-included until per-volume selection works.
+            #
+            # The chart names this ConfigMap `velero-<key>` in the release
+            # namespace, which is what the schedule's resourcePolicy refers to.
+            configMaps:
+              volume-policy:
+                data:
+                  # Single key; Velero reads the whole file as the policy document.
+                  policy.yaml: |
+                    version: v1
+                    volumePolicies:
+                      - conditions:
+                          pvcLabels:
+                            backup.siliconsaga.org/content: reconstructible
+                        action:
+                          type: skip
+
+            # A Velero install with no Schedule takes no backups. That is not a
+            # hypothetical failure here — Velero has been installed on this cluster
+            # and storing nothing, and the only reason anyone noticed is that
+            # somebody went looking. Ship the schedule with the install.
+            schedules:
+              daily-full:
+                disabled: false
+                # Velero evaluates cron in the CONTROLLER's timezone, which is UTC.
+                # 06:00 UTC is 02:00 US/Eastern under EDT and 01:00 under EST —
+                # overnight local either way, which is the point. The same
+                # UTC-vs-local trap already bit the Valheim Jenkins jobs, where
+                # "nightly 03:30" actually ran at 23:30 Eastern.
+                schedule: "0 6 * * *"
+                useOwnerReferencesInBackup: false
+                template:
+                  # 30 days of daily backups. Storage is cheap next to the thing this
+                  # protects against; three PVs have already been lost to a Delete
+                  # reclaim policy.
+                  ttl: "720h"
+                  # GCP persistent-disk snapshots for every PVC in scope.
+                  #
+                  # IMPORTANT: a snapshot of a LIVE database volume is crash-consistent,
+                  # not transaction-consistent — it is a disaster-recovery net, never a
+                  # substitute for the engine's own backup (PXC xtrabackup, pgBackRest).
+                  # Restore those from their own backups; use this to get the cluster
+                  # and its non-database volumes back.
+                  snapshotVolumes: true
+                  # Applies the volume-policy ConfigMap above. Volume policies are
+                  # the FINAL filter — a matching `skip` overrides snapshotVolumes
+                  # for that volume only, leaving every other PVC in scope.
+                  resourcePolicy:
+                    kind: configmap
+                    name: velero-volume-policy
+                  includedNamespaces:
+                    - '*'
+                  excludedNamespaces:
+                    # Recreated by bootstrap/ArgoCD, and large or churny enough that
+                    # backing them up costs more than it returns.
+                    - kube-system
+                    - kube-public
+                    - kube-node-lease
+                    - gmp-system
+                    - gmp-public
+                    - velero
+                    # ── ark: excluded until its volume layout is fixed ──
+                    # 161Gi provisioned across four bound PVCs — the three per-map
+                    # claims (island 100Gi, fjordur 30Gi, lost 30Gi) plus
+                    # ark-shared-pv-claim at 1Gi. By far the largest claim on the
+                    # cluster, and almost all of it is the ARK server INSTALL rather
+                    # than world saves. The game files are persisted so a pod roll
+                    # does not re-download tens of GB, and the saves sit somewhere
+                    # inside that same volume.
+                    #
+                    # Backing that up means paying to snapshot a game install that
+                    # Steam can re-fetch, in order to protect a save file that is a
+                    # rounding error beside it. Evidence: the fjordur snapshot of a
+                    # 30Gi disk stored 10.85 GB, which is install-shaped, not
+                    # save-shaped.
+                    #
+                    # No ARK server is running today, and Fjordur has an off-cluster
+                    # copy.
+                    #
+                    # RE-INCLUSION TAKES TWO CHANGES, NOT ONE. Splitting install from
+                    # saves the way Valheim now does (separate game / data / backups
+                    # PVCs) is necessary but not sufficient: with snapshotVolumes
+                    # true, putting `ark` back here would snapshot EVERY PVC in the
+                    # namespace, install volume included, and the split would have
+                    # bought nothing. Selecting one volume needs a Velero
+                    # VolumePolicy (v1.17 resource policies: `skip` / `snapshot`
+                    # actions matched per volume), which this install does not
+                    # configure yet. Do both, in that order, or leave the namespace
+                    # excluded — the first full backup is what sets the stored
+                    # baseline.
+                    - ark
+                    # ── heimdall: telemetry, deliberately not protected ──
+                    # Third-largest at 21.5 GB used, and 19.7 GB of that is the two
+                    # Prometheus TSDBs. It is the worst possible shape for a daily
+                    # snapshot: unlike Artifactory's mostly-static blobs a TSDB
+                    # rewrites continuously, so it would dominate every incremental
+                    # forever rather than only the first full backup.
+                    #
+                    # What that buys is nothing anyone wants. Retention is 7 days,
+                    # so a restore recovers a week of metrics that have already aged
+                    # out of usefulness, and every object in this namespace —
+                    # dashboards, rules, datasources — is generated by the Crossplane
+                    # composition in the heimdall repo and rebuilt by ArgoCD.
+                    #
+                    # Excluded on the explicit judgement that losing telemetry
+                    # history is acceptable and will stay acceptable well past the
+                    # point where several other parts of the platform have matured.
+                    # Revisit only if Prometheus ever holds something not
+                    # reconstructible from git.
+                    - heimdall
+      destination:
+        server: https://kubernetes.default.svc
+        namespace: velero
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true

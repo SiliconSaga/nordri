@@ -23,9 +23,6 @@ done
 check "bootstrap writes the identity first" "[[ \$(grep -n 'scripts/identity.sh apply' \"$root/bootstrap.sh\" | head -1 | cut -d: -f1) -lt \$(grep -n 'gitea_install_seed' \"$root/bootstrap.sh\" | head -1 | cut -d: -f1) ]]"
 check "bootstrap enables the ApplicationSet policy override" "grep -q 'applicationsetcontroller\\\\.enable\\\\.policy\\\\.override' \"$root/bootstrap.sh\""
 check "the argocd Application enables it too" "grep -q 'applicationsetcontroller.enable.policy.override: \"true\"' \"$root/platform/fundamentals/apps/argocd.yaml\""
-# velero-gke.yaml and cluster-identity-gke.yaml still carry the placeholder until
-# Task 5 turns the first into an ApplicationSet and deletes the second; tighten
-# this to the whole of platform/ then.
-check "no __GCP_PROJECT__ in platform/ beyond Task 5's two files" "! grep -rq --exclude=velero-gke.yaml --exclude=cluster-identity-gke.yaml '__GCP_PROJECT__' \"$root/platform\""
+check "no __GCP_PROJECT__ in platform/" "! grep -rq '__GCP_PROJECT__' \"$root/platform\""
 check "hydration commits carry a Source-Commit trailer" "grep -q 'Source-Commit:' \"$root/lib/hydrate.sh\""
 echo "---"; [ "$fails" -eq 0 ] && echo "ALL PASS" || { echo "$fails FAILED"; exit 1; }

@@ -166,15 +166,16 @@ separate conditional bindings on it. If a second cluster ever backs up into this
 bucket, give each a distinct `BackupStorageLocation` `prefix` so their backups do
 not interleave in one path.
 
-`bootstrap.sh gke` then substitutes `$GCP_PROJECT` into the Application at hydration
-time and fails closed if it is unset or if any placeholder survives.
+The `velero` ApplicationSet then reads the project (the `gcp-project` annotation) and
+the per-cluster prefix (the cluster name) from the cluster identity, and fails closed
+if either is missing; nothing is stamped into Git.
 
 ## Rehydrating an existing cluster
 
-`./update-embedded-git.sh gke` is the day-2 path and is the one to use for a
-config change; `bootstrap.sh` is for a cluster that does not have Gitea/ArgoCD yet.
-Both stamp the project through the same `lib/patch-velero.sh`, so neither can push
-an unsubstituted manifest.
+`./update-embedded-git.sh <realm>` (for example `realm-siliconsaga`) is the day-2 path
+and is the one to use for a config change; `bootstrap.sh` is for a cluster that does
+not have Gitea/ArgoCD yet. Neither stamps anything: the identity applied by
+`scripts/identity.sh` supplies the project and the prefix on every sync.
 
 Three things worth knowing before running it:
 
