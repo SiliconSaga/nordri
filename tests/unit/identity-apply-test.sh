@@ -36,9 +36,13 @@ case "$*" in
       printf 'customresourcedefinition.apiextensions.k8s.io/environmentconfigs.apiextensions.crossplane.io' ;;
   *"get environmentconfig cluster-identity"*)
       [[ -n "$STUB_EC_PRESENT" ]] || exit 0
-      jq -n --arg l "$STUB_EC_LABEL" --arg t "$STUB_EC_TID" '{metadata: {name: "cluster-identity",
+      ecdata="${STUB_EC_DATA:-}"; [[ -n "$ecdata" ]] || ecdata='{}'
+      jq -n --arg l "$STUB_EC_LABEL" --arg t "$STUB_EC_TID" --argjson d "$ecdata" '{metadata: {name: "cluster-identity",
           labels: (if $l == "" then {} else {"app.kubernetes.io/instance": $l} end),
-          annotations: (if $t == "" then {} else {"argocd.argoproj.io/tracking-id": $t} end)}}' ;;
+          annotations: (if $t == "" then {} else {"argocd.argoproj.io/tracking-id": $t} end)},
+          data: $d}' ;;
+  *"patch environmentconfig cluster-identity"*)
+      [[ -n "${STUB_PATCH_FAIL:-}" ]] && { echo 'Error from server: patch refused' >&2; exit 1; } ;;
   *"get application -n argo "*)
       case "$STUB_APP" in
         absent) ;;
@@ -88,6 +92,33 @@ check "annotation-tracked EC: apply exits 0" "[[ $rc -eq 0 ]]"
 check "annotation-tracked EC gets Prune=false" "marked"
 check "annotation-tracked EC is not rewritten without the take-over flag" "! written"
 check "annotation-tracked EC keeps its tracking-id without the take-over flag" "! stripped_tid"
+
+# Tracked, no flag, data holds only some keys: the missing keys are added by a
+# merge patch carrying ONLY those keys; existing values are never touched.
+patch_line() { grep 'patch environmentconfig cluster-identity --type merge' "$STUB_LOG" | tail -n 1; }
+STUB_LIVE_CLUSTER="homelab-prod" STUB_EC_PRESENT=1 STUB_EC_LABEL="layer4-fundamentals" STUB_EC_DATA='{"environment":"homelab","storageClass":"local-path"}' run apply realm-x homelab-prod >"$work/out" 2>&1; rc=$?
+check "partial tracked EC: apply exits 0" "[[ $rc -eq 0 ]]"
+check "partial tracked EC: a merge patch is recorded" "[[ -n \"\$(patch_line)\" ]]"
+check "the patch adds role" "patch_line | grep -q '\"role\"'"
+check "the patch adds sourceRef" "patch_line | grep -q '\"sourceRef\"'"
+check "the patch adds maturity" "patch_line | grep -q '\"maturity\"'"
+check "the patch leaves environment alone" "! patch_line | grep -q '\"environment\"'"
+check "the patch leaves storageClass alone" "! patch_line | grep -q '\"storageClass\"'"
+check "a tracked EC is not fully applied" "! written"
+check "the added keys are named" "grep -q 'added' \"\$work/out\" && grep -q 'role' \"\$work/out\""
+patch_body="$(patch_line | sed 's/.* -p //')"
+full_data="$(printf '%s' "$patch_body" | jq -c '.data + {environment: "homelab", storageClass: "local-path"}')"
+
+# Tracked, data already has every key: no data patch, "none missing" printed.
+STUB_LIVE_CLUSTER="homelab-prod" STUB_EC_PRESENT=1 STUB_EC_TID="$TID" STUB_EC_DATA="$full_data" run apply realm-x homelab-prod >"$work/out" 2>&1; rc=$?
+check "complete tracked EC: apply exits 0" "[[ $rc -eq 0 ]]"
+check "complete tracked EC: no merge patch" "[[ -z \"\$(patch_line)\" ]]"
+check "complete tracked EC: prints none missing" "grep -qi 'none missing' \"\$work/out\""
+check "complete tracked EC still gets Prune=false" "marked"
+
+# A failing merge patch is an error.
+STUB_LIVE_CLUSTER="homelab-prod" STUB_EC_PRESENT=1 STUB_EC_LABEL="layer4-fundamentals" STUB_PATCH_FAIL=1 run apply realm-x homelab-prod >/dev/null 2>&1; rc=$?
+check "a failing merge patch exits 1" "[[ $rc -eq 1 ]]"
 
 # Take-over requested, but ArgoCD still wants the object: refused, nothing changed.
 STUB_LIVE_CLUSTER="homelab-prod" STUB_EC_PRESENT=1 STUB_EC_LABEL="layer4-fundamentals" STUB_APP=wanted IDENTITY_TAKEOVER_ENVCONFIG=1 run apply realm-x homelab-prod >/dev/null 2>"$work/err"; rc=$?

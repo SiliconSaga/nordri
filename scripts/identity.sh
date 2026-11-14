@@ -120,13 +120,35 @@ argo_wants_envconfig() {
 # Git stops carrying the object. So:
 #   - a tracked EnvironmentConfig is always marked Prune=false first, so the
 #     Git removal leaves it in place whatever the tracking method;
-#   - its values are written only on a take-over: IDENTITY_TAKEOVER_ENVCONFIG=1
+#   - while tracked (no take-over): Prune=false, then ADD only the identity keys
+#     absent from its data (JSON merge patch); a key already there is ArgoCD's
+#     and is never changed. This keeps the compositions from reading a stale,
+#     key-poor object between the Git switch and the take-over;
+#   - take-over: full write + strip markers. Values are written only when
+#     IDENTITY_TAKEOVER_ENVCONFIG=1
 #     (migrate.sh step 7) AND every Application its markers name no longer
 #     wants it (gone from .status.resources, or requiresPruning). A take-over
 #     ArgoCD has not agreed to is refused, since writing then would race a sync
 #     that rewrites (or, without Prune=false, deletes) the object;
 #   - a take-over strips both markers, then writes. The written object always
 #     carries Prune=false too.
+add_missing_envconfig_keys() {
+    local json="$1" body keys
+    body="$(printf '%s\n' "$RESOLVED" | jq -R -s -c --argjson cur "$(printf '%s' "$json" | jq -c '.data // {}')" '
+        split("\n") | map(select(length > 0) | capture("^(?<k>[^=]+)=(?<v>.*)$") | select(.v != ""))
+        | map(select(.k as $k | $cur | has($k) | not)) | map({key: .k, value: .v}) | from_entries | {data: .}')" \
+        || { echo "❌ could not build the missing-keys patch for EnvironmentConfig $IDENTITY_CONFIGMAP" >&2; exit 1; }
+    keys="$(printf '%s' "$body" | jq -r '.data | keys | join(", ")')" || exit 1
+    keys="${keys//$'\r'/}"
+    if [[ -z "$keys" ]]; then
+        echo "   EnvironmentConfig $IDENTITY_CONFIGMAP: none missing, nothing added"
+        return 0
+    fi
+    kubectl patch environmentconfig "$IDENTITY_CONFIGMAP" --type merge -p "$body" >/dev/null \
+        || { echo "❌ could not add the missing keys to EnvironmentConfig $IDENTITY_CONFIGMAP" >&2; exit 1; }
+    echo "   EnvironmentConfig $IDENTITY_CONFIGMAP: added missing keys (existing values untouched): $keys"
+}
+
 apply_envconfig() {
     local crd json label tid apps app ns wants
     crd="$(kubectl get crd environmentconfigs.apiextensions.crossplane.io --ignore-not-found -o name)" \
@@ -145,7 +167,8 @@ apply_envconfig() {
         if [[ -n "$label" || -n "$tid" ]]; then
             kubectl annotate environmentconfig "$IDENTITY_CONFIGMAP" argocd.argoproj.io/sync-options=Prune=false --overwrite >/dev/null || exit 1
             if [[ "${IDENTITY_TAKEOVER_ENVCONFIG:-0}" != "1" ]]; then
-                echo "   EnvironmentConfig is still tracked by ArgoCD (label '${label}', tracking-id '${tid}'): marked Prune=false, values untouched. migrate.sh takes it over once Git stops carrying it."
+                echo "   EnvironmentConfig is still tracked by ArgoCD (label '${label}', tracking-id '${tid}'): marked Prune=false, existing values untouched. migrate.sh takes it over once Git stops carrying it."
+                add_missing_envconfig_keys "$json"
                 return 0
             fi
             # The Application each marker names: "<app>" or "<ns>_<app>" in the
