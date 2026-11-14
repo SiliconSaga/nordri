@@ -4,9 +4,9 @@ ARGO_NS="${ARGO_NS:-argo}"
 ARGO_REQUEST_TIMEOUT=30
 
 # One line per Application, name first, so one with no sync status yet still
-# shows up: name<TAB>sync<TAB>health<TAB>opphase
+# shows up: name<TAB>sync<TAB>health<TAB>opphase<TAB>refresh-annotation
 _argo_rows() {
-    kubectl get applications -n "$ARGO_NS" --request-timeout="${1:-30}s" -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.status.sync.status}{"\t"}{.status.health.status}{"\t"}{.status.operationState.phase}{"\n"}{end}' | tr -d '\r'
+    kubectl get applications -n "$ARGO_NS" --request-timeout="${1:-30}s" -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.status.sync.status}{"\t"}{.status.health.status}{"\t"}{.status.operationState.phase}{"\t"}{.metadata.annotations.argocd\.argoproj\.io/refresh}{"\n"}{end}' | tr -d '\r'
 }
 
 # argo_wait <timeout> <label> <predicate-fn>: the predicate reads the rows on
@@ -39,18 +39,39 @@ argo_wait_synced_healthy() { argo_wait "${1:-900}" "Synced and Healthy" _pred_sy
 argo_wait_operations_done() { argo_wait "${1:-900}" "done syncing" _pred_ops_done; }
 argo_hard_refresh_all() { kubectl annotate applications.argoproj.io -n "$ARGO_NS" --all argocd.argoproj.io/refresh=hard --overwrite >/dev/null; }
 
-# Drop the resources finalizer so a later prune orphans the resources instead of
-# deleting them (design, Decision 4 step 1). Patches metadata.finalizers to []
-# only when ArgoCD's resources finalizer is the sole one; anything else is left
-# alone.
+# Block until no Application still carries the refresh annotation: ArgoCD removes
+# it once the controller has processed the refresh, so this is the proof that the
+# waits after argo_hard_refresh_all read post-reconcile status, not stale status.
+_pred_refresh_pending() { awk -F'\t' '$1!="" && $5!="" {n++} END {print n+0}'; }
+argo_wait_refresh_consumed() { argo_wait "${1:-300}" "past the refresh request" _pred_refresh_pending; }
+
+# Drop ArgoCD's resources finalizer(s) so a later prune orphans the resources
+# instead of deleting them (design, Decision 4 step 1). Every other finalizer is
+# kept. Returns 0 only when no resources finalizer remains (or the Application
+# does not exist, so there is nothing to adopt); any other outcome returns 1.
 argo_remove_finalizer() {
-    local app="$1" fins
-    fins=$(kubectl get application -n "$ARGO_NS" "$app" -o jsonpath='{.metadata.finalizers}' 2>/dev/null | tr -d '\r')
-    case "$fins" in
-        ""|"[]") echo "   $app: no finalizer"; return 0 ;;
-        '["resources-finalizer.argocd.argoproj.io"]'|'["resources-finalizer.argocd.argoproj.io/background"]'|'["resources-finalizer.argocd.argoproj.io/foreground"]') ;;
-        *) echo "   $app: finalizers are not only the resources finalizer, left alone" >&2; return 0 ;;
-    esac
-    kubectl patch application -n "$ARGO_NS" "$app" --type=merge -p '{"metadata":{"finalizers":[]}}' >/dev/null \
-        && echo "   $app: resources finalizer removed"
+    local app="$1" prefix="resources-finalizer.argocd.argoproj.io" errf fins n keep body
+    errf=$(mktemp) || return 1
+    if ! fins=$(kubectl get application -n "$ARGO_NS" "$app" -o jsonpath='{.metadata.finalizers}' 2>"$errf"); then
+        if grep -q 'NotFound' "$errf"; then
+            rm -f "$errf"; echo "   $app: not found, nothing to adopt"; return 0
+        fi
+        echo "❌ $app: could not read its finalizers:" >&2; cat "$errf" >&2; rm -f "$errf"; return 1
+    fi
+    rm -f "$errf"
+    fins=$(printf '%s' "$fins" | tr -d '\r')
+    [[ -n "$fins" ]] || fins='[]'
+    n=$(printf '%s' "$fins" | jq --arg p "$prefix" '[.[] | select(startswith($p))] | length') \
+        || { echo "❌ $app: unreadable finalizer list: $fins" >&2; return 1; }
+    [[ "$n" -gt 0 ]] || { echo "   $app: no resources finalizer"; return 0; }
+    keep=$(printf '%s' "$fins" | jq -c --arg p "$prefix" '[.[] | select(startswith($p) | not)]') || return 1
+    body=$(jq -cn --argjson f "$keep" '{metadata:{finalizers:$f}}') || return 1
+    kubectl patch application -n "$ARGO_NS" "$app" --type merge -p "$body" >/dev/null \
+        || { echo "❌ $app: patching the finalizers failed" >&2; return 1; }
+    fins=$(kubectl get application -n "$ARGO_NS" "$app" -o jsonpath='{.metadata.finalizers}' 2>/dev/null | tr -d '\r') \
+        || { echo "❌ $app: could not re-read its finalizers after the patch" >&2; return 1; }
+    [[ -n "$fins" ]] || fins='[]'
+    n=$(printf '%s' "$fins" | jq --arg p "$prefix" '[.[] | select(startswith($p))] | length') || return 1
+    [[ "$n" -eq 0 ]] || { echo "❌ $app: a resources finalizer is still present after the patch: $fins" >&2; return 1; }
+    echo "   $app: resources finalizer removed"
 }

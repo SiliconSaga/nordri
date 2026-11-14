@@ -63,7 +63,7 @@ seed_access_open() {
     fi
     # Credentials are percent-encoded into the git URL base; API calls go through
     # a curl config file, never argv.
-    gitea_build_urls
+    gitea_build_urls || return 1
 
     # Probe /api/v1/version before sending credentials: `nc` only proves
     # *something* is on the port, we want to confirm it is Gitea/Forgejo.

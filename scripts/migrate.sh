@@ -7,7 +7,9 @@
 # migrate to. Nothing is deleted: the three Applications that carry a resources
 # finalizer have only that finalizer dropped, so the ApplicationSets can adopt
 # them without a cascade.
-# MIGRATE_DRY_RUN=1 skips the hydrate (everything else still runs).
+# MIGRATE_SKIP_HYDRATE=1 is a test seam, not a dry run: it skips only the hydrate.
+# Every other step (identity, finalizers, orgs, Service, root Applications,
+# refreshes) still changes the cluster.
 set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 . "$SCRIPT_DIR/lib/gitea.sh"; . "$SCRIPT_DIR/lib/hydrate.sh"; . "$SCRIPT_DIR/lib/identity.sh"
@@ -46,7 +48,7 @@ echo "2/8 identity (ConfigMap, cluster Secret; EnvironmentConfig marked Prune=fa
 REALM_DIR="$REALM_DIR" bash "$SCRIPT_DIR/scripts/identity.sh" apply "$REALM" "$CLUSTER" || exit 1
 
 echo "3/8 finalizers off the three Applications that carry one"
-for app in tailscale-operator vegvisir velero; do argo_remove_finalizer "$app"; done
+for app in tailscale-operator vegvisir velero; do argo_remove_finalizer "$app" || exit 1; done
 
 echo "4/8 seed orgs and the git Service"
 # Seed credentials and port-forward exactly as update-embedded-git.sh (lib/seed-access.sh)
@@ -55,7 +57,7 @@ gitops_ensure_org "$GITOPS_ORG" || exit 1; gitops_ensure_org "$GITOPS_VENDOR_ORG
 gitops_ensure_git_service || exit 1
 
 echo "5/8 hydrate the change into the new orgs"
-if [[ "${MIGRATE_DRY_RUN:-0}" == "1" ]]; then echo "   (dry run) hydrate skipped"; else
+if [[ "${MIGRATE_SKIP_HYDRATE:-0}" == "1" ]]; then echo "   hydrate skipped (MIGRATE_SKIP_HYDRATE); every other step still runs"; else
 hydrate_working_tree_repo "$SCRIPT_DIR" "$GITOPS_ORG" nordri "Migration of nordri" || exit 1
 hydrate_working_tree_repo "$NIDAVELLIR_DIR" "$GITOPS_ORG" nidavellir "Migration of nidavellir" || exit 1
 hydrate_working_tree_repo "$MIMIR_DIR" "$GITOPS_ORG" mimir "Migration of mimir" || exit 1
@@ -66,13 +68,15 @@ fi
 
 echo "6/8 root Applications at the stable address; hard refresh; wait for operations"
 gitops_apply_root_apps "$REALM" || exit 1
-argo_hard_refresh_all
+argo_hard_refresh_all || exit 1
+argo_wait_refresh_consumed 300 || exit 1
 argo_wait_operations_done 900 || exit 1
 
 echo "7/8 identity again: take over the EnvironmentConfig"
 REALM_DIR="$REALM_DIR" bash "$SCRIPT_DIR/scripts/identity.sh" apply "$REALM" "$CLUSTER" || exit 1
 
 echo "8/8 wait for Synced and Healthy"
-argo_hard_refresh_all
+argo_hard_refresh_all || exit 1
+argo_wait_refresh_consumed 300 || exit 1
 argo_wait_synced_healthy 1200 || exit 1
 echo "✅ $CLUSTER runs generic Git from its seed. Old nordri-admin repositories remain in the seed, unreferenced."

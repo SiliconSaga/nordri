@@ -28,7 +28,8 @@ stub lib/seed-access.sh 'seed_access_open() { echo "CALL seed_access_open"; }'
 stub lib/argo.sh 'argo_wait_operations_done() { echo "CALL argo_wait_operations_done $1"; }
 argo_wait_synced_healthy() { echo "CALL argo_wait_synced_healthy $1"; }
 argo_hard_refresh_all() { echo "CALL argo_hard_refresh_all"; }
-argo_remove_finalizer() { echo "CALL argo_remove_finalizer $1"; }'
+argo_wait_refresh_consumed() { echo "CALL argo_wait_refresh_consumed $1"; }
+argo_remove_finalizer() { echo "CALL argo_remove_finalizer $1"; [[ "${STUB_FAIL_FINALIZER:-}" != "$1" ]]; }'
 stub scripts/identity.sh 'echo "CALL identity.sh $*"'
 
 cat > "$work/bin/kubectl" <<'STUB'
@@ -42,7 +43,7 @@ STUB
 chmod +x "$work/bin/kubectl"
 export PATH="$work/bin:$PATH"
 
-run() { : > "$work/kube.log"; export STUB_KUBE_LOG="$work/kube.log"; REALM_DIR="$work/realm" MIGRATE_DRY_RUN=1 bash "$work/nordri/scripts/migrate.sh" "$@" > "$work/out" 2>&1; }
+run() { : > "$work/kube.log"; export STUB_KUBE_LOG="$work/kube.log"; REALM_DIR="$work/realm" MIGRATE_SKIP_HYDRATE=1 bash "$work/nordri/scripts/migrate.sh" "$@" > "$work/out" 2>&1; }
 # line number of the first / last line matching a fixed string
 first() { grep -n -F -m1 -- "$1" "$work/out" | cut -d: -f1; }
 last() { grep -n -F -- "$1" "$work/out" | tail -n 1 | cut -d: -f1; }
@@ -55,11 +56,16 @@ check "the kube context is checked, never switched" "grep -q 'CALL require_kube_
 i1=$(first "CALL identity.sh apply realm-x homelab-prod"); i2=$(last "CALL identity.sh apply realm-x homelab-prod")
 f1=$(first "CALL argo_remove_finalizer tailscale-operator"); f2=$(first "CALL argo_remove_finalizer vegvisir"); f3=$(first "CALL argo_remove_finalizer velero")
 o1=$(first "CALL gitops_ensure_org x"); o2=$(first "CALL gitops_ensure_org x-vendor"); svc=$(first "CALL gitops_ensure_git_service")
-seed=$(first "CALL seed_access_open"); hyd=$(first "(dry run) hydrate skipped")
+seed=$(first "CALL seed_access_open"); hyd=$(first "hydrate skipped (MIGRATE_SKIP_HYDRATE)")
 roots=$(first "CALL gitops_apply_root_apps realm-x"); ref=$(first "CALL argo_hard_refresh_all")
 ops=$(first "CALL argo_wait_operations_done"); sh=$(first "CALL argo_wait_synced_healthy"); lastcall=$(grep -n -F "CALL " "$work/out" | tail -n 1 | cut -d: -f2)
+ref2=$(last "CALL argo_hard_refresh_all"); rc1=$(first "CALL argo_wait_refresh_consumed"); rc2=$(last "CALL argo_wait_refresh_consumed")
 
-check "identity apply runs twice" "[[ -n '$i1' && -n '$i2' && '$i1' != '$i2' ]]"
+check "every ordering marker was found" "[[ -n '$i1' && -n '$i2' && -n '$f1' && -n '$f2' && -n '$f3' && -n '$o1' && -n '$o2' && -n '$svc' && -n '$seed' && -n '$hyd' && -n '$roots' && -n '$ref' && -n '$ref2' && -n '$ops' && -n '$sh' && -n '$rc1' && -n '$rc2' ]]"
+check "identity apply runs twice" "[[ '$i1' != '$i2' ]]"
+check "each hard refresh is followed by argo_wait_refresh_consumed, then its wait" "[[ '$ref' != '$ref2' && '$ref' -lt '$rc1' && '$rc1' -lt '$ops' && '$ref2' -lt '$rc2' && '$rc2' -lt '$sh' && '$rc1' != '$rc2' ]]"
+check "the skipped hydrate is plainly labelled" "grep -q 'every other step still runs' \"\$work/out\""
+check "identity apply runs twice (ordered)" "[[ -n '$i1' && -n '$i2' && '$i1' != '$i2' ]]"
 check "identity apply comes before the finalizer patches" "[[ '$i1' -lt '$f1' ]]"
 check "the three finalizers go in order tailscale-operator, vegvisir, velero" "[[ -n '$f1' && '$f1' -lt '$f2' && '$f2' -lt '$f3' ]]"
 check "the seed is opened after the finalizers" "[[ '$f3' -lt '$seed' ]]"
@@ -83,6 +89,14 @@ STUB_OVERRIDE=true STUB_LIVE_CLUSTER=homelab-test run realm-x homelab-prod; rc=$
 check "a live identity naming another cluster is refused" "[[ $rc -eq 1 ]]"
 check "the refusal names both clusters" "grep -q 'homelab-test' \"\$work/out\" && grep -q 'homelab-prod' \"\$work/out\""
 check "nothing runs after the mismatch" "! grep -q 'CALL identity.sh' \"\$work/out\" && ! grep -q 'CALL argo' \"\$work/out\""
+
+# A failed finalizer removal stops the migration before anything after step 3
+STUB_FAIL_FINALIZER=vegvisir run realm-x homelab-prod; rc=$?
+check "a failed finalizer removal exits non-zero" "[[ $rc -ne 0 ]]"
+check "the failing app was attempted" "grep -q 'CALL argo_remove_finalizer vegvisir' \"\$work/out\""
+check "velero's finalizer is not attempted after the failure" "! grep -q 'CALL argo_remove_finalizer velero' \"\$work/out\""
+check "nothing after the finalizer step runs" "! grep -q 'CALL seed_access_open' \"\$work/out\" && ! grep -q 'CALL gitops_' \"\$work/out\" && ! grep -q 'CALL argo_hard_refresh_all' \"\$work/out\""
+check "the identity step before it did run" "grep -q 'CALL identity.sh apply' \"\$work/out\""
 
 # Usage
 run realm-x; rc=$?
