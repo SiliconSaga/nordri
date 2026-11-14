@@ -20,20 +20,30 @@
 # credential leaves the operator's machine except inside the pod. A source that
 # is not a git checkout is copied whole.
 hydrate_prepare_tree() {
-    local src="$1" dst="$2" list
+    local src="$1" dst="$2" list archive
     if git -C "$src" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
         list="$(mktemp)" || return 1
+        archive="$(mktemp)" || { rm -f "$list"; return 1; }
         if ! git -C "$src" ls-files -co --exclude-standard -z > "$list"; then
-            rm -f "$list"; return 1
+            rm -f "$list" "$archive"; return 1
         fi
-        if ! tar --null -C "$src" -cf - -T "$list" | tar -C "$dst" -xf -; then
-            rm -f "$list"; return 1
+        # --no-recursion: a nested checkout or submodule shows up as one directory
+        # entry; without it tar would carry that repo's .git and ignored files along.
+        # Two checked steps, not a pipe: callers run set -e without pipefail, so a
+        # failing creator would otherwise hide behind the extractor's status.
+        if ! tar --null --no-recursion -C "$src" -cf "$archive" -T "$list"; then
+            rm -f "$list" "$archive"; return 1
         fi
-        rm -f "$list"
+        if ! tar -C "$dst" -xf "$archive"; then
+            rm -f "$list" "$archive"; return 1
+        fi
+        rm -f "$list" "$archive"
     else
         cp -r "$src/." "$dst/" || return 1
     fi
     rm -rf "$dst/.git"
+    # Belt and braces: no stray .git under a copied directory may reach `git add .`.
+    find "$dst" -name .git -prune -exec rm -rf '{}' +
 }
 
 # Push a prepared tree to the seed Gitea as a forced fresh main. Runs in a
