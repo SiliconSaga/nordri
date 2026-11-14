@@ -1,0 +1,8 @@
+# Environment defaults for GKE clusters. gcpProject is NOT here: the realm's
+# clusters/<cluster>.yaml declares it, and identity_resolve refuses a gke
+# cluster without one. gcpRegion is the KMS key ring's region, static.
+environment: gke
+storageClass: standard-rwo
+domain: cmdbee.org
+harborRole: central
+gcpRegion: us-east1

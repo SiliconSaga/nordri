@@ -1,0 +1,9 @@
+# Environment defaults for homelab clusters. Layer 1 of the identity: the realm's
+# clusters/<cluster>.yaml overrides, then NORDRI_IDENTITY_<KEY> env vars. Flat
+# key: value only — lib/identity.sh refuses nesting. No maturity here: a cluster
+# with no realm file is a lab at bootstrap, by design.
+environment: homelab
+storageClass: local-path
+domain: homelab.local
+harborRole: local
+harborCentral: harbor.cmdbee.org
