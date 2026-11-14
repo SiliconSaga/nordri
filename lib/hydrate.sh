@@ -50,36 +50,48 @@ hydrate_prepare_tree() {
 # subshell so the caller's cwd is untouched even on failure.
 hydrate_push_tree() {
     local dir="$1" owner="$2" gitea_repo="$3" commit_msg="$4" src_sha="${5:-unknown}"
+    # Every step checked: without set -e a failed add or commit would still push.
     (
         cd "$dir" || exit 1
-        git init
-        git config user.email "bootstrap@nordri.local"
-        git config user.name "${HYDRATE_COMMITTER:-Nordri Bootstrap}"
-        git checkout -b main
-        git add .
-        git commit -q -m "$commit_msg" -m "Source-Commit: $src_sha"
-        git remote add origin "$GITEA_GIT_BASE/$owner/$gitea_repo.git"
+        git init || exit 1
+        git config user.email "bootstrap@nordri.local" || exit 1
+        git config user.name "${HYDRATE_COMMITTER:-Nordri Bootstrap}" || exit 1
+        git checkout -b main || exit 1
+        git add . || exit 1
+        git commit -q -m "$commit_msg" -m "Source-Commit: $src_sha" || exit 1
+        git remote add origin "$GITEA_GIT_BASE/$owner/$gitea_repo.git" || exit 1
         git push -u origin main --force
     )
 }
 
 # Hydrate one working-tree component into the seed. Warn-and-skip if the source
-# dir is absent. The repo is created under <owner>.
+# dir is absent, unless HYDRATE_REQUIRE_SRC=1 (migrate.sh), where an absent
+# source is fatal. The repo is created under <owner>. Every step's status is
+# checked and returned: migrate.sh runs without set -e, and a caller's `|| exit`
+# turns set -e off inside the call anyway, so nothing else would stop a failed
+# push (or a partial tree) from being reported as hydrated.
 hydrate_working_tree_repo() {
     local src_dir="$1" owner="$2" gitea_repo="$3" commit_msg="$4"
     if [[ ! -d "$src_dir" ]]; then
+        if [[ "${HYDRATE_REQUIRE_SRC:-0}" == "1" ]]; then
+            echo "❌ $gitea_repo source not found at: $src_dir. Set the matching *_DIR env var or clone $gitea_repo as a sibling of nordri." >&2
+            return 1
+        fi
         echo "⚠️  $gitea_repo source not found at: $src_dir — skipping."
         echo "   Set the matching *_DIR env var or clone $gitea_repo as a sibling of nordri."
         return 0
     fi
     echo "💧 Hydrating '$gitea_repo' to Seed Gitea..."
-    gitea_ensure_repo "$owner" "$gitea_repo" "${HYDRATE_AUTO_INIT:-false}"
+    gitea_ensure_repo "$owner" "$gitea_repo" "${HYDRATE_AUTO_INIT:-false}" \
+        || { echo "❌ could not ensure repository $owner/$gitea_repo in the seed" >&2; return 1; }
     local tmp src_sha
     src_sha="$(git -C "$src_dir" rev-parse HEAD 2>/dev/null || echo unknown)"
-    tmp="$(mktemp -d)"
+    tmp="$(mktemp -d)" || return 1
     TEMP_DIRS+=("$tmp")
-    hydrate_prepare_tree "$src_dir" "$tmp"
-    hydrate_push_tree "$tmp" "$owner" "$gitea_repo" "$commit_msg" "$src_sha"
+    hydrate_prepare_tree "$src_dir" "$tmp" \
+        || { echo "❌ could not prepare the $gitea_repo tree from $src_dir" >&2; rm -rf "$tmp"; return 1; }
+    hydrate_push_tree "$tmp" "$owner" "$gitea_repo" "$commit_msg" "$src_sha" \
+        || { echo "❌ pushing $gitea_repo to $owner/$gitea_repo failed" >&2; rm -rf "$tmp"; return 1; }
     rm -rf "$tmp"
     echo "✅ '$gitea_repo' hydrated to Seed Gitea."
 }
@@ -102,7 +114,8 @@ hydrate_vendor_mirrors() {
         # Plumbing check, not `-d .git`: a worktree/submodule has `.git` as a FILE.
         if git -C "$vendor_dir" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
             echo "💧 Updating vendor mirror '$vendor' in Seed Gitea..."
-            gitea_ensure_repo "$owner" "$vendor"
+            gitea_ensure_repo "$owner" "$vendor" \
+                || { echo "❌ could not ensure repository $owner/$vendor in the seed" >&2; return 1; }
             # Resolve the source remote robustly (ws clone names it after the org,
             # not "origin"): prefer the tracking remote, fall back to a sole remote,
             # warn-and-skip if ambiguous rather than guess.
@@ -126,8 +139,10 @@ hydrate_vendor_mirrors() {
                 [[ "$vbranch" == "HEAD" ]] && continue
                 refspecs+=("+$vref:refs/heads/$vbranch")
             done < <(git -C "$vendor_dir" for-each-ref --format='%(refname)' "refs/remotes/$vendor_remote")
-            git -C "$vendor_dir" push --force "$vendor_seed" "${refspecs[@]}"
-            git -C "$vendor_dir" push --force --prune "$vendor_seed" 'refs/tags/*:refs/tags/*'
+            git -C "$vendor_dir" push --force "$vendor_seed" "${refspecs[@]}" \
+                || { echo "❌ pushing vendor mirror $vendor's branches failed" >&2; return 1; }
+            git -C "$vendor_dir" push --force --prune "$vendor_seed" 'refs/tags/*:refs/tags/*' \
+                || { echo "❌ pushing vendor mirror $vendor's tags failed" >&2; return 1; }
             echo "✅ Vendor mirror '$vendor' updated."
         else
             echo "⚠️  Vendor mirror '$vendor' not cloned at: $vendor_dir"

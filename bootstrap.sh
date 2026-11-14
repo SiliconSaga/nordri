@@ -174,6 +174,34 @@ command -v jq >/dev/null 2>&1 || {
     exit 1
 }
 
+# A cluster bootstrapped by the pre-Phase-3 code reads the old nordri-admin
+# repositories. Re-running bootstrap there would migrate it without the
+# finalizer step: hydrate the new orgs, re-point the root apps, and let the
+# parents prune Applications that still carry a resources finalizer, which
+# cascades into deleting what they deployed (the Gateway, cert-manager, the
+# tailscale operator, Velero on GKE). scripts/migrate.sh is the path for that
+# cluster. A fresh cluster (no ArgoCD) or one already at the stable address
+# passes; anything this cannot read is refused rather than guessed.
+refuse_old_code_cluster() {
+    local err row name repo
+    if ! err="$(kubectl get crd applications.argoproj.io 2>&1 >/dev/null)"; then
+        [[ "$err" == *NotFound* ]] && return 0
+        echo "❌ Could not check whether ArgoCD is already installed: $err" >&2; return 1
+    fi
+    if ! row="$(kubectl get application -n argo nordri-root --ignore-not-found -o 'jsonpath={.metadata.name}{"|"}{.spec.source.repoURL}')"; then
+        echo "❌ Could not read argo/nordri-root to check which Git it reads." >&2; return 1
+    fi
+    row="${row//$'\r'/}"; name="${row%%|*}"; repo="${row#*|}"
+    [[ -z "$name" ]] && return 0
+    [[ "$repo" == "$GIT_STABLE_BASE/"* ]] && return 0
+    echo "❌ This cluster's root Application argo/nordri-root reads '${repo:-<no single source>}', not the stable address $GIT_STABLE_BASE/." >&2
+    echo "   It was bootstrapped by the old code. Re-running bootstrap.sh here would switch it to the new Git with no finalizer step," >&2
+    echo "   and the prune would delete what the old Applications deployed. Migrate it instead:" >&2
+    echo "     scripts/migrate.sh $REALM $CLUSTER" >&2
+    return 1
+}
+refuse_old_code_cluster || exit 1
+
 echo "🪪 [Layer -1] Writing the cluster identity..."
 IDENTITY_SKIP_ENVCONFIG=1 REALM_DIR="$REALM_DIR" bash "$SCRIPT_DIR/scripts/identity.sh" apply "$REALM" "$CLUSTER" || exit 1
 

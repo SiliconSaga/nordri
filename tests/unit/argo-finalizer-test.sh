@@ -16,7 +16,12 @@ echo "KUBECTL $*" >> "$STUB_LOG"
 case "$1" in
   get)
     if [[ -n "${STUB_GET_ERR:-}" ]]; then echo "$STUB_GET_ERR" >&2; exit 1; fi
+    if [[ "$*" == *sync-options* ]]; then cat "$STUB_ANN" 2>/dev/null; exit 0; fi
     cat "$STUB_STATE"; exit 0 ;;
+  annotate)
+    if [[ -n "${STUB_ANNOTATE_FAIL:-}" ]]; then echo "annotate denied" >&2; exit 1; fi
+    for a in "$@"; do [[ "$a" == argocd.argoproj.io/sync-options=* ]] && printf '%s' "${a#*=}" > "$STUB_ANN"; done
+    exit 0 ;;
   patch)
     if [[ -n "${STUB_PATCH_FAIL:-}" ]]; then echo "patch denied" >&2; exit 1; fi
     body=""; while [[ $# -gt 0 ]]; do [[ "$1" == -p ]] && body="$2"; shift; done
@@ -69,6 +74,26 @@ check "a failing patch returns 1" "[[ $rc -eq 1 ]]"
 
 run "[\"$R\",\"other.example/keep\"]" STUB_PATCH_NOOP=1; rc=$?
 check "a finalizer still present after the patch returns 1" "[[ $rc -eq 1 ]]"
+
+# argo_hold_prune: Prune=false on the Application, other sync options kept
+export STUB_ANN="$work/ann"
+hold() {
+    printf '%s' "$1" > "$STUB_ANN"; shift; : > "$STUB_LOG"
+    ( for kv in "$@"; do export "${kv?}"; done; . "$root/lib/argo.sh"; argo_hold_prune demo ) > "$work/out" 2>&1
+}
+hold ''; rc=$?
+check "hold: no sync options yet → Prune=false" "[[ $rc -eq 0 && \"\$(cat \"\$STUB_ANN\")\" == 'Prune=false' ]]"
+check "hold: the annotation is overwritten in place, not appended as a second key" "grep -q 'KUBECTL annotate application -n argo demo argocd.argoproj.io/sync-options=Prune=false --overwrite' \"\$STUB_LOG\""
+hold 'ServerSideApply=true'; rc=$?
+check "hold: an existing sync option is kept" "[[ $rc -eq 0 && \"\$(cat \"\$STUB_ANN\")\" == 'ServerSideApply=true,Prune=false' ]]"
+hold 'Prune=false'; rc=$?
+check "hold: already Prune=false is a no-op" "[[ $rc -eq 0 ]] && ! grep -q 'KUBECTL annotate' \"\$STUB_LOG\""
+hold '' STUB_GET_ERR='Error from server (NotFound): applications.argoproj.io "demo" not found'; rc=$?
+check "hold: NotFound means nothing to hold: returns 0" "[[ $rc -eq 0 ]] && ! grep -q 'KUBECTL annotate' \"\$STUB_LOG\""
+hold '' STUB_GET_ERR='Unable to connect to the server: dial tcp: i/o timeout'; rc=$?
+check "hold: any other get failure returns 1" "[[ $rc -eq 1 ]] && ! grep -q 'KUBECTL annotate' \"\$STUB_LOG\""
+hold '' STUB_ANNOTATE_FAIL=1; rc=$?
+check "hold: a failing annotate returns 1" "[[ $rc -eq 1 ]]"
 
 # the refresh-consumed predicate: counts Applications still carrying the annotation (column 5)
 pred_n() { ( . "$root/lib/argo.sh"; _pred_refresh_pending <<< "$1" ); }

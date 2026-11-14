@@ -45,29 +45,23 @@ After bootstrapping, you can access the services:
         On a **fresh cluster**, `bootstrap.sh` generates a strong random
         password, installs Gitea with it, and writes it to the Secret.
 
-        On an **existing cluster** (where Gitea already has an admin user
-        with a known password — e.g. clusters bootstrapped before this
-        Secret-backed flow landed, or any cluster where you've rotated
-        the password manually), pass the live password explicitly:
-
-        ```bash
-        GITEA_PASS=<live-password> ./bootstrap.sh <realm> <cluster>
-        ```
-
-        The script trusts the override, writes it to the Secret, and uses
-        it for the rest of the run. If the value is wrong, two things
-        happen: the in-script Gitea API calls (and any subsequent
-        `update-embedded-git.sh` invocation) fail with 401, *and* the
-        Secret has been poisoned with the wrong value. Recover by
-        running with the correct password — `GITEA_PASS=<correct> ./bootstrap.sh
-        <realm> <cluster>` rewrites the Secret — or delete the Secret manually
-        (`kubectl delete secret -n gitea gitea-admin-credentials`) and
-        run bootstrap.sh again with the right value. The fail-loud-and-
-        recoverable trade-off is intentional vs. a silent fallback.
+        An **existing cluster** is not a job for `bootstrap.sh`. One
+        bootstrapped by the pre-Phase-3 code (its `nordri-root`
+        Application reads the old `nordri-admin` repositories) is
+        refused outright: a re-run would switch it to the new Git with no
+        finalizer step, and the prune would delete what the old
+        Applications deployed. Move it with
+        `scripts/migrate.sh <realm> <cluster>` instead. If the cluster
+        has no `gitea/gitea-admin-credentials` Secret yet (it predates
+        the Secret-backed flow, or you rotated the password by hand),
+        write the Secret with the live password first, as below; migrate
+        and `update-embedded-git.sh` read it from there (or take a
+        one-shot `GITEA_PASS=<live-password>`, which is not persisted).
+        A wrong value fails loud with 401 rather than silently: rewrite
+        the Secret with the right one and re-run.
 
         To **rotate** the password, change it in Gitea (UI or API), then
-        update the Secret to match — either pass `GITEA_PASS=<new>` to
-        the next bootstrap re-run, or write the Secret directly:
+        write the Secret to match:
 
         ```bash
         kubectl create secret generic gitea-admin-credentials -n gitea \

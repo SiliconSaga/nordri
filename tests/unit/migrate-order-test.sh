@@ -29,8 +29,9 @@ stub lib/argo.sh 'argo_wait_operations_done() { echo "CALL argo_wait_operations_
 argo_wait_synced_healthy() { echo "CALL argo_wait_synced_healthy $1"; }
 argo_hard_refresh_all() { echo "CALL argo_hard_refresh_all"; }
 argo_wait_refresh_consumed() { echo "CALL argo_wait_refresh_consumed $1"; }
-argo_remove_finalizer() { echo "CALL argo_remove_finalizer $1"; [[ "${STUB_FAIL_FINALIZER:-}" != "$1" ]]; }'
-stub scripts/identity.sh 'echo "CALL identity.sh $*"'
+argo_remove_finalizer() { echo "CALL argo_remove_finalizer $1"; [[ "${STUB_FAIL_FINALIZER:-}" != "$1" ]]; }
+argo_hold_prune() { echo "CALL argo_hold_prune $1"; [[ "${STUB_FAIL_HOLD:-}" != "$1" ]]; }'
+stub scripts/identity.sh 'echo "CALL identity.sh $* takeover=${IDENTITY_TAKEOVER_ENVCONFIG:-0}"'
 
 cat > "$work/bin/kubectl" <<'STUB'
 #!/usr/bin/env bash
@@ -78,6 +79,20 @@ check "argo_wait_synced_healthy is after the second identity apply" "[[ '$i2' -l
 check "argo_wait_synced_healthy is the last call" "[[ '$lastcall' == *argo_wait_synced_healthy* ]]"
 check "the dry run pushes nothing" "! grep -q 'CALL hydrate_' \"\$work/out\""
 
+# Critical 1: the old parents' self-heal re-adds the finalizer before the Git
+# switch, so each of the three is also held with Prune=false in step 3, and the
+# finalizers are cleared again once the parents are on the new Git.
+for app in tailscale-operator vegvisir velero; do
+    h=$(first "CALL argo_hold_prune $app"); fa=$(first "CALL argo_remove_finalizer $app"); fb=$(last "CALL argo_remove_finalizer $app")
+    check "$app is held Prune=false in step 3, before the seed is opened" "[[ -n '$h' && '$h' -lt '$seed' ]]"
+    check "$app is held Prune=false before the root apps switch Git" "[[ -n '$h' && '$h' -lt '$roots' ]]"
+    check "$app's finalizer is removed a second time" "[[ -n '$fa' && -n '$fb' && '$fa' != '$fb' ]]"
+    check "the second pass for $app follows argo_wait_operations_done" "[[ '$ops' -lt '$fb' ]]"
+    check "the second pass for $app precedes the EnvironmentConfig take-over" "[[ '$fb' -lt '$i2' ]]"
+done
+check "the first identity apply does not take the EnvironmentConfig over" "[[ \$(first 'CALL identity.sh apply realm-x homelab-prod takeover=0') == '$i1' ]]"
+check "the second identity apply asks for the take-over" "[[ \$(last 'CALL identity.sh apply realm-x homelab-prod takeover=1') == '$i2' ]]"
+
 # Refusal: policy override off
 STUB_OVERRIDE=false run realm-x homelab-prod; rc=$?
 check "an off policy override is refused" "[[ $rc -eq 1 ]]"
@@ -97,6 +112,50 @@ check "the failing app was attempted" "grep -q 'CALL argo_remove_finalizer vegvi
 check "velero's finalizer is not attempted after the failure" "! grep -q 'CALL argo_remove_finalizer velero' \"\$work/out\""
 check "nothing after the finalizer step runs" "! grep -q 'CALL seed_access_open' \"\$work/out\" && ! grep -q 'CALL gitops_' \"\$work/out\" && ! grep -q 'CALL argo_hard_refresh_all' \"\$work/out\""
 check "the identity step before it did run" "grep -q 'CALL identity.sh apply' \"\$work/out\""
+
+# A failed Prune=false hold stops the migration before the finalizer goes
+STUB_FAIL_HOLD=vegvisir run realm-x homelab-prod; rc=$?
+check "a failed Prune=false hold exits non-zero" "[[ $rc -ne 0 ]]"
+check "vegvisir's finalizer is not touched after its hold failed" "! grep -q 'CALL argo_remove_finalizer vegvisir' \"\$work/out\""
+check "nothing after step 3 runs after a failed hold" "! grep -q 'CALL seed_access_open' \"\$work/out\" && ! grep -q 'CALL gitops_' \"\$work/out\""
+
+# A failed second finalizer pass stops the migration before the take-over.
+# (The stub fails every call for the app, so the first pass fails too; that
+# case is above. Here a counter lets the first pass through.)
+stub lib/argo.sh 'argo_wait_operations_done() { echo "CALL argo_wait_operations_done $1"; }
+argo_wait_synced_healthy() { echo "CALL argo_wait_synced_healthy $1"; }
+argo_hard_refresh_all() { echo "CALL argo_hard_refresh_all"; }
+argo_wait_refresh_consumed() { echo "CALL argo_wait_refresh_consumed $1"; }
+argo_hold_prune() { echo "CALL argo_hold_prune $1"; }
+argo_remove_finalizer() { echo "CALL argo_remove_finalizer $1"; if [[ "$1" == vegvisir ]]; then n=$(( ${n:-0} + 1 )); [[ $n -lt 2 ]]; fi; }'
+run realm-x homelab-prod; rc=$?
+check "a failed second finalizer pass exits non-zero" "[[ $rc -ne 0 ]]"
+check "the second pass was attempted" "[[ \$(grep -c 'CALL argo_remove_finalizer vegvisir' \"\$work/out\") -eq 2 ]]"
+check "no take-over after a failed second pass" "[[ \$(grep -c 'CALL identity.sh apply' \"\$work/out\") -eq 1 ]]"
+
+# Important 4: hydration failures stop the migration. The REAL lib/hydrate.sh,
+# against a stubbed seed: migrate.sh runs without -e, so only explicit returns
+# can stop it.
+cp "$root/lib/hydrate.sh" "$work/nordri/lib/hydrate.sh"
+mkdir -p "$work/nidavellir" "$work/mimir" "$work/heimdall" "$work/remote/x"
+runh() { : > "$work/kube.log"; export STUB_KUBE_LOG="$work/kube.log"; REALM_DIR="$work/realm" NIDAVELLIR_DIR="${H_NID:-$work/nidavellir}" MIMIR_DIR="$work/mimir" HEIMDALL_DIR="$work/heimdall" VENDOR_MIRRORS="" bash "$work/nordri/scripts/migrate.sh" realm-x homelab-prod > "$work/out" 2>&1; }
+stub lib/gitea.sh "GITEA_GIT_BASE='$work/remote'
+gitea_ensure_repo() { echo \"CALL gitea_ensure_repo \$*\"; [[ -z \"\${STUB_FAIL_ENSURE:-}\" ]]; }"
+
+STUB_FAIL_ENSURE=1 runh; rc=$?
+check "a failed repo ensure stops the migration" "[[ $rc -ne 0 ]] && grep -q 'CALL gitea_ensure_repo' \"\$work/out\""
+check "a failed repo ensure is not reported as hydrated" "! grep -q \"'nordri' hydrated\" \"\$work/out\""
+check "no root Applications after a failed repo ensure" "! grep -q 'CALL gitops_apply_root_apps' \"\$work/out\""
+
+runh; rc=$?
+check "a failed push stops the migration" "[[ $rc -ne 0 ]] && ! grep -q \"'nordri' hydrated\" \"\$work/out\""
+check "no root Applications after a failed push" "! grep -q 'CALL gitops_apply_root_apps' \"\$work/out\""
+
+git init -q --bare "$work/remote/x/nordri.git"
+H_NID="$work/no-such-nidavellir" runh; rc=$?
+check "the nordri push itself succeeded" "grep -q \"'nordri' hydrated\" \"\$work/out\""
+check "an absent source checkout is fatal for migrate" "[[ $rc -ne 0 ]] && grep -q 'no-such-nidavellir' \"\$work/out\""
+check "no root Applications after an absent source" "! grep -q 'CALL gitops_apply_root_apps' \"\$work/out\""
 
 # Usage
 run realm-x; rc=$?

@@ -14,6 +14,8 @@
 # REALM_DIR overrides where the realm checkout is (default: ../../realms/<realm>
 # from this repo, as bootstrap.sh). IDENTITY_SKIP_ENVCONFIG=1 skips the
 # EnvironmentConfig, for bootstrap's first call before Crossplane's CRDs exist.
+# IDENTITY_TAKEOVER_ENVCONFIG=1 (migrate.sh step 7) takes an ArgoCD-tracked
+# EnvironmentConfig over, but only once ArgoCD no longer wants it.
 set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 . "$SCRIPT_DIR/lib/identity.sh"
@@ -94,28 +96,78 @@ EOF
     echo "✅ ArgoCD cluster Secret argo/in-cluster labelled for $cluster"
 }
 
-# The EnvironmentConfig handover (design, Decision 4 step 2). While ArgoCD still
-# tracks the object (label app.kubernetes.io/instance), only annotate it
-# Prune=false so the Git removal leaves it in place. Once untracked, strip the
-# tracking metadata and write the identity's values.
+# Does Application <ns>/<app> still want EnvironmentConfig <name>? It does when
+# its .status.resources lists the object without requiresPruning. An absent
+# Application wants nothing. Prints "yes" or "no"; returns 1 when it cannot tell.
+argo_wants_envconfig() {
+    local ns="$1" app="$2" json n
+    json="$(kubectl get application -n "$ns" "$app" -o json --ignore-not-found)" \
+        || { echo "❌ could not read Application $ns/$app to check whether it still wants EnvironmentConfig $IDENTITY_CONFIGMAP" >&2; return 1; }
+    [[ -n "${json//[[:space:]]/}" ]] || { echo no; return 0; }
+    n="$(printf '%s' "$json" | jq -r --arg n "$IDENTITY_CONFIGMAP" \
+        '[.status.resources // [] | .[] | select(.kind == "EnvironmentConfig" and .name == $n and ((.requiresPruning // false) | not))] | length')" \
+        || { echo "❌ unreadable status on Application $ns/$app" >&2; return 1; }
+    n="${n//$'\r'/}"
+    if [[ "$n" -gt 0 ]]; then echo yes; else echo no; fi
+}
+
+# The EnvironmentConfig handover (design, Decision 4 step 2). ArgoCD tracks a
+# live object by label (app.kubernetes.io/instance) or, the 3.x default, by
+# annotation (argocd.argoproj.io/tracking-id), and neither marker goes away when
+# Git stops carrying the object. So:
+#   - a tracked EnvironmentConfig is always marked Prune=false first, so the
+#     Git removal leaves it in place whatever the tracking method;
+#   - its values are written only on a take-over: IDENTITY_TAKEOVER_ENVCONFIG=1
+#     (migrate.sh step 7) AND every Application its markers name no longer
+#     wants it (gone from .status.resources, or requiresPruning). A take-over
+#     ArgoCD has not agreed to is refused, since writing then would race a sync
+#     that rewrites (or, without Prune=false, deletes) the object;
+#   - a take-over strips both markers, then writes. The written object always
+#     carries Prune=false too.
 apply_envconfig() {
-    local tracked
+    local json label tid apps app ns wants
     if ! kubectl get crd environmentconfigs.apiextensions.crossplane.io >/dev/null 2>&1; then
         echo "   EnvironmentConfig CRD not installed yet — skipped (re-run apply after Crossplane is up)"; return 0
     fi
-    if tracked="$(kubectl get environmentconfig "$IDENTITY_CONFIGMAP" -o 'jsonpath={.metadata.labels.app\.kubernetes\.io/instance}' 2>/dev/null)"; then
-        if [[ -n "$tracked" ]]; then
+    json="$(kubectl get environmentconfig "$IDENTITY_CONFIGMAP" -o json --ignore-not-found)" \
+        || { echo "❌ could not read EnvironmentConfig $IDENTITY_CONFIGMAP" >&2; exit 1; }
+    if [[ -n "${json//[[:space:]]/}" ]]; then
+        label="$(printf '%s' "$json" | jq -r '.metadata.labels["app.kubernetes.io/instance"] // ""')" || exit 1
+        tid="$(printf '%s' "$json" | jq -r '.metadata.annotations["argocd.argoproj.io/tracking-id"] // ""')" || exit 1
+        label="${label//$'\r'/}"; tid="${tid//$'\r'/}"
+        if [[ -n "$label" || -n "$tid" ]]; then
             kubectl annotate environmentconfig "$IDENTITY_CONFIGMAP" argocd.argoproj.io/sync-options=Prune=false --overwrite >/dev/null || exit 1
-            echo "   EnvironmentConfig is still tracked by Application '$tracked': marked Prune=false, values untouched. Re-run apply after Git stops carrying it."
-            return 0
+            if [[ "${IDENTITY_TAKEOVER_ENVCONFIG:-0}" != "1" ]]; then
+                echo "   EnvironmentConfig is still tracked by ArgoCD (label '${label}', tracking-id '${tid}'): marked Prune=false, values untouched. migrate.sh takes it over once Git stops carrying it."
+                return 0
+            fi
+            # The Application each marker names: "<app>" or "<ns>_<app>" in the
+            # label, "<app>:<group>/<kind>:<ns>/<name>" in the tracking-id.
+            apps="$(printf '%s\n%s\n' "$label" "${tid%%:*}" | sed '/^$/d' | sort -u)"
+            while IFS= read -r app; do
+                ns=argo
+                if [[ "$app" == *_* ]]; then ns="${app%%_*}"; app="${app#*_}"; fi
+                wants="$(argo_wants_envconfig "$ns" "$app")" || exit 1
+                if [[ "$wants" == yes ]]; then
+                    echo "❌ Application $ns/$app still lists EnvironmentConfig $IDENTITY_CONFIGMAP as its own (Git still carries it, or ArgoCD has not re-read Git). Not taking it over; it stays Prune=false with its current values." >&2
+                    echo "   Refresh $app and check that its source no longer carries the EnvironmentConfig, then re-run." >&2
+                    exit 1
+                fi
+            done <<< "$apps"
+            if [[ -n "$label" ]]; then
+                kubectl label environmentconfig "$IDENTITY_CONFIGMAP" app.kubernetes.io/instance- >/dev/null || exit 1
+            fi
+            if [[ -n "$tid" ]]; then
+                kubectl annotate environmentconfig "$IDENTITY_CONFIGMAP" argocd.argoproj.io/tracking-id- >/dev/null || exit 1
+            fi
+            echo "   EnvironmentConfig released by ArgoCD: tracking markers stripped, taking it over"
         fi
-        kubectl label environmentconfig "$IDENTITY_CONFIGMAP" app.kubernetes.io/instance- >/dev/null 2>&1 || true
-        kubectl annotate environmentconfig "$IDENTITY_CONFIGMAP" argocd.argoproj.io/sync-options- >/dev/null 2>&1 || true
     fi
     {
         echo "apiVersion: apiextensions.crossplane.io/v1beta1"; echo "kind: EnvironmentConfig"
         echo "metadata:"; echo "  name: $IDENTITY_CONFIGMAP"
         echo "  labels:"; echo "    app.kubernetes.io/part-of: nordri"
+        echo "  annotations:"; echo "    argocd.argoproj.io/sync-options: Prune=false"
         echo "data:"
         printf '%s\n' "$RESOLVED" | while IFS='=' read -r k v; do [[ -n "$v" ]] && printf '  %s: %s\n' "$k" "$(jq -nr --arg v "$v" '$v|@json')"; done
     } | kubectl apply -f - >/dev/null || exit 1

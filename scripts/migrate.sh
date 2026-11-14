@@ -5,8 +5,10 @@
 # the live identity (if any) names another cluster. Hydrates from the local
 # checkouts like update-embedded-git.sh, so run it from the branches you mean to
 # migrate to. Nothing is deleted: the three Applications that carry a resources
-# finalizer have only that finalizer dropped, so the ApplicationSets can adopt
-# them without a cascade.
+# finalizer are held with Prune=false and have only that finalizer dropped, so
+# the ApplicationSets can adopt them without a cascade. Their old parents still
+# self-heal from the old repos until step 6 and can put the finalizer back, so
+# the finalizers are cleared again once the parents read the new Git.
 # MIGRATE_SKIP_HYDRATE=1 is a test seam, not a dry run: it skips only the hydrate.
 # Every other step (identity, finalizers, orgs, Service, root Applications,
 # refreshes) still changes the cluster.
@@ -19,6 +21,9 @@ REALM="${1:-}"; CLUSTER="${2:-}"
 REALM_DIR="${REALM_DIR:-$(dirname "$(dirname "$SCRIPT_DIR")")/realms/$REALM}"
 NIDAVELLIR_DIR="${NIDAVELLIR_DIR:-$(dirname "$SCRIPT_DIR")/nidavellir}"; MIMIR_DIR="${MIMIR_DIR:-$(dirname "$SCRIPT_DIR")/mimir}"; HEIMDALL_DIR="${HEIMDALL_DIR:-$(dirname "$SCRIPT_DIR")/heimdall}"
 VENDOR_MIRRORS="${VENDOR_MIRRORS:-keycloak-k8s-resources}"; HYDRATE_AUTO_INIT=true; HYDRATE_COMMITTER="Nordri Migrate"
+# A missing checkout would leave its Applications on an empty repo: fatal here.
+HYDRATE_REQUIRE_SRC=1
+FINALIZER_APPS="tailscale-operator vegvisir velero"
 TARGET_SERVER=seed
 TEMP_DIRS=()
 # Stop the port-forward seed_access_open may have started and drop every temp
@@ -44,11 +49,16 @@ echo "1/8 ApplicationSet policy override"
 override=$(kubectl get configmap -n argo argocd-cmd-params-cm -o 'jsonpath={.data.applicationsetcontroller\.enable\.policy\.override}' 2>/dev/null | tr -d '\r')
 [[ "$override" == "true" ]] || { echo "❌ ArgoCD does not allow ApplicationSet policy overrides (argocd-cmd-params-cm). Sync the argocd Application from a nordri main that carries it, then re-run." >&2; exit 1; }
 
-echo "2/8 identity (ConfigMap, cluster Secret; EnvironmentConfig marked Prune=false while tracked)"
+echo "2/8 identity (ConfigMap, cluster Secret; a tracked EnvironmentConfig is marked Prune=false, values untouched)"
 REALM_DIR="$REALM_DIR" bash "$SCRIPT_DIR/scripts/identity.sh" apply "$REALM" "$CLUSTER" || exit 1
 
-echo "3/8 finalizers off the three Applications that carry one"
-for app in tailscale-operator vegvisir velero; do argo_remove_finalizer "$app" || exit 1; done
+echo "3/8 the three Applications that carry a finalizer: Prune=false, then the finalizer off"
+# Prune=false is what holds: the old parents (selfHeal, old repos) re-add the
+# finalizer within seconds, and in step 6 they prune these Applications.
+for app in $FINALIZER_APPS; do
+    argo_hold_prune "$app" || exit 1
+    argo_remove_finalizer "$app" || exit 1
+done
 
 echo "4/8 seed orgs and the git Service"
 # Seed credentials and port-forward exactly as update-embedded-git.sh (lib/seed-access.sh)
@@ -71,9 +81,13 @@ gitops_apply_root_apps "$REALM" || exit 1
 argo_hard_refresh_all || exit 1
 argo_wait_refresh_consumed 300 || exit 1
 argo_wait_operations_done 900 || exit 1
+# The parents read the new Git now, so nothing puts a finalizer back: clear any
+# the old parents' self-heal re-added, and fail if one remains.
+echo "   finalizers again, now that the parents are on the new Git"
+for app in $FINALIZER_APPS; do argo_remove_finalizer "$app" || exit 1; done
 
-echo "7/8 identity again: take over the EnvironmentConfig"
-REALM_DIR="$REALM_DIR" bash "$SCRIPT_DIR/scripts/identity.sh" apply "$REALM" "$CLUSTER" || exit 1
+echo "7/8 identity again: take over the EnvironmentConfig (refused unless ArgoCD has let it go)"
+IDENTITY_TAKEOVER_ENVCONFIG=1 REALM_DIR="$REALM_DIR" bash "$SCRIPT_DIR/scripts/identity.sh" apply "$REALM" "$CLUSTER" || exit 1
 
 echo "8/8 wait for Synced and Healthy"
 argo_hard_refresh_all || exit 1

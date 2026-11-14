@@ -45,6 +45,30 @@ argo_hard_refresh_all() { kubectl annotate applications.argoproj.io -n "$ARGO_NS
 _pred_refresh_pending() { awk -F'\t' '$1!="" && $5!="" {n++} END {print n+0}'; }
 argo_wait_refresh_consumed() { argo_wait "${1:-300}" "past the refresh request" _pred_refresh_pending; }
 
+# Annotate an Application argocd.argoproj.io/sync-options: Prune=false, so the
+# parent that syncs it skips it when Git stops carrying it, instead of pruning
+# it (and, if a finalizer came back, cascading). Git does not own this
+# annotation, so the parent's self-heal leaves it in place. Any other sync
+# option already there is kept. Returns 0 when the annotation is on (or the
+# Application does not exist), 1 otherwise.
+argo_hold_prune() {
+    local app="$1" errf cur new
+    errf=$(mktemp) || return 1
+    if ! cur=$(kubectl get application -n "$ARGO_NS" "$app" -o 'jsonpath={.metadata.annotations.argocd\.argoproj\.io/sync-options}' 2>"$errf"); then
+        if grep -q 'NotFound' "$errf"; then
+            rm -f "$errf"; echo "   $app: not found, nothing to hold"; return 0
+        fi
+        echo "❌ $app: could not read its sync options:" >&2; cat "$errf" >&2; rm -f "$errf"; return 1
+    fi
+    rm -f "$errf"
+    cur="${cur//$'\r'/}"
+    case ",${cur// /}," in *,Prune=false,*) echo "   $app: already Prune=false"; return 0 ;; esac
+    new="Prune=false"; [[ -n "$cur" ]] && new="$cur,Prune=false"
+    kubectl annotate application -n "$ARGO_NS" "$app" "argocd.argoproj.io/sync-options=$new" --overwrite >/dev/null \
+        || { echo "❌ $app: annotating Prune=false failed" >&2; return 1; }
+    echo "   $app: marked Prune=false"
+}
+
 # Drop ArgoCD's resources finalizer(s) so a later prune orphans the resources
 # instead of deleting them (design, Decision 4 step 1). Every other finalizer is
 # kept. Returns 0 only when no resources finalizer remains (or the Application

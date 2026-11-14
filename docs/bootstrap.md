@@ -29,8 +29,13 @@ Both this script and `update-embedded-git.sh` use plain `kubectl`, which follows
   password (~143 bits via `openssl rand`). The Secret is then written
   unconditionally to match. The script does not generate or rotate
   passwords for you — `GITEA_PASS=<value>` is the user-supplied path
-  for any case where you already know the live password (existing
-  cluster from before this flow landed, post-rotation, etc.).
+  for any case where you already know the live password.
+- **Refuses a cluster the pre-Phase-3 code bootstrapped**, before
+  writing anything: when `argo/nordri-root` exists and its
+  `spec.source.repoURL` is not under `http://git.gitops.svc.cluster.local:3000/`,
+  a re-run would switch Git with no finalizer step and the prune would
+  delete what the old Applications deployed. Run
+  `scripts/migrate.sh <realm> <cluster>` on that cluster instead.
 - Creates the realm's orgs and the repos (nordri, nidavellir, mimir, heimdall, the realm) in Gitea via API
 - Hydrates the repos from local checkouts exactly as they are; each hydration commit carries a `Source-Commit: <sha>` trailer
 - Nidavellir is expected as a sibling directory; override with `NIDAVELLIR_DIR`
@@ -256,7 +261,11 @@ preserves the existing admin user on upgrade. The supported flow:
      --dry-run=client -o yaml | kubectl apply -f -
    ```
 
-   Or run `GITEA_PASS="new-password" ./bootstrap.sh <realm> <cluster>` once — same effect.
+   Do not rotate through a `bootstrap.sh` re-run: on a cluster the pre-Phase-3
+   code bootstrapped it refuses (its root Application still reads the old
+   `nordri-admin` repositories; `scripts/migrate.sh` is the path for that
+   cluster), and on any existing cluster it re-runs every layer to change one
+   Secret.
 
 This is a temporary state — the longer-term plan is to drive Gitea
 credentials through OpenBAO once it ships in Nidavellir.

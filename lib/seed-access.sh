@@ -48,7 +48,8 @@ seed_access_open() {
         echo "❌ No $GITEA_CREDENTIALS_NAMESPACE/$GITEA_CREDENTIALS_SECRET Secret and no GITEA_PASS env var." >&2
         echo "   For a cluster bootstrapped before the Secret-backed flow landed:" >&2
         echo "     • One-shot:  GITEA_PASS=<live-pw> and re-run this script" >&2
-        echo "     • Persist:   GITEA_PASS=<live-pw> bootstrap.sh <realm> <cluster>" >&2
+        echo "     • Persist:   write $GITEA_CREDENTIALS_NAMESPACE/$GITEA_CREDENTIALS_SECRET with the live password (README, 'Credentials')" >&2
+        echo "   (not a bootstrap.sh re-run: it refuses a cluster the old code bootstrapped; scripts/migrate.sh moves that one)." >&2
         echo "   For a fresh cluster, run bootstrap.sh first." >&2
         return 1
     fi
