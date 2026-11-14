@@ -91,7 +91,7 @@ probe_gitea() {
 # overwrites that auto-init commit. Day-2 callers (update-embedded-git.sh) omit
 # it: the repo already exists with a HEAD, so 409 is the normal outcome.
 gitea_ensure_repo() {
-    local repo_name=$1 auto_init=${2:-false}
+    local owner=$1 repo_name=$2 auto_init=${3:-false}
     local max_retries=5
     local i status response_file body
     # Build the body with jq so a repo name containing quotes/backslashes can't
@@ -104,7 +104,7 @@ gitea_ensure_repo() {
         # $GITEA_PASS can't corrupt URL parsing.
         status=$(curl -sS -o "$response_file" -w "%{http_code}" \
             -u "$GITEA_USER:$GITEA_PASS" \
-            -X POST "$GITEA_API_URL/api/v1/user/repos" \
+            -X POST "$GITEA_API_URL/api/v1/orgs/$owner/repos" \
             -H "Content-Type: application/json" \
             -d "$body") || true
         case "$status" in
@@ -114,12 +114,12 @@ gitea_ensure_repo() {
                 ;;
         esac
         if [[ $i -lt $max_retries ]]; then
-            echo "   Repo creation attempt $i/$max_retries for '$repo_name' returned HTTP $status; retrying in 5s..." >&2
+            echo "   Repo creation attempt $i/$max_retries for '$owner/$repo_name' returned HTTP $status; retrying in 5s..." >&2
             rm -f "$response_file"
             sleep 5
             continue
         fi
-        echo "❌ Failed to create or confirm Gitea repo '$repo_name' after $max_retries attempts (HTTP $status):" >&2
+        echo "❌ Failed to create or confirm Gitea repo '$owner/$repo_name' after $max_retries attempts (HTTP $status):" >&2
         cat "$response_file" >&2
         echo >&2
         rm -f "$response_file"

@@ -2,8 +2,7 @@
 # owning realm's seed-Gitea repo name and applies it. nordri never commits a
 # realm-specific value — this file stays realm-agnostic.
 #
-# The seed repo holds the realm's cluster/ CONTENTS at its root (bootstrap
-# hydrates realms/<realm>/cluster/ into repo <realm>), so path is ".".
+# The seed's realm repository holds the WHOLE realm checkout, as Forgejo's mirror does, so path is "cluster" (Phase 3 design, Decision 5).
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
@@ -14,9 +13,9 @@ metadata:
 spec:
   project: default
   source:
-    repoURL: 'http://gitea-http.gitea.svc.cluster.local:3000/nordri-admin/__REALM_REPO__.git'
+    repoURL: '__REALM_REPO_URL__'
     targetRevision: HEAD
-    path: .
+    path: cluster
   destination:
     server: https://kubernetes.default.svc
     namespace: argo

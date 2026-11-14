@@ -10,5 +10,6 @@ gitea_build_urls
 check "api url built" "[ \"\$GITEA_API_URL\" = 'http://localhost:3000' ]"
 check "probe url built" "[ \"\$GITEA_PROBE_URL\" = 'http://localhost:3000/api/v1/version' ]"
 check "git base percent-encodes creds" "printf '%s' \"\$GITEA_GIT_BASE\" | grep -q 'nordri-admin:p%40ss%3A%2Fw%23rd@localhost:3000'"
+check "push base plus org, as hydrate_push_tree composes it" "[ \"\$GITEA_GIT_BASE/siliconsaga/nordri.git\" = 'http://nordri-admin:p%40ss%3A%2Fw%23rd@localhost:3000/siliconsaga/nordri.git' ]"
 
 echo "---"; [ "$fails" -eq 0 ] && echo "ALL PASS" || { echo "$fails FAILED"; exit 1; }

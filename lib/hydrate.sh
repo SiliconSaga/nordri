@@ -24,7 +24,7 @@ hydrate_prepare_tree() {
 # Push a prepared tree to the seed Gitea as a forced fresh main. Runs in a
 # subshell so the caller's cwd is untouched even on failure.
 hydrate_push_tree() {
-    local dir="$1" gitea_repo="$2" commit_msg="$3"
+    local dir="$1" owner="$2" gitea_repo="$3" commit_msg="$4"
     (
         cd "$dir" || exit 1
         git init
@@ -33,44 +33,27 @@ hydrate_push_tree() {
         git checkout -b main
         git add .
         git commit -m "$commit_msg"
-        git remote add origin "$GITEA_GIT_BASE/$GITEA_USER/$gitea_repo.git"
+        git remote add origin "$GITEA_GIT_BASE/$owner/$gitea_repo.git"
         git push -u origin main --force
     )
 }
 
 # Hydrate one working-tree component into the seed. Warn-and-skip if the source
-# dir is absent. Optional patch_fn is called as `patch_fn <tmp_tree> <target>`
-# after the copy and must return non-zero on failure (its stdout is logged).
+# dir is absent. The repo is created under <owner>.
 hydrate_working_tree_repo() {
-    local src_dir="$1" gitea_repo="$2" commit_msg="$3" patch_fn="${4:-}"
+    local src_dir="$1" owner="$2" gitea_repo="$3" commit_msg="$4"
     if [[ ! -d "$src_dir" ]]; then
         echo "⚠️  $gitea_repo source not found at: $src_dir — skipping."
         echo "   Set the matching *_DIR env var or clone $gitea_repo as a sibling of nordri."
         return 0
     fi
     echo "💧 Hydrating '$gitea_repo' to Seed Gitea..."
-    gitea_ensure_repo "$gitea_repo" "${HYDRATE_AUTO_INIT:-false}"
+    gitea_ensure_repo "$owner" "$gitea_repo" "${HYDRATE_AUTO_INIT:-false}"
     local tmp
     tmp="$(mktemp -d)"
     TEMP_DIRS+=("$tmp")
     hydrate_prepare_tree "$src_dir" "$tmp"
-    if [[ -n "$patch_fn" ]]; then
-        local patch_out
-        if ! patch_out="$("$patch_fn" "$tmp" "$TARGET")"; then
-            return 1
-        fi
-        echo "   Patched $gitea_repo for target '$TARGET' ($patch_out)."
-    fi
-    # URL form is a property of the hydration TARGET, not the component, so it
-    # runs for every working-tree repo after any component-specific patch.
-    local url_count
-    if ! url_count="$(patch_repo_urls_tree "$tmp" "${HYDRATE_URL_MODE:-seed}")"; then
-        return 1
-    fi
-    if [[ "$url_count" != "0" ]]; then
-        echo "   Rewrote repoURLs in $url_count file(s) for '${HYDRATE_URL_MODE:-seed}'."
-    fi
-    hydrate_push_tree "$tmp" "$gitea_repo" "$commit_msg"
+    hydrate_push_tree "$tmp" "$owner" "$gitea_repo" "$commit_msg"
     rm -rf "$tmp"
     echo "✅ '$gitea_repo' hydrated to Seed Gitea."
 }
@@ -86,14 +69,14 @@ hydrate_working_tree_repo() {
 # trap. Reads as-fetched remote-tracking refs (no network) — refresh a mirror
 # with `ws pull <vendor>`.
 hydrate_vendor_mirrors() {
-    local mirrors="$1"
+    local owner="$1" mirrors="$2"
     local vendor vendor_dir vendor_branch vendor_remote vendor_seed vref vbranch vr_count
     for vendor in $mirrors; do
         vendor_dir="$(dirname "$SCRIPT_DIR")/$vendor"
         # Plumbing check, not `-d .git`: a worktree/submodule has `.git` as a FILE.
         if git -C "$vendor_dir" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
             echo "💧 Updating vendor mirror '$vendor' in Seed Gitea..."
-            gitea_ensure_repo "$vendor"
+            gitea_ensure_repo "$owner" "$vendor"
             # Resolve the source remote robustly (ws clone names it after the org,
             # not "origin"): prefer the tracking remote, fall back to a sole remote,
             # warn-and-skip if ambiguous rather than guess.
@@ -108,7 +91,7 @@ hydrate_vendor_mirrors() {
                 fi
                 vendor_remote="$(git -C "$vendor_dir" remote)"
             fi
-            vendor_seed="$GITEA_GIT_BASE/$GITEA_USER/$vendor.git"
+            vendor_seed="$GITEA_GIT_BASE/$owner/$vendor.git"
             # Default branch (reliably a local head) + every non-default upstream
             # branch (remote-tracking, minus the HEAD symref), each mapped to a seed head.
             local -a refspecs=("+refs/heads/*:refs/heads/*")

@@ -21,7 +21,7 @@ metadata:
 spec:
   project: default
   source:
-    repoURL: 'http://gitea-http.gitea.svc.cluster.local:3000/nordri-admin/nidavellir.git'
+    repoURL: 'http://git.gitops.svc.cluster.local:3000/siliconsaga/nidavellir.git'
     targetRevision: HEAD
     path: apps
   destination:
