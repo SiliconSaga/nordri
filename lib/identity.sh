@@ -40,11 +40,14 @@ identity_read_flat() {
     done < "$file"
 }
 
-# The tailnet node a cluster registers under. prod: the cluster name, unique in
-# the realm. "stamped": <cluster>-<yyyymmdd-HHMM>, kept once set so a re-apply
-# never renames a live device (2026-11-13 review). Empty means no operator.
+# The default tailnet node for a cluster with no tailnetNode set: prod prints the
+# cluster name (unique in the realm); any other role prints nothing (no operator).
+# The "stamped" rule is separate: identity_tailnet_stamp <cluster> <live_tailnet>
+# (identity_resolve passes IDENTITY_LIVE_TAILNET), which is
+# <cluster>-<yyyymmdd-HHMM> and keeps a live stamp so a re-apply never renames a
+# live device (2026-11-13 review).
 identity_tailnet_default() {
-    local cluster="$1" role="$2" live="${3:-}"
+    local cluster="$1" role="$2"
     case "$role" in
         prod) printf '%s' "$cluster" ;;
         *) printf '' ;;
@@ -105,11 +108,11 @@ identity_resolve() {
         "") merged[tailnetNode]="$(identity_tailnet_default "$cluster" "${merged[role]}")" ;;
         stamped) merged[tailnetNode]="$(identity_tailnet_stamp "$cluster" "${IDENTITY_LIVE_TAILNET:-}")" ;;
     esac
-    for key in $IDENTITY_KEYS; do printf '%s=%s\n' "$key" "${merged[$key]:-}"; done | sort
+    for key in $IDENTITY_KEYS; do printf '%s=%s\n' "$key" "${merged[$key]:-}"; done | LC_ALL=C sort
 }
 
 # The live ConfigMap's value for <key>, or nothing (no ConfigMap, no key).
 identity_live_value() {
     kubectl get configmap -n "$IDENTITY_NAMESPACE" "$IDENTITY_CONFIGMAP" \
-        -o "jsonpath={.data.$1}" 2>/dev/null | tr -d '\r'
+        -o "jsonpath={.data.$1}" 2>/dev/null | tr -d '\r' || true
 }

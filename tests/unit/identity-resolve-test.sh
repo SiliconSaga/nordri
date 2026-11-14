@@ -85,4 +85,14 @@ unset -f date
 out=$(IDENTITY_LIVE_TAILNET=homelab-test-20261101-0900 identity_resolve "$work/realm" homelab-test)
 check "an existing stamp is kept across re-applies" "[[ \"\$out\" == *'tailnetNode=homelab-test-20261101-0900'* ]]"
 
+# identity_live_value: a failing kubectl is value-or-nothing, exit 0
+kubectl() { return 1; }
+out=$(identity_live_value cluster); rc=$?
+check "identity_live_value is empty and exit 0 when kubectl fails" "[[ $rc -eq 0 && -z \"\$out\" ]]"
+unset -f kubectl
+
+# identity_tailnet_default: prod is the cluster, anything else is nothing
+check "tailnet default for prod is the cluster" "[[ \$(identity_tailnet_default homelab-prod prod) == homelab-prod ]]"
+check "tailnet default for test is empty" "[[ -z \$(identity_tailnet_default homelab-test test) ]]"
+
 echo "---"; [ "$fails" -eq 0 ] && echo "ALL PASS" || { echo "$fails FAILED"; exit 1; }
