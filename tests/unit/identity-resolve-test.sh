@@ -49,6 +49,9 @@ check "comments and blanks skipped, four keys" "[[ \$(printf '%s\n' \"\$out\" | 
 check "key=value form" "[[ \"\$out\" == *'maturity=durable'* ]]"
 identity_read_flat "$work/nested.yaml" >/dev/null 2>&1; rc=$?
 check "a nested file is refused" "[[ $rc -eq 1 ]]"
+printf 'environment: homelab\nrole: prod\nmaturity: durable\nbackups:\n  enabled: true\n' > "$work/realm/clusters/homelab-nested.yaml"
+identity_resolve "$work/realm" homelab-nested >/dev/null 2>&1; rc=$?
+check "a nested realm file fails identity_resolve" "[[ $rc -eq 1 ]]"
 
 # Layer 1 + 2: realm file over environment defaults
 out=$(identity_resolve "$work/realm" homelab-prod)

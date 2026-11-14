@@ -67,7 +67,9 @@ identity_resolve() {
         || { echo "identity: cluster '$cluster' must be a DNS-1123 label" >&2; return 1; }
     realm_file="$realm_dir/clusters/$cluster.yaml"
     if [[ -f "$realm_file" ]]; then
-        while IFS='=' read -r key value; do id["$key"]="$value"; done < <(identity_read_flat "$realm_file") || return 1
+        local parsed
+        parsed="$(identity_read_flat "$realm_file")" || return 1
+        while IFS='=' read -r key value; do [[ -n "$key" ]] && id["$key"]="$value"; done <<< "$parsed"
         for key in environment role maturity; do
             [[ -n "${id[$key]:-}" ]] || { echo "identity: $realm_file must set $key" >&2; return 1; }
         done
@@ -78,7 +80,9 @@ identity_resolve() {
     env_file="$NORDRI_LIB_DIR/../identity/defaults-${id[environment]}.yaml"
     [[ -f "$env_file" ]] || { echo "identity: unknown environment '${id[environment]}' (no $env_file)" >&2; return 1; }
     declare -A merged=()
-    while IFS='=' read -r key value; do merged["$key"]="$value"; done < <(identity_read_flat "$env_file") || return 1
+    local parsed
+    parsed="$(identity_read_flat "$env_file")" || return 1
+    while IFS='=' read -r key value; do [[ -n "$key" ]] && merged["$key"]="$value"; done <<< "$parsed"
     for key in "${!id[@]}"; do merged["$key"]="${id[$key]}"; done
     for key in $IDENTITY_KEYS; do
         value="$(printenv "NORDRI_IDENTITY_$(printf '%s' "$key" | tr '[:lower:]' '[:upper:]')" 2>/dev/null || true)"
