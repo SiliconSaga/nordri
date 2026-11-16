@@ -100,12 +100,17 @@ command -v jq >/dev/null 2>&1 || {
 # The cluster says what it is; the script follows the current context and
 # refuses one that does not fit. This is the script that once read a local
 # cluster's Gitea Secret and sent it to gke.
-CLUSTER="$(identity_live_value cluster)"; ROLE="$(identity_live_value role)"; TARGET="$(identity_live_value environment)"
+CLUSTER="$(identity_live_value cluster)" || exit 1
+ROLE="$(identity_live_value role)" || exit 1
+TARGET="$(identity_live_value environment)" || exit 1
 [[ -n "$CLUSTER" && -n "$TARGET" ]] || { echo "❌ no cluster identity on this cluster (ConfigMap nordri/cluster-identity). Bootstrap or migrate it first." >&2; exit 1; }
+# The role gates the Forgejo target below, so an empty or unknown one fails
+# closed rather than reading as "not prod".
+case "$ROLE" in lab|test|prod) ;; *) echo "❌ the cluster identity's role is '${ROLE:-unset}', not lab, test or prod; no target can be chosen from it." >&2; exit 1 ;; esac
 require_kube_context "$TARGET" || exit 1
 gitops_require_manifest_org "$REALM" || exit 1
 GITOPS_ORG="$(gitops_canonical_org "$REALM")"; GITOPS_VENDOR_ORG="$(gitops_vendor_org "$REALM")"
-git_target="$(gitops_git_service_target)"
+git_target="$(gitops_git_service_target)" || exit 1
 if [[ "$TARGET_ARG" == "forgejo" ]]; then
     [[ "$ROLE" != "prod" ]] || { echo "❌ --target forgejo is refused on a prod cluster ($CLUSTER)." >&2; exit 1; }
     TARGET_SERVER=forgejo

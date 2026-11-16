@@ -24,7 +24,9 @@ check "a realm whose org the manifests do not read is refused" "[[ $rc -eq 1 ]]"
 check "the refusal names both orgs" "[[ \"\$err\" == *other* && \"\$err\" == *siliconsaga* ]]"
 manifest_orgs=$(grep -rhoE 'git\.gitops\.svc\.cluster\.local:3000/[a-z0-9-]+/' "$root/platform" | sed -E 's#.*:3000/([^/]+)/#\1#' | sort -u)
 check "every committed stable-address repoURL uses GITOPS_MANIFEST_ORG" "[[ -n \"\$manifest_orgs\" && \"\$manifest_orgs\" == \"\$GITOPS_MANIFEST_ORG\" ]]"
-check "gitops_git_service_target is 0 with no Service, under pipefail" "( kubectl() { return 1; }; gitops_git_service_target >/dev/null )"
+check "gitops_git_service_target is 0 and empty with no Service (NotFound), under pipefail" "( kubectl() { echo 'Error from server (NotFound): services \"git\" not found' >&2; return 1; }; out=\$(gitops_git_service_target) && [[ -z \"\$out\" ]] )"
+check "gitops_git_service_target fails on any other kubectl error" "! ( kubectl() { echo 'Unable to connect to the server' >&2; return 1; }; gitops_git_service_target >/dev/null 2>&1 )"
+check "gitops_ensure_git_service does not touch the Service after a failed read" "! ( kubectl() { echo 'Unable to connect to the server' >&2; return 1; }; gitops_ensure_git_service >/dev/null 2>&1 )"
 
 # curl stub: GET /orgs/<x> → 404 the first time, 200 after a POST; POST → 201.
 # Prints the status like the real -w '%{http_code}' call does.

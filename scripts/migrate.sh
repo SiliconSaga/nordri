@@ -41,16 +41,57 @@ cleanup() {
 }
 trap cleanup EXIT
 
-IDENTITY="$(IDENTITY_LIVE_TAILNET="$(identity_live_value tailnetNode)" identity_resolve "$REALM_DIR" "$CLUSTER")" || exit 1
+LIVE_TAILNET="$(identity_live_value tailnetNode)" || exit 1
+IDENTITY="$(IDENTITY_LIVE_TAILNET="$LIVE_TAILNET" identity_resolve "$REALM_DIR" "$CLUSTER")" || exit 1
 TARGET="$(printf '%s\n' "$IDENTITY" | sed -n 's/^environment=//p')"
 require_kube_context "$TARGET" || exit 1
-LIVE_CLUSTER="$(identity_live_value cluster)"
+LIVE_CLUSTER="$(identity_live_value cluster)" || exit 1
 if [[ -n "$LIVE_CLUSTER" && "$LIVE_CLUSTER" != "$CLUSTER" ]]; then
     echo "❌ This cluster's identity says it is '$LIVE_CLUSTER' (ConfigMap nordri/cluster-identity), not '$CLUSTER'. Check kubectl's current context." >&2
     exit 1
 fi
+# An undeclared cluster resolves to the lab defaults. Right for a lab; wrong for
+# a cluster whose live identity already says test or prod, where a realm checkout
+# that lacks (or misspells) clusters/<cluster>.yaml would have step 2 write the
+# lab identity over it.
+if [[ ! -f "$REALM_DIR/clusters/$CLUSTER.yaml" ]]; then
+    LIVE_ROLE="$(identity_live_value role)" || exit 1
+    LIVE_ENV="$(identity_live_value environment)" || exit 1
+    if [[ ( -n "$LIVE_ROLE" && "$LIVE_ROLE" != lab ) || ( -n "$LIVE_ENV" && "$LIVE_ENV" != homelab ) ]]; then
+        echo "❌ $REALM_DIR/clusters/$CLUSTER.yaml is missing, so the identity resolves to the lab defaults, but this cluster's live identity is role '${LIVE_ROLE:-?}' on '${LIVE_ENV:-?}'. Check the realm checkout (branch, spelling) before migrating." >&2
+        exit 1
+    fi
+fi
 gitops_require_manifest_org "$REALM" || exit 1
 GITOPS_ORG="$(gitops_canonical_org "$REALM")"; GITOPS_VENDOR_ORG="$(gitops_vendor_org "$REALM")"
+
+# On gke the velero ApplicationSet puts `prefix: <cluster>` on the
+# BackupStorageLocation the moment it syncs (step 6); from then on Velero lists
+# only <cluster>/backups/, and anything still at the bucket root is invisible to
+# a restore. docs/velero-gke.md has the copy; this refuses to switch before it.
+gcs_ls() { # object lines under $1; nothing when it matches no objects; status 1 on any other failure
+    local out
+    if out="$(gcloud storage ls "$1" 2>&1)"; then printf '%s\n' "$out"; return 0; fi
+    [[ "$out" == *"matched no objects"* ]] && return 0
+    echo "❌ gcloud storage ls $1 failed: $out" >&2; return 1
+}
+if [[ "$TARGET" == "gke" ]]; then
+    GCP_PROJECT_ID="$(printf '%s\n' "$IDENTITY" | sed -n 's/^gcpProject=//p')"
+    VELERO_BUCKET="gs://${GCP_PROJECT_ID}-velero"
+    command -v gcloud >/dev/null 2>&1 || { echo "❌ gcloud is needed on gke to check that Velero's root backups were copied under $VELERO_BUCKET/$CLUSTER/ (docs/velero-gke.md)." >&2; exit 1; }
+    ROOT_BACKUPS="$(gcs_ls "$VELERO_BUCKET/backups/")" || exit 1
+    if [[ -n "$ROOT_BACKUPS" ]]; then
+        PREFIXED_BACKUPS="$(gcs_ls "$VELERO_BUCKET/$CLUSTER/backups/")" || exit 1
+        if [[ -z "$PREFIXED_BACKUPS" ]]; then
+            echo "❌ $VELERO_BUCKET/backups/ holds backups and $VELERO_BUCKET/$CLUSTER/backups/ holds none: once velero syncs with prefix $CLUSTER a restore cannot see them." >&2
+            echo "   Copy them first (docs/velero-gke.md, 'Before GKE migrates'), then re-run." >&2
+            exit 1
+        fi
+        echo "   velero: root backups are present under $VELERO_BUCKET/$CLUSTER/backups/ too"
+    else
+        echo "   velero: no backups at $VELERO_BUCKET/backups/ to copy"
+    fi
+fi
 
 echo "1/8 ApplicationSet policy override"
 override=$(kubectl get configmap -n argo argocd-cmd-params-cm -o 'jsonpath={.data.applicationsetcontroller\.enable\.policy\.override}' 2>/dev/null | tr -d '\r')

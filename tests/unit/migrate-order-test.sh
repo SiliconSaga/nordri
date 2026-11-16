@@ -18,8 +18,8 @@ cp "$root/scripts/migrate.sh" "$work/nordri/scripts/migrate.sh" 2>/dev/null
 stub() { printf '%s\n' "$2" > "$work/nordri/$1"; }
 stub lib/gitea.sh ':'
 stub lib/kube-context.sh 'require_kube_context() { echo "CALL require_kube_context $*"; }'
-stub lib/identity.sh 'identity_live_value() { printf "%s" "${STUB_LIVE_CLUSTER:-}"; }
-identity_resolve() { printf "environment=%s\ncluster=%s\ntailnetNode=%s\n" "${STUB_ENV:-gke}" "$2" "${STUB_TAILNET-ts}"; }'
+stub lib/identity.sh 'identity_live_value() { case "$1" in cluster) printf "%s" "${STUB_LIVE_CLUSTER:-}" ;; role) printf "%s" "${STUB_LIVE_ROLE:-}" ;; environment) printf "%s" "${STUB_LIVE_ENV:-}" ;; esac; }
+identity_resolve() { printf "environment=%s\ncluster=%s\ntailnetNode=%s\ngcpProject=%s\n" "${STUB_ENV:-gke}" "$2" "${STUB_TAILNET-ts}" "${STUB_PROJECT:-example-project}"; }'
 stub lib/hydrate.sh 'hydrate_working_tree_repo() { echo "CALL hydrate_working_tree_repo $2 $3"; }
 hydrate_vendor_mirrors() { echo "CALL hydrate_vendor_mirrors $1"; }'
 stub lib/gitops.sh 'gitops_canonical_org() { printf "%s" "${1#realm-}"; }
@@ -47,6 +47,20 @@ esac
 exit 0
 STUB
 chmod +x "$work/bin/kubectl"
+# gcloud storage ls: STUB_GCS_ROOT / STUB_GCS_PREFIX name an object under the
+# bucket root / the cluster prefix; empty means "matched no objects" (gcloud's exit 1).
+cat > "$work/bin/gcloud" <<'STUB'
+#!/usr/bin/env bash
+echo "GCLOUD $*" >> "$STUB_KUBE_LOG"
+url="${!#}"
+case "$url" in
+  gs://*-velero/backups/) [[ -n "${STUB_GCS_ROOT:-}" ]] && { echo "$url$STUB_GCS_ROOT"; exit 0; } ;;
+  gs://*-velero/*/backups/) [[ -n "${STUB_GCS_PREFIX:-}" ]] && { echo "$url$STUB_GCS_PREFIX"; exit 0; } ;;
+esac
+[[ -n "${STUB_GCS_FAIL:-}" ]] && { echo "ERROR: (gcloud.storage.ls) You do not currently have an active account selected." >&2; exit 1; }
+echo "ERROR: (gcloud.storage.ls) One or more URLs matched no objects." >&2; exit 1
+STUB
+chmod +x "$work/bin/gcloud"
 export PATH="$work/bin:$PATH"
 
 run() { : > "$work/kube.log"; export STUB_KUBE_LOG="$work/kube.log"; REALM_DIR="$work/realm" MIGRATE_SKIP_HYDRATE=1 bash "$work/nordri/scripts/migrate.sh" "$@" > "$work/out" 2>&1; }
@@ -109,6 +123,30 @@ STUB_OVERRIDE=true STUB_LIVE_CLUSTER=homelab-test run realm-x homelab-prod; rc=$
 check "a live identity naming another cluster is refused" "[[ $rc -eq 1 ]]"
 check "the refusal names both clusters" "grep -q 'homelab-test' \"\$work/out\" && grep -q 'homelab-prod' \"\$work/out\""
 check "nothing runs after the mismatch" "! grep -q 'CALL identity.sh' \"\$work/out\" && ! grep -q 'CALL argo' \"\$work/out\""
+
+# Refusal: no realm cluster file, but the live identity is not a lab's. The lab
+# defaults would otherwise be written over a test or prod cluster in step 2.
+STUB_OVERRIDE=true STUB_LIVE_CLUSTER=homelab-prod STUB_LIVE_ROLE=prod STUB_LIVE_ENV=homelab run realm-x homelab-prod; rc=$?
+check "an undeclared cluster whose live identity is prod is refused" "[[ $rc -eq 1 ]] && grep -q 'lab defaults' \"\$work/out\""
+check "nothing runs after the lab-defaults refusal" "! grep -q 'CALL identity.sh' \"\$work/out\" && ! grep -q 'CALL argo' \"\$work/out\""
+STUB_OVERRIDE=true STUB_LIVE_CLUSTER=homelab-lab STUB_LIVE_ROLE=lab STUB_LIVE_ENV=homelab run realm-x homelab-lab; rc=$?
+check "an undeclared cluster whose live identity is a lab migrates" "[[ $rc -eq 0 ]]"
+mkdir -p "$work/realm/clusters"; printf 'environment: homelab\nrole: prod\nmaturity: durable\n' > "$work/realm/clusters/homelab-prod.yaml"
+STUB_OVERRIDE=true STUB_LIVE_CLUSTER=homelab-prod STUB_LIVE_ROLE=prod STUB_LIVE_ENV=homelab run realm-x homelab-prod; rc=$?
+check "a declared prod cluster migrates" "[[ $rc -eq 0 ]]"
+rm -f "$work/realm/clusters/homelab-prod.yaml"
+
+# gke: the Velero root backups must already sit under the cluster prefix, or the
+# ApplicationSet's prefix would hide them from every restore.
+STUB_ENV=gke STUB_GCS_ROOT=backup-1/ STUB_GCS_PREFIX='' run realm-x gke-prod; rc=$?
+check "gke with uncopied root backups is refused" "[[ $rc -eq 1 ]] && grep -q 'docs/velero-gke.md' \"\$work/out\""
+check "the refusal names both locations" "grep -q 'gs://example-project-velero/backups/' \"\$work/out\" && grep -q 'gs://example-project-velero/gke-prod/backups/' \"\$work/out\""
+check "nothing runs after the velero refusal" "! grep -q 'CALL identity.sh' \"\$work/out\" && ! grep -q 'CALL argo' \"\$work/out\""
+STUB_ENV=gke STUB_GCS_ROOT=backup-1/ STUB_GCS_PREFIX=backup-1/ run realm-x gke-prod; rc=$?
+check "gke with the copy in place migrates" "[[ $rc -eq 0 ]] && grep -q 'present under' \"\$work/out\""
+STUB_ENV=gke STUB_GCS_FAIL=1 run realm-x gke-prod; rc=$?
+check "a failing gcloud is refused, never read as an empty bucket" "[[ $rc -eq 1 ]] && grep -q 'gcloud storage ls' \"\$work/out\" && ! grep -q 'CALL identity.sh' \"\$work/out\""
+check "homelab never calls gcloud" "STUB_ENV=homelab run realm-x homelab-prod; ! grep -q GCLOUD \"\$work/kube.log\""
 
 # Important 5: a realm whose org the manifests do not read is refused before step 1
 STUB_FOREIGN_ORG=1 run realm-x homelab-prod; rc=$?

@@ -25,8 +25,12 @@ cat > "$work/bin/kubectl" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$STUB_LOG"
 case "$*" in
-  *"get configmap -n nordri cluster-identity -o jsonpath={.data.cluster}"*) printf '%s' "$STUB_LIVE_CLUSTER" ;;
-  *"get configmap -n nordri cluster-identity -o jsonpath={.data.tailnetNode}"*) printf '' ;;
+  *"get configmap -n nordri cluster-identity -o jsonpath={.data.cluster}"*)
+      [[ -n "${STUB_CM_ERR:-}" ]] && { echo 'Unable to connect to the server' >&2; exit 1; }
+      printf '%s' "$STUB_LIVE_CLUSTER" ;;
+  *"get configmap -n nordri cluster-identity -o jsonpath={.data.tailnetNode}"*)
+      [[ -n "${STUB_CM_ERR:-}" ]] && { echo 'Unable to connect to the server' >&2; exit 1; }
+      printf '' ;;
   *"get crd environmentconfigs.apiextensions.crossplane.io"*)
       if [[ -n "${STUB_NO_CRD:-}" ]]; then
           [[ "$*" == *--ignore-not-found* ]] && exit 0
@@ -71,13 +75,28 @@ check "namespace nordri ensured" "grep -q 'create namespace nordri' \"\$STUB_LOG
 check "ConfigMap carries the cluster" "grep -q '^  cluster: \"\\?homelab-prod\"\\?\$' \"\$STUB_LOG.applied\""
 check "ConfigMap carries the merged storageClass" "grep -q '^  storageClass: \"\\?local-path\"\\?\$' \"\$STUB_LOG.applied\""
 check "cluster Secret has the type label" "grep -q 'argocd.argoproj.io/secret-type: cluster' \"\$STUB_LOG.applied\""
-check "cluster Secret has the cluster label" "grep -q 'nordri.siliconsaga.org/cluster: homelab-prod' \"\$STUB_LOG.applied\""
-check "cluster Secret has the environment label" "grep -q 'nordri.siliconsaga.org/environment: homelab' \"\$STUB_LOG.applied\""
+# Label values are quoted: a cluster named like a number or a YAML keyword must still be a string.
+check "cluster Secret has the cluster label, as a string" "grep -q 'nordri.siliconsaga.org/cluster: \"homelab-prod\"' \"\$STUB_LOG.applied\""
+check "cluster Secret has the environment label, as a string" "grep -q 'nordri.siliconsaga.org/environment: \"homelab\"' \"\$STUB_LOG.applied\""
+check "cluster Secret has the role label, as a string" "grep -q 'nordri.siliconsaga.org/role: \"prod\"' \"\$STUB_LOG.applied\""
 check "prod has a tailnet node, so tailnet=true" "grep -q 'nordri.siliconsaga.org/tailnet: \"true\"' \"\$STUB_LOG.applied\""
 check "tailnet-node annotation" "grep -q 'nordri.siliconsaga.org/tailnet-node: \"\\?homelab-prod\"\\?' \"\$STUB_LOG.applied\""
 check "in-cluster server" "grep -q 'server: https://kubernetes.default.svc' \"\$STUB_LOG.applied\""
 check "EnvironmentConfig written" "written"
 check "a written EC carries Prune=false" "grep -q 'argocd.argoproj.io/sync-options: \"\\?Prune=false\"\\?' \"\$STUB_LOG.applied\""
+
+# A lab (undeclared) cluster: its identity ends in empty keys (sourceRef,
+# tailnetNode), which the EnvironmentConfig skips without failing the write.
+STUB_LIVE_CLUSTER="" STUB_EC_PRESENT="" run apply realm-x homelab-lab >/dev/null 2>&1; rc=$?
+check "apply succeeds for a lab cluster whose identity ends in empty values" "[[ $rc -eq 0 ]]"
+check "the lab EnvironmentConfig is written" "written"
+check "empty keys are left out of the EnvironmentConfig" "! sed -n '/kind: EnvironmentConfig/,\$p' \"\$STUB_LOG.applied\" | grep -q '^  tailnetNode:'"
+
+# A failed read of the live identity is not "no identity": nothing is written.
+STUB_LIVE_CLUSTER="" STUB_CM_ERR=1 run apply realm-x homelab-prod >/dev/null 2>"$work/err"; rc=$?
+check "a failed live-identity read refuses apply" "[[ $rc -ne 0 ]]"
+check "nothing is applied after a failed live read" "! grep -q 'kind: ConfigMap' \"\$STUB_LOG.applied\""
+check "the failure names the ConfigMap" "grep -q 'nordri/cluster-identity' \"\$work/err\""
 
 # Tracked by label, no take-over flag (migrate step 2): Prune=false, values untouched.
 STUB_LIVE_CLUSTER="homelab-prod" STUB_EC_PRESENT=1 STUB_EC_LABEL="layer4-fundamentals" run apply realm-x homelab-prod >/dev/null 2>&1; rc=$?

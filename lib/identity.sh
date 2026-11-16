@@ -92,6 +92,9 @@ identity_resolve() {
         echo "identity: no clusters/$cluster.yaml in $realm_dir — lab defaults (homelab, lab, bootstrap)" >&2
         id[environment]=homelab; id[role]=lab; id[maturity]=bootstrap
     fi
+    # The environment picks the defaults file, so its override is applied before
+    # that file is chosen (and passes the same check as a file-supplied value).
+    [[ -n "${NORDRI_IDENTITY_ENVIRONMENT:-}" ]] && id[environment]="$NORDRI_IDENTITY_ENVIRONMENT"
     # The environment names a file below, so it is checked before it becomes a path.
     [[ "${id[environment]}" =~ ^[a-z0-9-]+$ ]] \
         || { echo "identity: environment '${id[environment]}' must be lowercase alphanumeric and '-'" >&2; return 1; }
@@ -105,11 +108,17 @@ identity_resolve() {
         identity_known_key "$key" || { echo "identity: $env_file sets '$key', which is not an identity key" >&2; return 1; }
         merged["$key"]="$value"
     done <<< "$parsed"
+    # gcpRegion is the environment's, not the cluster's: gke-provision.sh creates
+    # the OpenBao seal key ring in the region the defaults file names, so a
+    # cluster naming another region would seal against a key that never existed.
+    local env_region="${merged[gcpRegion]:-}"
     for key in "${!id[@]}"; do merged["$key"]="${id[$key]}"; done
     for key in $IDENTITY_KEYS; do
         value="$(printenv "NORDRI_IDENTITY_$(printf '%s' "$key" | tr '[:lower:]' '[:upper:]')" 2>/dev/null || true)"
         [[ -n "$value" ]] && merged["$key"]="$value"
     done
+    [[ "${merged[gcpRegion]:-}" == "$env_region" ]] \
+        || { echo "identity: gcpRegion is fixed by $env_file ('${env_region:-unset}'); gke-provision.sh creates the seal key ring there, so '${merged[gcpRegion]}' is refused" >&2; return 1; }
     merged[cluster]="$cluster"
     case "${merged[role]}" in lab|test|prod) ;; *) echo "identity: role '${merged[role]}' is not lab, test or prod" >&2; return 1 ;; esac
     case "${merged[maturity]}" in bootstrap|durable|full) ;; *) echo "identity: maturity '${merged[maturity]}' is not bootstrap, durable or full" >&2; return 1 ;; esac
@@ -130,8 +139,16 @@ identity_resolve() {
     for key in $IDENTITY_KEYS; do printf '%s=%s\n' "$key" "${merged[$key]:-}"; done | LC_ALL=C sort
 }
 
-# The live ConfigMap's value for <key>, or nothing (no ConfigMap, no key).
+# The live ConfigMap's value for <key>: nothing when there is no ConfigMap or no
+# such key (status 0), status 1 on any other failure to read it. Callers guard
+# writes on this value (the cluster-name check, the tailnet stamp), so a read
+# that failed must not pass as "absent".
 identity_live_value() {
-    kubectl get configmap -n "$IDENTITY_NAMESPACE" "$IDENTITY_CONFIGMAP" \
-        -o "jsonpath={.data.$1}" 2>/dev/null | tr -d '\r' || true
+    local out
+    if out="$(kubectl get configmap -n "$IDENTITY_NAMESPACE" "$IDENTITY_CONFIGMAP" -o "jsonpath={.data.$1}" 2>&1)"; then
+        printf '%s' "${out//$'\r'/}"; return 0
+    fi
+    [[ "$out" == *NotFound* ]] && return 0
+    echo "identity: could not read ConfigMap $IDENTITY_NAMESPACE/$IDENTITY_CONFIGMAP: ${out//$'\r'/}" >&2
+    return 1
 }

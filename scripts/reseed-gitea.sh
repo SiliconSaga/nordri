@@ -32,6 +32,7 @@ set -eo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 . "$SCRIPT_DIR/lib/gitea.sh"
+. "$SCRIPT_DIR/lib/gitops.sh"
 . "$SCRIPT_DIR/lib/identity.sh"
 . "$SCRIPT_DIR/lib/kube-context.sh"
 REALM="${1:-}"; CLUSTER="${2:-}"
@@ -58,11 +59,15 @@ TARGET="$(printf '%s\n' "$IDENTITY" | sed -n 's/^environment=//p')"
 require_kube_context "$TARGET" || exit 1
 # The current context must be the named cluster: refuse when its live identity
 # says otherwise (a cluster with no identity yet is let through).
-LIVE_CLUSTER="$(identity_live_value cluster)"
+LIVE_CLUSTER="$(identity_live_value cluster)" || exit 1
 if [[ -n "$LIVE_CLUSTER" && "$LIVE_CLUSTER" != "$CLUSTER" ]]; then
     echo "❌ The current kube context is cluster '$LIVE_CLUSTER', not '$CLUSTER'. Switch context first; this script never does." >&2
     exit 1
 fi
+# A cluster the old code bootstrapped has no identity, so the check above lets
+# it through; its root Application still reads the nordri-admin repositories a
+# reseed wipes. Refused here with the same signal bootstrap.sh uses.
+refuse_old_code_cluster "$REALM" "$CLUSTER" || exit 1
 
 GITEA_CREDENTIALS_NAMESPACE="gitea"
 GITEA_CREDENTIALS_SECRET="gitea-admin-credentials"

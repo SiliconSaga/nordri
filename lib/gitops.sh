@@ -52,10 +52,44 @@ gitops_ensure_org() {
     echo "❌ creating org $org returned HTTP $status" >&2; return 1
 }
 
-# The git Service's target, or nothing when there is no Service. Status 0
-# either way, also under the callers' pipefail (migrate.sh).
+# The git Service's target, or nothing when there is no Service (status 0 for
+# both, also under the callers' pipefail). Any other failure to read it is
+# status 1: a read that failed must not pass as "no Service", or
+# gitops_ensure_git_service would point an existing address back at the seed.
 gitops_git_service_target() {
-    kubectl get service git -n "$GITOPS_NAMESPACE" -o 'jsonpath={.spec.externalName}' 2>/dev/null | tr -d '\r' || true
+    local out
+    if out="$(kubectl get service git -n "$GITOPS_NAMESPACE" -o 'jsonpath={.spec.externalName}' 2>&1)"; then
+        printf '%s' "${out//$'\r'/}"; return 0
+    fi
+    [[ "$out" == *NotFound* ]] && return 0
+    echo "❌ could not read Service $GITOPS_NAMESPACE/git: ${out//$'\r'/}" >&2
+    return 1
+}
+
+# A cluster bootstrapped by the pre-Phase-3 code reads the old nordri-admin
+# repositories. bootstrap.sh re-run there would migrate it without the
+# finalizer step (the parents' prune cascades into what they deployed), and a
+# reseed would wipe the repositories its Applications still read. Both refuse
+# and point at scripts/migrate.sh. A fresh cluster (no ArgoCD) or one already
+# at the stable address passes; anything this cannot read is refused rather
+# than guessed.
+refuse_old_code_cluster() { # $1 realm $2 cluster
+    local realm="$1" cluster="$2" err row name repo
+    if ! err="$(kubectl get crd applications.argoproj.io 2>&1 >/dev/null)"; then
+        [[ "$err" == *NotFound* ]] && return 0
+        echo "❌ Could not check whether ArgoCD is already installed: $err" >&2; return 1
+    fi
+    if ! row="$(kubectl get application -n argo nordri-root --ignore-not-found -o 'jsonpath={.metadata.name}{"|"}{.spec.source.repoURL}')"; then
+        echo "❌ Could not read argo/nordri-root to check which Git it reads." >&2; return 1
+    fi
+    row="${row//$'\r'/}"; name="${row%%|*}"; repo="${row#*|}"
+    [[ -z "$name" ]] && return 0
+    [[ "$repo" == "$GIT_STABLE_BASE/"* ]] && return 0
+    echo "❌ This cluster's root Application argo/nordri-root reads '${repo:-<no single source>}', not the stable address $GIT_STABLE_BASE/." >&2
+    echo "   It was bootstrapped by the old code. Re-running bootstrap.sh here would switch it to the new Git with no finalizer step" >&2
+    echo "   (the prune would delete what the old Applications deployed), and a reseed would wipe the repositories they still read. Migrate it instead:" >&2
+    echo "     scripts/migrate.sh $realm $cluster" >&2
+    return 1
 }
 
 # Create the Service pointing at the seed when it does not exist. With an
@@ -63,7 +97,7 @@ gitops_git_service_target() {
 # synced by ArgoCD, so nothing self-heals it back.
 gitops_ensure_git_service() {
     local target="${1:-}" current
-    current="$(gitops_git_service_target)"
+    current="$(gitops_git_service_target)" || return 1
     if [[ -z "$target" ]]; then
         if [[ -n "$current" ]]; then echo "   Service $GITOPS_NAMESPACE/git → $current (unchanged)"; return 0; fi
         target="$GIT_SEED_SERVICE"

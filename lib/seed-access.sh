@@ -14,6 +14,17 @@
 # and sets GITEA_USER, GITEA_PASS, GITEA_HOST, GITEA_SCHEME, GITEA_API_URL,
 # GITEA_GIT_BASE, GITEA_PROBE_URL and, when it starts one, PF_PID.
 # Returns 1 (message on stderr) when it cannot reach a credential or the server.
+
+# Which server family answers at GITEA_PROBE_URL, from /api/v1/version: Forgejo
+# reports "<forgejo version>+gitea-<compat version>", Gitea a bare version.
+# Prints forgejo or gitea; status 1 when the version cannot be read. Needs jq.
+seed_access_server_family() {
+    local v
+    v="$(curl -fsS --max-time 5 "$GITEA_PROBE_URL" 2>/dev/null | jq -r '.version // empty' 2>/dev/null)" || return 1
+    [[ -n "$v" ]] || return 1
+    if [[ "$v" == *+gitea-* ]]; then echo forgejo; else echo gitea; fi
+}
+
 seed_access_open() {
     local explicit_pass="${GITEA_PASS:-}" secret_pass="" attempts
     TARGET_SERVER="${TARGET_SERVER:-seed}"
@@ -71,7 +82,21 @@ seed_access_open() {
     # *something* is on the port, we want to confirm it is Gitea/Forgejo.
     if [[ "$GITEA_HOST" == "localhost:3000" ]]; then
         if probe_gitea; then
-            echo "   Reusing existing endpoint at $GITEA_HOST."
+            # Something already listens: a port-forward from an earlier run,
+            # possibly to the OTHER server. The credentials loaded above belong to
+            # $TARGET_SERVER only, so the listener must be that server's family.
+            local family want=gitea
+            [[ "$TARGET_SERVER" == "forgejo" ]] && want=forgejo
+            if ! family="$(seed_access_server_family)"; then
+                echo "❌ $GITEA_HOST answers, but its /api/v1/version is unreadable, so which server it is cannot be told. Stop that listener (or set GITEA_HOST) and re-run." >&2
+                return 1
+            fi
+            if [[ "$family" != "$want" ]]; then
+                echo "❌ $GITEA_HOST already serves a $family, but this run targets the $TARGET_SERVER ($GITEA_PF_SERVICE). Its credentials must not reach the other server:" >&2
+                echo "   stop that port-forward (or set GITEA_HOST to the right server) and re-run." >&2
+                return 1
+            fi
+            echo "   Reusing existing $family endpoint at $GITEA_HOST."
         else
             echo "   Starting Port Forward to $GITEA_PF_SERVICE ($GITEA_PF_NAMESPACE)..."
             kubectl port-forward "$GITEA_PF_SERVICE" -n "$GITEA_PF_NAMESPACE" 3000:3000 > /dev/null 2>&1 &

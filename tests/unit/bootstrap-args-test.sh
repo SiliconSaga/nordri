@@ -21,18 +21,28 @@ for f in bootstrap.sh update-embedded-git.sh lib/hydrate.sh; do
     check "$f has no manifest sed" "! grep -q 'sed -i' \"$root/$f\""
     check "$f sources no patch lib" "! grep -q 'lib/patch-' \"$root/$f\""
 done
-check "bootstrap writes the identity first" "[[ \$(grep -n 'scripts/identity.sh apply' \"$root/bootstrap.sh\" | head -1 | cut -d: -f1) -lt \$(grep -n 'gitea_install_seed' \"$root/bootstrap.sh\" | head -1 | cut -d: -f1) ]]"
+line_of() { grep -n -F -m1 -- "$1" "$root/bootstrap.sh" | cut -d: -f1; }
+# The identity write (the quoted invocation, as bootstrap spells it) precedes the
+# seed install call itself (not its earlier mention in a comment); both must be found.
+id_w=$(line_of 'scripts/identity.sh" apply'); seed_w=$(grep -n -m1 '^gitea_install_seed' "$root/bootstrap.sh" | cut -d: -f1)
+check "bootstrap writes the identity first" "[[ -n '$id_w' && -n '$seed_w' && '$id_w' -lt '$seed_w' ]]"
 check "bootstrap enables the ApplicationSet policy override" "grep -q 'applicationsetcontroller\\\\.enable\\\\.policy\\\\.override' \"$root/bootstrap.sh\""
 check "the argocd Application enables it too" "grep -q 'applicationsetcontroller.enable.policy.override: \"true\"' \"$root/platform/fundamentals/apps/argocd.yaml\""
 check "no __GCP_PROJECT__ in platform/" "! grep -rq '__GCP_PROJECT__' \"$root/platform\""
 check "hydration commits carry a Source-Commit trailer" "grep -q 'Source-Commit:' \"$root/lib/hydrate.sh\""
 # Critical 3: a cluster the old code bootstrapped (root app not at the stable
 # address) is refused before anything is written, and pointed at migrate.sh.
-line_of() { grep -n -F -m1 -- "$1" "$root/bootstrap.sh" | cut -d: -f1; }
-check "bootstrap reads nordri-root's repoURL" "grep -q 'nordri-root' \"$root/bootstrap.sh\" && grep -q 'spec.source.repoURL' \"$root/bootstrap.sh\""
-check "the refusal compares against the stable address" "grep -q 'GIT_STABLE_BASE/' \"$root/bootstrap.sh\""
-check "the refusal names scripts/migrate.sh" "grep -q 'refuse_old_code_cluster' \"$root/bootstrap.sh\" && sed -n '/^refuse_old_code_cluster()/,/^}/p' \"$root/bootstrap.sh\" | grep -q 'scripts/migrate.sh'"
-check "the refusal runs before Layer -1 (the first identity write)" "[[ -n \"\$(line_of 'refuse_old_code_cluster || exit 1')\" && \$(line_of 'refuse_old_code_cluster || exit 1') -lt \$(line_of 'scripts/identity.sh\" apply') ]]"
+# The check lives in lib/gitops.sh (shared with reseed-gitea.sh); bootstrap calls it.
+check "the refusal reads nordri-root's repoURL" "grep -q 'nordri-root' \"$root/lib/gitops.sh\" && grep -q 'spec.source.repoURL' \"$root/lib/gitops.sh\""
+check "the refusal compares against the stable address" "sed -n '/^refuse_old_code_cluster()/,/^}/p' \"$root/lib/gitops.sh\" | grep -q 'GIT_STABLE_BASE/'"
+check "the refusal names scripts/migrate.sh" "sed -n '/^refuse_old_code_cluster()/,/^}/p' \"$root/lib/gitops.sh\" | grep -q 'scripts/migrate.sh'"
+# shellcheck disable=SC2016
+refuse_call='refuse_old_code_cluster "$REALM" "$CLUSTER" || exit 1'
+check "the refusal runs before Layer -1 (the first identity write)" "[[ -n \"\$(line_of '$refuse_call')\" && \$(line_of '$refuse_call') -lt \$(line_of 'scripts/identity.sh\" apply') ]]"
+# reseed-gitea.sh: the same refusal, before the seed is reinstalled (a reseed wipes
+# the repositories an old-code cluster's Applications still read).
+rs_refuse=$(grep -n -F -m1 -- "$refuse_call" "$root/scripts/reseed-gitea.sh" | cut -d: -f1); rs_seed=$(grep -n -m1 '^gitea_install_seed' "$root/scripts/reseed-gitea.sh" | cut -d: -f1)
+check "reseed refuses an old-code cluster before gitea_install_seed" "[[ -n '$rs_refuse' && -n '$rs_seed' && '$rs_refuse' -lt '$rs_seed' ]]"
 check "README no longer sends an existing cluster to bootstrap.sh" "! grep -q 'GITEA_PASS=<live-password> ./bootstrap.sh' \"$root/README.md\""
 check "docs/bootstrap.md no longer rotates through bootstrap.sh" "! grep -q 'GITEA_PASS=\"new-password\" ./bootstrap.sh' \"$root/docs/bootstrap.md\""
 # Important 5: every script that derives the org refuses one the manifests do not read,
@@ -56,7 +66,7 @@ check "docs match the code: --target forgejo is refused on any prod cluster" "! 
 # Behaviour of refuse_old_code_cluster, extracted and run against a kubectl stub.
 # K_CRD_ERR: error text for the CRD get (empty = installed); K_APP_FAIL=1: the
 # application get fails; K_ROW: what the application get prints.
-fn="$(sed -n '/^refuse_old_code_cluster()/,/^}/p' "$root/bootstrap.sh")"
+fn="$(sed -n '/^refuse_old_code_cluster()/,/^}/p' "$root/lib/gitops.sh")"
 refuse() (
     # shellcheck disable=SC2329
     kubectl() {
@@ -65,9 +75,9 @@ refuse() (
             'get application'*) [[ -n "${K_APP_FAIL:-}" ]] && return 1; printf '%s' "${K_ROW:-}" ;;
         esac
     }
-    GIT_STABLE_BASE="http://stable.example"; REALM=realm-x; CLUSTER=c1
+    GIT_STABLE_BASE="http://stable.example"
     eval "$fn"
-    refuse_old_code_cluster
+    refuse_old_code_cluster realm-x c1
 )
 K_CRD_ERR='Error from server (NotFound): customresourcedefinitions "applications.argoproj.io" not found' refuse >/dev/null 2>&1; rc=$?
 check "refuse_old_code_cluster: no Application CRD (fresh cluster) passes" "[[ $rc -eq 0 ]]"

@@ -99,11 +99,34 @@ unset -f date
 out=$(IDENTITY_LIVE_TAILNET=homelab-test-20261101-0900 identity_resolve "$work/realm" homelab-test)
 check "an existing stamp is kept across re-applies" "[[ \"\$out\" == *'tailnetNode=homelab-test-20261101-0900'* ]]"
 
-# identity_live_value: a failing kubectl is value-or-nothing, exit 0
-kubectl() { return 1; }
+# identity_live_value: an absent ConfigMap is nothing with exit 0; any other
+# failure is exit 1, so a failed read never passes as "no identity yet".
+kubectl() { echo 'Error from server (NotFound): configmaps "cluster-identity" not found' >&2; return 1; }
 out=$(identity_live_value cluster); rc=$?
-check "identity_live_value is empty and exit 0 when kubectl fails" "[[ $rc -eq 0 && -z \"\$out\" ]]"
+check "identity_live_value is empty and exit 0 when the ConfigMap is absent" "[[ $rc -eq 0 && -z \"\$out\" ]]"
+kubectl() { echo 'Unable to connect to the server: dial tcp: i/o timeout' >&2; return 1; }
+out=$(identity_live_value cluster 2>/dev/null); rc=$?
+check "identity_live_value fails on any other kubectl error" "[[ $rc -eq 1 && -z \"\$out\" ]]"
+kubectl() { printf 'homelab-prod\r'; }
+out=$(identity_live_value cluster); rc=$?
+check "identity_live_value prints the value without a CR" "[[ $rc -eq 0 && \"\$out\" == homelab-prod ]]"
 unset -f kubectl
+
+# NORDRI_IDENTITY_ENVIRONMENT selects that environment's defaults file, not only the printed value
+out=$(NORDRI_IDENTITY_ENVIRONMENT=gke NORDRI_IDENTITY_GCPPROJECT=example-project identity_resolve "$work/realm" homelab-prod)
+check "an environment override selects that environment's defaults" "[[ \"\$out\" == *'environment=gke'* && \"\$out\" == *'storageClass=standard-rwo'* ]]"
+NORDRI_IDENTITY_ENVIRONMENT='../x' identity_resolve "$work/realm" homelab-prod >/dev/null 2>&1; rc=$?
+check "an environment override is validated like a file value" "[[ $rc -eq 1 ]]"
+
+# gcpRegion belongs to the environment (the seal key ring lives there): overrides that differ are refused
+err=$(NORDRI_IDENTITY_GCPREGION=europe-west1 identity_resolve "$work/realm" gke-prod 2>&1 >/dev/null); rc=$?
+check "a gcpRegion env override that differs from the defaults is refused" "[[ $rc -eq 1 && \"\$err\" == *gcpRegion* ]]"
+printf 'environment: gke\nrole: prod\nmaturity: bootstrap\ngcpProject: example-project\ngcpRegion: us-west1\n' > "$work/realm/clusters/gke-region.yaml"
+identity_resolve "$work/realm" gke-region >/dev/null 2>&1; rc=$?
+check "a realm file naming another gcpRegion is refused" "[[ $rc -eq 1 ]]"
+printf 'environment: gke\nrole: prod\nmaturity: bootstrap\ngcpProject: example-project\ngcpRegion: us-east1\n' > "$work/realm/clusters/gke-same.yaml"
+out=$(identity_resolve "$work/realm" gke-same); rc=$?
+check "a realm file repeating the defaults' gcpRegion is accepted" "[[ $rc -eq 0 && \"\$out\" == *'gcpRegion=us-east1'* ]]"
 
 # identity_tailnet_default: prod is the cluster, anything else is nothing
 check "tailnet default for prod is the cluster" "[[ \$(identity_tailnet_default homelab-prod prod) == homelab-prod ]]"

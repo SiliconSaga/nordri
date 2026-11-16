@@ -36,7 +36,9 @@ realm_dir_for() {
 resolve() { # $1 realm $2 cluster → RESOLVED (key=value lines)
     local dir; dir="$(realm_dir_for "$1")"
     [[ -d "$dir" ]] || { echo "❌ realm checkout not found at $dir (set REALM_DIR)" >&2; exit 1; }
-    IDENTITY_LIVE_TAILNET="$(identity_live_value tailnetNode)" RESOLVED="$(identity_resolve "$dir" "$2")" || exit 1
+    local live_tailnet
+    live_tailnet="$(identity_live_value tailnetNode)" || exit 1
+    RESOLVED="$(IDENTITY_LIVE_TAILNET="$live_tailnet" identity_resolve "$dir" "$2")" || exit 1
 }
 value_of() { printf '%s\n' "$RESOLVED" | sed -n "s/^$1=//p"; }
 
@@ -54,7 +56,9 @@ show_diff() { # prints the diff, returns 0 same / 2 different
 
 apply_configmap() {
     local cluster="$1" live
-    live="$(identity_live_value cluster)"
+    # A failed read must not pass as "no identity yet": that is the one case
+    # where this script would write a cluster name over another.
+    live="$(identity_live_value cluster)" || exit 1
     if [[ -n "$live" && "$live" != "$cluster" ]]; then
         echo "❌ the live identity is cluster '$live', not '$cluster'. This script never renames a cluster; re-bootstrap instead." >&2; exit 1
     fi
@@ -83,9 +87,9 @@ metadata:
   namespace: argo
   labels:
     argocd.argoproj.io/secret-type: cluster
-    nordri.siliconsaga.org/cluster: $cluster
-    nordri.siliconsaga.org/environment: $env
-    nordri.siliconsaga.org/role: $role
+    nordri.siliconsaga.org/cluster: "$cluster"
+    nordri.siliconsaga.org/environment: "$env"
+    nordri.siliconsaga.org/role: "$role"
     nordri.siliconsaga.org/tailnet: "$tailnet_flag"
   annotations:
     nordri.siliconsaga.org/tailnet-node: "$tailnet"
@@ -199,7 +203,12 @@ apply_envconfig() {
         echo "  labels:"; echo "    app.kubernetes.io/part-of: nordri"
         echo "  annotations:"; echo "    argocd.argoproj.io/sync-options: Prune=false"
         echo "data:"
-        printf '%s\n' "$RESOLVED" | while IFS='=' read -r k v; do [[ -n "$v" ]] && printf '  %s: %s\n' "$k" "$(jq -nr --arg v "$v" '$v|@json')"; done
+        # Empty values are skipped (the EnvironmentConfig carries only set keys).
+        # An `if`, not `[[ -n ]] &&`: the loop's status is its last command's, and
+        # a trailing empty key (a lab's tailnetNode) would fail the whole pipeline.
+        printf '%s\n' "$RESOLVED" | while IFS='=' read -r k v; do
+            if [[ -n "$v" ]]; then printf '  %s: %s\n' "$k" "$(jq -nr --arg v "$v" '$v|@json')"; fi
+        done
     } | kubectl apply -f - >/dev/null || exit 1
     echo "✅ EnvironmentConfig $IDENTITY_CONFIGMAP written from the identity"
 }
