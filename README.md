@@ -51,7 +51,13 @@ After bootstrapping, you can access the services:
         refused outright: a re-run would switch it to the new Git with no
         finalizer step, and the prune would delete what the old
         Applications deployed. Move it with
-        `scripts/migrate.sh <realm> <cluster>` instead. If the cluster
+        `scripts/migrate.sh <realm> <cluster>` instead. Its first step
+        sets ArgoCD's ApplicationSet policy-override flag on
+        `argo/argocd-cmd-params-cm` itself (and restarts the
+        applicationset controller) when the cluster lacks it: nothing
+        else can deliver that flag to an old cluster before the Git
+        switch, and the ApplicationSets' never-delete policy depends on
+        it. If the cluster
         has no `gitea/gitea-admin-credentials` Secret yet (it predates
         the Secret-backed flow, or you rotated the password by hand),
         write the Secret with the live password first, as below; migrate

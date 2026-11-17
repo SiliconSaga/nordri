@@ -43,6 +43,7 @@ check "the refusal runs before Layer -1 (the first identity write)" "[[ -n \"\$(
 # the repositories an old-code cluster's Applications still read).
 rs_refuse=$(grep -n -F -m1 -- "$refuse_call" "$root/scripts/reseed-gitea.sh" | cut -d: -f1); rs_seed=$(grep -n -m1 '^gitea_install_seed' "$root/scripts/reseed-gitea.sh" | cut -d: -f1)
 check "reseed refuses an old-code cluster before gitea_install_seed" "[[ -n '$rs_refuse' && -n '$rs_seed' && '$rs_refuse' -lt '$rs_seed' ]]"
+check "reseed tells a cluster without an identity to write one before the re-hydrate" "grep -q 'scripts/identity.sh apply \$REALM \$CLUSTER' \"$root/scripts/reseed-gitea.sh\""
 check "README no longer sends an existing cluster to bootstrap.sh" "! grep -q 'GITEA_PASS=<live-password> ./bootstrap.sh' \"$root/README.md\""
 check "docs/bootstrap.md no longer rotates through bootstrap.sh" "! grep -q 'GITEA_PASS=\"new-password\" ./bootstrap.sh' \"$root/docs/bootstrap.md\""
 # Important 5: every script that derives the org refuses one the manifests do not read,

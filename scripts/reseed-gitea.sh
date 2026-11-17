@@ -102,6 +102,10 @@ echo "⏳ Waiting for Gitea to become ready..."
 gitea_wait_ready 300 || exit 1
 
 echo "✅ Seed Gitea reinstalled. Its repositories are empty until you re-hydrate:"
+if [[ -z "$LIVE_CLUSTER" ]]; then
+    echo "   This cluster has no identity ConfigMap yet, and update-embedded-git.sh refuses a cluster without one. Write it first:"
+    echo "   scripts/identity.sh apply $REALM $CLUSTER"
+fi
 if [[ "$GITEA_PASS_FROM_ENV" -eq 1 ]]; then
     echo "   ./update-embedded-git.sh $REALM   — with GITEA_PASS exported to the same value, as for this run"
     echo "   The $GITEA_CREDENTIALS_NAMESPACE/$GITEA_CREDENTIALS_SECRET Secret was not updated, so without GITEA_PASS the hydrate would read a password this Gitea no longer accepts."

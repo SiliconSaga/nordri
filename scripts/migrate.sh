@@ -67,35 +67,63 @@ GITOPS_ORG="$(gitops_canonical_org "$REALM")"; GITOPS_VENDOR_ORG="$(gitops_vendo
 
 # On gke the velero ApplicationSet puts `prefix: <cluster>` on the
 # BackupStorageLocation the moment it syncs (step 6); from then on Velero lists
-# only <cluster>/backups/, and anything still at the bucket root is invisible to
-# a restore. docs/velero-gke.md has the copy; this refuses to switch before it.
-gcs_ls() { # object lines under $1; nothing when it matches no objects; status 1 on any other failure
+# only <cluster>/backups/ and <cluster>/restores/, and anything still at the
+# bucket root is invisible to a restore. docs/velero-gke.md has the copy; this
+# refuses to switch until every root object has its copy under the prefix, name
+# for name (a partial copy would pass a mere "something is there" check).
+gcs_objects() { # every object under the gs:// prefix $1, one per line; nothing when it matches none; status 1 on any other failure
     local out
-    if out="$(gcloud storage ls "$1" 2>&1)"; then printf '%s\n' "$out"; return 0; fi
+    if out="$(gcloud storage ls "$1**" 2>&1)"; then printf '%s\n' "$out"; return 0; fi
     [[ "$out" == *"matched no objects"* ]] && return 0
-    echo "❌ gcloud storage ls $1 failed: $out" >&2; return 1
+    echo "❌ gcloud storage ls $1** failed: $out" >&2; return 1
 }
 if [[ "$TARGET" == "gke" ]]; then
     GCP_PROJECT_ID="$(printf '%s\n' "$IDENTITY" | sed -n 's/^gcpProject=//p')"
     VELERO_BUCKET="gs://${GCP_PROJECT_ID}-velero"
     command -v gcloud >/dev/null 2>&1 || { echo "❌ gcloud is needed on gke to check that Velero's root backups were copied under $VELERO_BUCKET/$CLUSTER/ (docs/velero-gke.md)." >&2; exit 1; }
-    ROOT_BACKUPS="$(gcs_ls "$VELERO_BUCKET/backups/")" || exit 1
-    if [[ -n "$ROOT_BACKUPS" ]]; then
-        PREFIXED_BACKUPS="$(gcs_ls "$VELERO_BUCKET/$CLUSTER/backups/")" || exit 1
-        if [[ -z "$PREFIXED_BACKUPS" ]]; then
-            echo "❌ $VELERO_BUCKET/backups/ holds backups and $VELERO_BUCKET/$CLUSTER/backups/ holds none: once velero syncs with prefix $CLUSTER a restore cannot see them." >&2
+    for top in backups restores; do
+        ROOT_OBJECTS="$(gcs_objects "$VELERO_BUCKET/$top/")" || exit 1
+        if [[ -z "$ROOT_OBJECTS" ]]; then echo "   velero: nothing at $VELERO_BUCKET/$top/ to copy"; continue; fi
+        PREFIXED_OBJECTS="$(gcs_objects "$VELERO_BUCKET/$CLUSTER/$top/")" || exit 1
+        MISSING="$(comm -23 <(printf '%s\n' "$ROOT_OBJECTS" | sed "s#^$VELERO_BUCKET/##" | LC_ALL=C sort -u) \
+                           <(printf '%s\n' "$PREFIXED_OBJECTS" | sed "s#^$VELERO_BUCKET/$CLUSTER/##" | LC_ALL=C sort -u))"
+        if [[ -n "$MISSING" ]]; then
+            echo "❌ $VELERO_BUCKET/$top/ holds objects with no copy under $VELERO_BUCKET/$CLUSTER/$top/: once velero syncs with prefix $CLUSTER a restore cannot see them." >&2
+            echo "   Missing under the prefix, first of them:" >&2
+            printf '%s\n' "$MISSING" | head -n 5 | sed 's/^/     /' >&2
             echo "   Copy them first (docs/velero-gke.md, 'Before GKE migrates'), then re-run." >&2
             exit 1
         fi
-        echo "   velero: root backups are present under $VELERO_BUCKET/$CLUSTER/backups/ too"
-    else
-        echo "   velero: no backups at $VELERO_BUCKET/backups/ to copy"
-    fi
+        echo "   velero: every object under $VELERO_BUCKET/$top/ is present under $VELERO_BUCKET/$CLUSTER/$top/ too"
+    done
 fi
 
 echo "1/8 ApplicationSet policy override"
-override=$(kubectl get configmap -n argo argocd-cmd-params-cm -o 'jsonpath={.data.applicationsetcontroller\.enable\.policy\.override}' 2>/dev/null | tr -d '\r')
-[[ "$override" == "true" ]] || { echo "❌ ArgoCD does not allow ApplicationSet policy overrides (argocd-cmd-params-cm). Sync the argocd Application from a nordri main that carries it, then re-run." >&2; exit 1; }
+# The ApplicationSets' applicationsSync: create-update is honoured only with
+# this flag on (design, Decision 4). The new argocd Application sets it, but a
+# cluster the old code bootstrapped reads the old Git until step 6, and
+# update-embedded-git.sh refuses a cluster with no identity, so nothing in the
+# documented flow can deliver the flag beforehand. It is set here instead, and
+# the applicationset controller restarted to read it (it is an env var at
+# start-up). The argocd Application applies server-side, so a key another
+# manager added should sit outside its diff and survive self-heal; whether it
+# does is a Task 12 premise check on Nano76, and a revert fails the re-read.
+# From step 6 the new Git declares the same value and co-owns the key.
+read_override() { kubectl get configmap -n argo argocd-cmd-params-cm -o 'jsonpath={.data.applicationsetcontroller\.enable\.policy\.override}' 2>/dev/null | tr -d '\r'; }
+override="$(read_override)"
+if [[ "$override" == "true" ]]; then
+    echo "   argocd-cmd-params-cm already allows it"
+else
+    echo "   argocd-cmd-params-cm does not allow it yet: setting the flag and restarting the applicationset controller"
+    kubectl patch configmap -n argo argocd-cmd-params-cm --type merge -p '{"data":{"applicationsetcontroller.enable.policy.override":"true"}}' >/dev/null \
+        || { echo "❌ could not set applicationsetcontroller.enable.policy.override on argo/argocd-cmd-params-cm." >&2; exit 1; }
+    kubectl rollout restart deployment -n argo argocd-applicationset-controller >/dev/null \
+        || { echo "❌ could not restart deployment argo/argocd-applicationset-controller." >&2; exit 1; }
+    kubectl rollout status deployment -n argo argocd-applicationset-controller --timeout=180s >/dev/null \
+        || { echo "❌ deployment argo/argocd-applicationset-controller did not come back within 180s." >&2; exit 1; }
+    override="$(read_override)"
+    [[ "$override" == "true" ]] || { echo "❌ ArgoCD still does not allow ApplicationSet policy overrides (argocd-cmd-params-cm) after setting it: the argocd Application has likely reverted the key. Record that; nothing else has run." >&2; exit 1; }
+fi
 
 echo "2/8 identity (ConfigMap, cluster Secret; a tracked EnvironmentConfig is marked Prune=false, values untouched)"
 REALM_DIR="$REALM_DIR" bash "$SCRIPT_DIR/scripts/identity.sh" apply "$REALM" "$CLUSTER" || exit 1

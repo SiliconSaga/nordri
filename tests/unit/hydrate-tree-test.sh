@@ -33,7 +33,8 @@ echo a > "$plain/a.txt"; echo b > "$plain/sub/b.txt"; echo k > "$plain/x.key"
 hydrate_prepare_tree "$plain" "$pdst"
 check "non-git fallback copies files" "[[ -f \"\$pdst/a.txt\" && -f \"\$pdst/sub/b.txt\" && -f \"\$pdst/x.key\" ]]"
 check "non-git fallback leaves no .git" "[[ ! -e \"\$pdst/.git\" ]]"
-# Nested checkout: its .git and ignored files must not ride along.
+# Nested checkout: left out entirely (it is not part of the source tree), so
+# neither its .git and ignored files nor its tracked files ride along.
 nsrc="$work/nsrc"; ndst="$work/ndst"; mkdir -p "$nsrc/sub" "$ndst"
 git -C "$nsrc" init -q
 echo top > "$nsrc/top.txt"
@@ -49,6 +50,7 @@ hydrate_prepare_tree "$nsrc" "$ndst"
 check "nested repo: top file copied" "[[ -f \"\$ndst/top.txt\" ]]"
 check "nested repo: sub/.git not copied" "[[ ! -e \"\$ndst/sub/.git\" ]]"
 check "nested repo: sub/.env not copied" "[[ ! -e \"\$ndst/sub/.env\" ]]"
+check "nested repo: its tracked files are left out too, by design" "[[ ! -e \"\$ndst/sub/inner.txt\" ]]"
 
 # Failing creator: a tracked file deleted from the work tree must fail the copy.
 fsrc="$work/fsrc"; fdst="$work/fdst"; mkdir -p "$fsrc" "$fdst"

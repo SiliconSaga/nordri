@@ -38,32 +38,40 @@ argo_hold_prune() { echo "CALL argo_hold_prune $1"; [[ "${STUB_FAIL_HOLD:-}" != 
 argo_release_prune() { echo "CALL argo_release_prune $1"; [[ "${STUB_FAIL_RELEASE:-}" != "$1" ]]; }'
 stub scripts/identity.sh 'echo "CALL identity.sh $* takeover=${IDENTITY_TAKEOVER_ENVCONFIG:-0}"'
 
+# The policy override reads STUB_OVERRIDE; with STUB_OVERRIDE_FLIP set, a patch of
+# argocd-cmd-params-cm makes every later read "true" (the flag took).
 cat > "$work/bin/kubectl" <<'STUB'
 #!/usr/bin/env bash
 echo "KUBECTL $*" >> "$STUB_KUBE_LOG"
 case "$*" in
-  *argocd-cmd-params-cm*) printf '%s' "${STUB_OVERRIDE:-true}" ;;
+  "patch configmap -n argo argocd-cmd-params-cm"*) [[ -n "${STUB_OVERRIDE_FLIP:-}" ]] && : > "$STUB_KUBE_LOG.override" ;;
+  *argocd-cmd-params-cm*) if [[ -e "$STUB_KUBE_LOG.override" ]]; then printf true; else printf '%s' "${STUB_OVERRIDE:-true}"; fi ;;
 esac
 exit 0
 STUB
 chmod +x "$work/bin/kubectl"
-# gcloud storage ls: STUB_GCS_ROOT / STUB_GCS_PREFIX name an object under the
-# bucket root / the cluster prefix; empty means "matched no objects" (gcloud's exit 1).
+# gcloud storage ls <prefix>**: STUB_GCS_ROOT / STUB_GCS_PREFIX list (space-separated)
+# the objects under backups/ at the bucket root / under the cluster prefix;
+# STUB_GCS_ROOT_RESTORES / STUB_GCS_PREFIX_RESTORES the same for restores/. Empty
+# means "matched no objects" (gcloud's exit 1).
 cat > "$work/bin/gcloud" <<'STUB'
 #!/usr/bin/env bash
 echo "GCLOUD $*" >> "$STUB_KUBE_LOG"
-url="${!#}"
+url="${!#}"; base="${url%\*\*}"; objects=""
 case "$url" in
-  gs://*-velero/backups/) [[ -n "${STUB_GCS_ROOT:-}" ]] && { echo "$url$STUB_GCS_ROOT"; exit 0; } ;;
-  gs://*-velero/*/backups/) [[ -n "${STUB_GCS_PREFIX:-}" ]] && { echo "$url$STUB_GCS_PREFIX"; exit 0; } ;;
+  gs://*-velero/backups/"**") objects="${STUB_GCS_ROOT:-}" ;;
+  gs://*-velero/*/backups/"**") objects="${STUB_GCS_PREFIX:-}" ;;
+  gs://*-velero/restores/"**") objects="${STUB_GCS_ROOT_RESTORES:-}" ;;
+  gs://*-velero/*/restores/"**") objects="${STUB_GCS_PREFIX_RESTORES:-}" ;;
 esac
+if [[ -n "$objects" ]]; then for o in $objects; do echo "$base$o"; done; exit 0; fi
 [[ -n "${STUB_GCS_FAIL:-}" ]] && { echo "ERROR: (gcloud.storage.ls) You do not currently have an active account selected." >&2; exit 1; }
 echo "ERROR: (gcloud.storage.ls) One or more URLs matched no objects." >&2; exit 1
 STUB
 chmod +x "$work/bin/gcloud"
 export PATH="$work/bin:$PATH"
 
-run() { : > "$work/kube.log"; export STUB_KUBE_LOG="$work/kube.log"; REALM_DIR="$work/realm" MIGRATE_SKIP_HYDRATE=1 bash "$work/nordri/scripts/migrate.sh" "$@" > "$work/out" 2>&1; }
+run() { : > "$work/kube.log"; rm -f "$work/kube.log.override"; export STUB_KUBE_LOG="$work/kube.log"; REALM_DIR="$work/realm" MIGRATE_SKIP_HYDRATE=1 bash "$work/nordri/scripts/migrate.sh" "$@" > "$work/out" 2>&1; }
 # line number of the first / last line matching a fixed string
 first() { grep -n -F -m1 -- "$1" "$work/out" | cut -d: -f1; }
 last() { grep -n -F -- "$1" "$work/out" | tail -n 1 | cut -d: -f1; }
@@ -112,9 +120,16 @@ done
 check "the first identity apply does not take the EnvironmentConfig over" "[[ \$(first 'CALL identity.sh apply realm-x homelab-prod takeover=0') == '$i1' ]]"
 check "the second identity apply asks for the take-over" "[[ \$(last 'CALL identity.sh apply realm-x homelab-prod takeover=1') == '$i2' ]]"
 
-# Refusal: policy override off
+# Policy override off: migrate sets it, restarts the applicationset controller and
+# re-reads; a cluster where the flag does not take (the argocd Application
+# reverted it) is refused before anything else runs.
+check "an on policy override is not patched" "STUB_OVERRIDE=true run realm-x homelab-prod; ! grep -q 'patch configmap -n argo argocd-cmd-params-cm' \"\$work/kube.log\""
+STUB_OVERRIDE=false STUB_OVERRIDE_FLIP=1 run realm-x homelab-prod; rc=$?
+check "an off policy override is set and the controller restarted" "[[ $rc -eq 0 ]] && grep -q 'KUBECTL patch configmap -n argo argocd-cmd-params-cm --type merge' \"\$work/kube.log\" && grep -q 'KUBECTL rollout restart deployment -n argo argocd-applicationset-controller' \"\$work/kube.log\""
+check "the restart is waited for before the re-read" "[[ \$(grep -n -m1 'rollout status deployment -n argo argocd-applicationset-controller' \"\$work/kube.log\" | cut -d: -f1) -lt \$(grep -n 'get configmap -n argo argocd-cmd-params-cm' \"\$work/kube.log\" | tail -n 1 | cut -d: -f1) ]]"
+check "the patch precedes every other step" "[[ \$(first 'setting the flag') -lt \$(first 'CALL identity.sh') ]]"
 STUB_OVERRIDE=false run realm-x homelab-prod; rc=$?
-check "an off policy override is refused" "[[ $rc -eq 1 ]]"
+check "a policy override that does not take is refused" "[[ $rc -eq 1 ]]"
 check "the refusal names argocd-cmd-params-cm" "grep -q 'argocd-cmd-params-cm' \"\$work/out\""
 check "nothing else runs after the refusal" "! grep -q 'CALL identity.sh' \"\$work/out\""
 
@@ -144,6 +159,14 @@ check "the refusal names both locations" "grep -q 'gs://example-project-velero/b
 check "nothing runs after the velero refusal" "! grep -q 'CALL identity.sh' \"\$work/out\" && ! grep -q 'CALL argo' \"\$work/out\""
 STUB_ENV=gke STUB_GCS_ROOT=backup-1/ STUB_GCS_PREFIX=backup-1/ run realm-x gke-prod; rc=$?
 check "gke with the copy in place migrates" "[[ $rc -eq 0 ]] && grep -q 'present under' \"\$work/out\""
+# Name for name: a partial copy is refused, naming what is missing.
+STUB_ENV=gke STUB_GCS_ROOT='backup-1/backup-1.tar.gz backup-2/backup-2.tar.gz' STUB_GCS_PREFIX='backup-1/backup-1.tar.gz' run realm-x gke-prod; rc=$?
+check "gke with a partial copy is refused" "[[ $rc -eq 1 ]] && grep -q 'backups/backup-2/backup-2.tar.gz' \"\$work/out\" && ! grep -q 'CALL identity.sh' \"\$work/out\""
+# restores/ is checked the same way (Velero lists it under the prefix too).
+STUB_ENV=gke STUB_GCS_ROOT=backup-1/ STUB_GCS_PREFIX=backup-1/ STUB_GCS_ROOT_RESTORES=restore-1/results.gz STUB_GCS_PREFIX_RESTORES='' run realm-x gke-prod; rc=$?
+check "gke with uncopied root restores is refused" "[[ $rc -eq 1 ]] && grep -q 'gs://example-project-velero/restores/' \"\$work/out\" && grep -q 'gs://example-project-velero/gke-prod/restores/' \"\$work/out\""
+STUB_ENV=gke STUB_GCS_ROOT=backup-1/ STUB_GCS_PREFIX=backup-1/ STUB_GCS_ROOT_RESTORES=restore-1/results.gz STUB_GCS_PREFIX_RESTORES=restore-1/results.gz run realm-x gke-prod; rc=$?
+check "gke with both copies in place migrates" "[[ $rc -eq 0 ]]"
 STUB_ENV=gke STUB_GCS_FAIL=1 run realm-x gke-prod; rc=$?
 check "a failing gcloud is refused, never read as an empty bucket" "[[ $rc -eq 1 ]] && grep -q 'gcloud storage ls' \"\$work/out\" && ! grep -q 'CALL identity.sh' \"\$work/out\""
 check "homelab never calls gcloud" "STUB_ENV=homelab run realm-x homelab-prod; ! grep -q GCLOUD \"\$work/kube.log\""

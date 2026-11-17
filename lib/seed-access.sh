@@ -25,6 +25,25 @@ seed_access_server_family() {
     if [[ "$v" == *+gitea-* ]]; then echo forgejo; else echo gitea; fi
 }
 
+# The server answering at GITEA_HOST must be TARGET_SERVER's family: the
+# credentials loaded belong to that server only, and must not reach the other
+# one (a stale port-forward, a GITEA_HOST naming the wrong route). Prints the
+# family; status 1 (message on stderr) on a mismatch or an unreadable version.
+seed_access_require_family() {
+    local family want=gitea
+    [[ "$TARGET_SERVER" == "forgejo" ]] && want=forgejo
+    if ! family="$(seed_access_server_family)"; then
+        echo "❌ $GITEA_HOST answers, but its /api/v1/version is unreadable, so which server it is cannot be told. Point GITEA_HOST at the right server (or stop that listener) and re-run." >&2
+        return 1
+    fi
+    if [[ "$family" != "$want" ]]; then
+        echo "❌ $GITEA_HOST serves a $family, but this run targets the $TARGET_SERVER ($GITEA_PF_SERVICE). Its credentials must not reach the other server:" >&2
+        echo "   stop that port-forward (or set GITEA_HOST to the right server) and re-run." >&2
+        return 1
+    fi
+    echo "$family"
+}
+
 seed_access_open() {
     local explicit_pass="${GITEA_PASS:-}" secret_pass="" attempts
     TARGET_SERVER="${TARGET_SERVER:-seed}"
@@ -44,7 +63,7 @@ seed_access_open() {
     fi
 
     if [[ "$TARGET_SERVER" == "forgejo" ]]; then
-        GITEA_USER="$(kubectl get secret -n forgejo forgejo-admin -o jsonpath='{.data.username}' | base64 -d)"
+        GITEA_USER="$(kubectl get secret -n forgejo forgejo-admin -o jsonpath='{.data.username}' | base64 --decode)"
         [[ -n "$GITEA_USER" ]] || { echo "❌ forgejo/forgejo-admin has no username." >&2; return 1; }
     else
         # Username is fixed (see bootstrap.sh header for rationale).
@@ -83,19 +102,9 @@ seed_access_open() {
     if [[ "$GITEA_HOST" == "localhost:3000" ]]; then
         if probe_gitea; then
             # Something already listens: a port-forward from an earlier run,
-            # possibly to the OTHER server. The credentials loaded above belong to
-            # $TARGET_SERVER only, so the listener must be that server's family.
-            local family want=gitea
-            [[ "$TARGET_SERVER" == "forgejo" ]] && want=forgejo
-            if ! family="$(seed_access_server_family)"; then
-                echo "❌ $GITEA_HOST answers, but its /api/v1/version is unreadable, so which server it is cannot be told. Stop that listener (or set GITEA_HOST) and re-run." >&2
-                return 1
-            fi
-            if [[ "$family" != "$want" ]]; then
-                echo "❌ $GITEA_HOST already serves a $family, but this run targets the $TARGET_SERVER ($GITEA_PF_SERVICE). Its credentials must not reach the other server:" >&2
-                echo "   stop that port-forward (or set GITEA_HOST to the right server) and re-run." >&2
-                return 1
-            fi
+            # possibly to the OTHER server.
+            local family
+            family="$(seed_access_require_family)" || return 1
             echo "   Reusing existing $family endpoint at $GITEA_HOST."
         else
             echo "   Starting Port Forward to $GITEA_PF_SERVICE ($GITEA_PF_NAMESPACE)..."
@@ -118,5 +127,9 @@ seed_access_open() {
             echo "   Verify the HTTPRoute is deployed and DNS resolves." >&2
             return 1
         fi
+        # A route can name the wrong server as easily as a port-forward can.
+        local family
+        family="$(seed_access_require_family)" || return 1
+        echo "   $GITEA_HOST serves a $family, as this run targets."
     fi
 }

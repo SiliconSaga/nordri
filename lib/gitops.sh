@@ -57,12 +57,16 @@ gitops_ensure_org() {
 # status 1: a read that failed must not pass as "no Service", or
 # gitops_ensure_git_service would point an existing address back at the seed.
 gitops_git_service_target() {
-    local out
-    if out="$(kubectl get service git -n "$GITOPS_NAMESPACE" -o 'jsonpath={.spec.externalName}' 2>&1)"; then
-        printf '%s' "${out//$'\r'/}"; return 0
+    local out err errf
+    # stderr apart from stdout: a kubectl warning on a successful read must not
+    # become part of the target.
+    errf="$(mktemp)" || return 1
+    if out="$(kubectl get service git -n "$GITOPS_NAMESPACE" -o 'jsonpath={.spec.externalName}' 2>"$errf")"; then
+        rm -f "$errf"; printf '%s' "${out//$'\r'/}"; return 0
     fi
-    [[ "$out" == *NotFound* ]] && return 0
-    echo "❌ could not read Service $GITOPS_NAMESPACE/git: ${out//$'\r'/}" >&2
+    err="$(<"$errf")"; rm -f "$errf"
+    [[ "$err" == *NotFound* ]] && return 0
+    echo "❌ could not read Service $GITOPS_NAMESPACE/git: ${err//$'\r'/}" >&2
     return 1
 }
 

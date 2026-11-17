@@ -144,11 +144,15 @@ identity_resolve() {
 # writes on this value (the cluster-name check, the tailnet stamp), so a read
 # that failed must not pass as "absent".
 identity_live_value() {
-    local out
-    if out="$(kubectl get configmap -n "$IDENTITY_NAMESPACE" "$IDENTITY_CONFIGMAP" -o "jsonpath={.data.$1}" 2>&1)"; then
-        printf '%s' "${out//$'\r'/}"; return 0
+    local out err errf
+    # stderr apart from stdout: a kubectl warning on a successful read must not
+    # become part of the value.
+    errf="$(mktemp)" || return 1
+    if out="$(kubectl get configmap -n "$IDENTITY_NAMESPACE" "$IDENTITY_CONFIGMAP" -o "jsonpath={.data.$1}" 2>"$errf")"; then
+        rm -f "$errf"; printf '%s' "${out//$'\r'/}"; return 0
     fi
-    [[ "$out" == *NotFound* ]] && return 0
-    echo "identity: could not read ConfigMap $IDENTITY_NAMESPACE/$IDENTITY_CONFIGMAP: ${out//$'\r'/}" >&2
+    err="$(<"$errf")"; rm -f "$errf"
+    [[ "$err" == *NotFound* ]] && return 0
+    echo "identity: could not read ConfigMap $IDENTITY_NAMESPACE/$IDENTITY_CONFIGMAP: ${err//$'\r'/}" >&2
     return 1
 }

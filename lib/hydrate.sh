@@ -28,8 +28,12 @@ hydrate_prepare_tree() {
         if ! git -C "$src" ls-files -co --exclude-standard -z > "$list"; then
             rm -f "$list" "$archive"; return 1
         fi
-        # --no-recursion: a nested checkout or submodule shows up as one directory
-        # entry; without it tar would carry that repo's .git and ignored files along.
+        # --no-recursion: a nested checkout (or a submodule's gitlink) is listed as
+        # one directory entry, so only that empty directory is archived and the
+        # nested repository's contents stay behind entirely. Deliberate: it is not
+        # part of this repository's tree, and carrying it would carry its .git and
+        # ignored files too. No hydrated source has a submodule; the realm and the
+        # components are plain checkouts.
         # Two checked steps, not a pipe: callers run set -e without pipefail, so a
         # failing creator would otherwise hide behind the extractor's status.
         if ! tar --null --no-recursion -C "$src" -cf "$archive" -T "$list"; then

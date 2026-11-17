@@ -26,7 +26,12 @@ manifest_orgs=$(grep -rhoE 'git\.gitops\.svc\.cluster\.local:3000/[a-z0-9-]+/' "
 check "every committed stable-address repoURL uses GITOPS_MANIFEST_ORG" "[[ -n \"\$manifest_orgs\" && \"\$manifest_orgs\" == \"\$GITOPS_MANIFEST_ORG\" ]]"
 check "gitops_git_service_target is 0 and empty with no Service (NotFound), under pipefail" "( kubectl() { echo 'Error from server (NotFound): services \"git\" not found' >&2; return 1; }; out=\$(gitops_git_service_target) && [[ -z \"\$out\" ]] )"
 check "gitops_git_service_target fails on any other kubectl error" "! ( kubectl() { echo 'Unable to connect to the server' >&2; return 1; }; gitops_git_service_target >/dev/null 2>&1 )"
-check "gitops_ensure_git_service does not touch the Service after a failed read" "! ( kubectl() { echo 'Unable to connect to the server' >&2; return 1; }; gitops_ensure_git_service >/dev/null 2>&1 )"
+check "a kubectl warning on stderr does not reach the target" "( kubectl() { echo 'Warning: kubeconfig deprecation' >&2; printf 'forgejo-http.forgejo.svc.cluster.local'; }; [[ \$(gitops_git_service_target 2>/dev/null) == forgejo-http.forgejo.svc.cluster.local ]] )"
+: > "$work/calls"
+# shellcheck disable=SC2329
+( kubectl() { printf '%s\n' "$*" >> "$work/calls"; case "$*" in *"get service"*) echo 'Unable to connect to the server' >&2; return 1 ;; esac; return 0; }; gitops_ensure_git_service >/dev/null 2>&1 ); rc=$?
+check "gitops_ensure_git_service fails after a failed read" "[[ $rc -ne 0 ]]"
+check "and applies nothing to the Service" "[[ -s \"\$work/calls\" ]] && ! grep -q apply \"\$work/calls\""
 
 # curl stub: GET /orgs/<x> → 404 the first time, 200 after a POST; POST → 201.
 # Prints the status like the real -w '%{http_code}' call does.

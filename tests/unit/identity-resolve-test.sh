@@ -101,15 +101,22 @@ check "an existing stamp is kept across re-applies" "[[ \"\$out\" == *'tailnetNo
 
 # identity_live_value: an absent ConfigMap is nothing with exit 0; any other
 # failure is exit 1, so a failed read never passes as "no identity yet".
+# shellcheck disable=SC2329
 kubectl() { echo 'Error from server (NotFound): configmaps "cluster-identity" not found' >&2; return 1; }
 out=$(identity_live_value cluster); rc=$?
 check "identity_live_value is empty and exit 0 when the ConfigMap is absent" "[[ $rc -eq 0 && -z \"\$out\" ]]"
+# shellcheck disable=SC2329
 kubectl() { echo 'Unable to connect to the server: dial tcp: i/o timeout' >&2; return 1; }
 out=$(identity_live_value cluster 2>/dev/null); rc=$?
 check "identity_live_value fails on any other kubectl error" "[[ $rc -eq 1 && -z \"\$out\" ]]"
+# shellcheck disable=SC2329
 kubectl() { printf 'homelab-prod\r'; }
 out=$(identity_live_value cluster); rc=$?
 check "identity_live_value prints the value without a CR" "[[ $rc -eq 0 && \"\$out\" == homelab-prod ]]"
+# shellcheck disable=SC2329
+kubectl() { echo 'Warning: kubeconfig deprecation' >&2; printf 'homelab-prod'; }
+out=$(identity_live_value cluster 2>/dev/null); rc=$?
+check "a kubectl warning on stderr does not reach the value" "[[ $rc -eq 0 && \"\$out\" == homelab-prod ]]"
 unset -f kubectl
 
 # NORDRI_IDENTITY_ENVIRONMENT selects that environment's defaults file, not only the printed value
