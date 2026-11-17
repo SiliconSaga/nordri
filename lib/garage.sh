@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # components/nordri/lib/garage.sh
 # Find-or-create a named Garage API key without minting a second one.
 #

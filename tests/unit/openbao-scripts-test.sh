@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2015
 # Unit test for openbao-init.sh and openbao-configure.sh argument handling and
 # for lib/openbao.sh's OPENBAO_INIT_KEEP_FILE path, with a kubectl stub. The
 # scripts' argument checks run before any cluster call; the keep-file check

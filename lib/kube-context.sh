@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # components/nordri/lib/kube-context.sh
 # Refuse to run a target against the wrong cluster. bootstrap.sh and
 # update-embedded-git.sh call plain `kubectl`, which follows the kubeconfig's
@@ -16,7 +17,8 @@
 #      GKE context (`gke_<project>_<zone>_<cluster>`, the form gcloud writes),
 #      homelab targets must not use one. This catches the realistic mistake
 #      even when KUBE_CONTEXT is unset.
-# Sourced by both scripts. require_kube_context <gke|homelab>
+# Sourced by the scripts. require_kube_context <gke|homelab>: the argument is
+# the environment resolved from the cluster's identity (never a command-line flag).
 
 require_kube_context() {
     local target="$1" current

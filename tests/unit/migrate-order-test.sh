@@ -1,0 +1,290 @@
+#!/usr/bin/env bash
+# shellcheck disable=SC2015
+# The stubs below are shell source in single quotes, expanded when sourced:
+# shellcheck disable=SC2016
+# Unit test for scripts/migrate.sh: the order of the eight 3a-5 steps and its
+# refusals. migrate.sh runs from a scratch copy of the component whose libs and
+# identity.sh are recording stubs; kubectl is a stub too. Every stub writes to the
+# same stream (stdout, or stderr for kubectl), so line numbers give the order.
+set -uo pipefail
+root="$(cd "$(dirname "$0")/../.." && pwd)"
+fails=0
+check() { if eval "$2"; then echo "ok - $1"; else echo "NOT OK - $1"; fails=$((fails+1)); fi; }
+
+work="$(mktemp -d)"; trap 'rm -rf "$work"' EXIT
+mkdir -p "$work/nordri/scripts" "$work/nordri/lib" "$work/bin" "$work/realm"
+cp "$root/scripts/migrate.sh" "$work/nordri/scripts/migrate.sh" 2>/dev/null
+
+stub() { printf '%s\n' "$2" > "$work/nordri/$1"; }
+stub lib/gitea.sh ':'
+stub lib/kube-context.sh 'require_kube_context() { echo "CALL require_kube_context $*"; }'
+stub lib/identity.sh 'identity_live_value() { case "$1" in cluster) printf "%s" "${STUB_LIVE_CLUSTER:-}" ;; role) printf "%s" "${STUB_LIVE_ROLE:-}" ;; environment) printf "%s" "${STUB_LIVE_ENV:-}" ;; esac; }
+identity_resolve() { printf "environment=%s\ncluster=%s\ntailnetNode=%s\ngcpProject=%s\n" "${STUB_ENV:-gke}" "$2" "${STUB_TAILNET-ts}" "${STUB_PROJECT:-example-project}"; }'
+stub lib/hydrate.sh 'hydrate_working_tree_repo() { echo "CALL hydrate_working_tree_repo $2 $3"; }
+hydrate_vendor_mirrors() { echo "CALL hydrate_vendor_mirrors $1"; }'
+stub lib/gitops.sh 'gitops_canonical_org() { printf "%s" "${1#realm-}"; }
+gitops_vendor_org() { printf "%s-vendor" "${1#realm-}"; }
+gitops_ensure_org() { echo "CALL gitops_ensure_org $1"; }
+gitops_ensure_git_service() { echo "CALL gitops_ensure_git_service"; }
+gitops_apply_root_apps() { echo "CALL gitops_apply_root_apps $1"; }
+gitops_require_manifest_org() { echo "CALL gitops_require_manifest_org $1"; [[ -z "${STUB_FOREIGN_ORG:-}" ]]; }'
+stub lib/seed-access.sh 'seed_access_open() { echo "CALL seed_access_open"; }'
+stub lib/argo.sh 'argo_wait_operations_done() { echo "CALL argo_wait_operations_done $1"; }
+argo_wait_synced_healthy() { echo "CALL argo_wait_synced_healthy $1"; }
+argo_hard_refresh_all() { echo "CALL argo_hard_refresh_all"; }
+argo_wait_refresh_consumed() { echo "CALL argo_wait_refresh_consumed $1"; }
+argo_remove_finalizer() { echo "CALL argo_remove_finalizer $1"; [[ "${STUB_FAIL_FINALIZER:-}" != "$1" ]]; }
+argo_hold_prune() { echo "CALL argo_hold_prune $1"; [[ "${STUB_FAIL_HOLD:-}" != "$1" ]]; }
+argo_release_prune() { echo "CALL argo_release_prune $1"; [[ "${STUB_FAIL_RELEASE:-}" != "$1" ]]; }'
+stub scripts/identity.sh 'echo "CALL identity.sh $* takeover=${IDENTITY_TAKEOVER_ENVCONFIG:-0}"'
+
+# The policy override reads STUB_OVERRIDE; with STUB_OVERRIDE_FLIP set, a patch of
+# argocd-cmd-params-cm makes every later read "true" (the flag took).
+cat > "$work/bin/kubectl" <<'STUB'
+#!/usr/bin/env bash
+echo "KUBECTL $*" >> "$STUB_KUBE_LOG"
+case "$*" in
+  "patch configmap -n argo argocd-cmd-params-cm"*) [[ -n "${STUB_OVERRIDE_FLIP:-}" ]] && : > "$STUB_KUBE_LOG.override" ;;
+  *argocd-cmd-params-cm*) if [[ -e "$STUB_KUBE_LOG.override" ]]; then printf true; else printf '%s' "${STUB_OVERRIDE:-true}"; fi ;;
+esac
+exit 0
+STUB
+chmod +x "$work/bin/kubectl"
+# gcloud storage ls <prefix>**: STUB_GCS_ROOT / STUB_GCS_PREFIX list (space-separated)
+# the objects under backups/ at the bucket root / under the cluster prefix;
+# STUB_GCS_ROOT_RESTORES / STUB_GCS_PREFIX_RESTORES the same for restores/. Empty
+# means "matched no objects" (gcloud's exit 1).
+cat > "$work/bin/gcloud" <<'STUB'
+#!/usr/bin/env bash
+echo "GCLOUD $*" >> "$STUB_KUBE_LOG"
+url="${!#}"; base="${url%\*\*}"; objects=""
+case "$url" in
+  gs://*-velero/backups/"**") objects="${STUB_GCS_ROOT:-}" ;;
+  gs://*-velero/*/backups/"**") objects="${STUB_GCS_PREFIX:-}" ;;
+  gs://*-velero/restores/"**") objects="${STUB_GCS_ROOT_RESTORES:-}" ;;
+  gs://*-velero/*/restores/"**") objects="${STUB_GCS_PREFIX_RESTORES:-}" ;;
+esac
+if [[ -n "$objects" ]]; then for o in $objects; do echo "$base$o"; done; exit 0; fi
+[[ -n "${STUB_GCS_FAIL:-}" ]] && { echo "ERROR: (gcloud.storage.ls) You do not currently have an active account selected." >&2; exit 1; }
+echo "ERROR: (gcloud.storage.ls) One or more URLs matched no objects." >&2; exit 1
+STUB
+chmod +x "$work/bin/gcloud"
+export PATH="$work/bin:$PATH"
+
+run() { : > "$work/kube.log"; rm -f "$work/kube.log.override"; export STUB_KUBE_LOG="$work/kube.log"; REALM_DIR="$work/realm" MIGRATE_SKIP_HYDRATE=1 bash "$work/nordri/scripts/migrate.sh" "$@" > "$work/out" 2>&1; }
+# line number of the first / last line matching a fixed string
+first() { grep -n -F -m1 -- "$1" "$work/out" | cut -d: -f1; }
+last() { grep -n -F -- "$1" "$work/out" | tail -n 1 | cut -d: -f1; }
+
+STUB_OVERRIDE=true run realm-x homelab-prod; rc=$?
+check "the happy path exits 0" "[[ $rc -eq 0 ]]"
+check "the policy override is read from argocd-cmd-params-cm" "grep -q 'KUBECTL get configmap -n argo argocd-cmd-params-cm' \"\$work/kube.log\""
+check "the kube context is checked, never switched" "grep -q 'CALL require_kube_context gke' \"\$work/out\" && ! grep -q 'use-context' \"\$work/out\""
+
+i1=$(first "CALL identity.sh apply realm-x homelab-prod"); i2=$(last "CALL identity.sh apply realm-x homelab-prod")
+f2=$(first "CALL argo_remove_finalizer tailscale-operator"); f1=$(first "CALL argo_remove_finalizer vegvisir"); f3=$(first "CALL argo_remove_finalizer velero")
+o1=$(first "CALL gitops_ensure_org x"); o2=$(first "CALL gitops_ensure_org x-vendor"); svc=$(first "CALL gitops_ensure_git_service")
+seed=$(first "CALL seed_access_open"); hyd=$(first "hydrate skipped (MIGRATE_SKIP_HYDRATE)")
+roots=$(first "CALL gitops_apply_root_apps realm-x"); ref=$(first "CALL argo_hard_refresh_all")
+ops=$(first "CALL argo_wait_operations_done"); sh=$(first "CALL argo_wait_synced_healthy"); lastcall=$(grep -n -F "CALL " "$work/out" | tail -n 1 | cut -d: -f2)
+ref2=$(last "CALL argo_hard_refresh_all"); rc1=$(first "CALL argo_wait_refresh_consumed"); rc2=$(last "CALL argo_wait_refresh_consumed")
+
+check "every ordering marker was found" "[[ -n '$i1' && -n '$i2' && -n '$f1' && -n '$f2' && -n '$f3' && -n '$o1' && -n '$o2' && -n '$svc' && -n '$seed' && -n '$hyd' && -n '$roots' && -n '$ref' && -n '$ref2' && -n '$ops' && -n '$sh' && -n '$rc1' && -n '$rc2' ]]"
+check "identity apply runs twice" "[[ '$i1' != '$i2' ]]"
+check "each hard refresh is followed by argo_wait_refresh_consumed, then its wait" "[[ '$ref' != '$ref2' && '$ref' -lt '$rc1' && '$rc1' -lt '$ops' && '$ref2' -lt '$rc2' && '$rc2' -lt '$sh' && '$rc1' != '$rc2' ]]"
+check "the skipped hydrate is plainly labelled" "grep -q 'every other step still runs' \"\$work/out\""
+check "identity apply runs twice (ordered)" "[[ -n '$i1' && -n '$i2' && '$i1' != '$i2' ]]"
+check "identity apply comes before the finalizer patches" "[[ '$i1' -lt '$f1' ]]"
+check "the three finalizers go in order vegvisir, tailscale-operator, velero" "[[ -n '$f1' && '$f1' -lt '$f2' && '$f2' -lt '$f3' ]]"
+check "the seed is opened after the finalizers" "[[ '$f3' -lt '$seed' ]]"
+check "both orgs and the git Service come after the seed is open" "[[ '$seed' -lt '$o1' && '$o1' -lt '$o2' && '$o2' -lt '$svc' ]]"
+check "the orgs and Service come before the hydrate" "[[ '$svc' -lt '$hyd' ]]"
+check "root apps are applied after the hydrate and before the hard refresh" "[[ '$hyd' -lt '$roots' && '$roots' -lt '$ref' ]]"
+check "operations are awaited after the hard refresh" "[[ '$ref' -lt '$ops' ]]"
+check "the second identity apply follows argo_wait_operations_done" "[[ '$ops' -lt '$i2' ]]"
+check "argo_wait_synced_healthy is after the second identity apply" "[[ '$i2' -lt '$sh' ]]"
+check "argo_wait_synced_healthy is the last call" "[[ '$lastcall' == *argo_wait_synced_healthy* ]]"
+check "the dry run pushes nothing" "! grep -q 'CALL hydrate_' \"\$work/out\""
+
+# Critical 1: the old parents' self-heal re-adds the finalizer before the Git
+# switch, so each of the three is also held with Prune=false in step 3, and the
+# finalizers are cleared again once the parents are on the new Git.
+for app in tailscale-operator vegvisir velero; do
+    h=$(first "CALL argo_hold_prune $app"); fa=$(first "CALL argo_remove_finalizer $app"); fb=$(last "CALL argo_remove_finalizer $app")
+    check "$app is held Prune=false in step 3, before the seed is opened" "[[ -n '$h' && '$h' -lt '$seed' ]]"
+    check "$app is held Prune=false before the root apps switch Git" "[[ -n '$h' && '$h' -lt '$roots' ]]"
+    check "$app's finalizer is removed a second time" "[[ -n '$fa' && -n '$fb' && '$fa' != '$fb' ]]"
+    check "the second pass for $app follows argo_wait_operations_done" "[[ '$ops' -lt '$fb' ]]"
+    check "the second pass for $app precedes the EnvironmentConfig take-over" "[[ '$fb' -lt '$i2' ]]"
+done
+check "the first identity apply does not take the EnvironmentConfig over" "[[ \$(first 'CALL identity.sh apply realm-x homelab-prod takeover=0') == '$i1' ]]"
+check "the second identity apply asks for the take-over" "[[ \$(last 'CALL identity.sh apply realm-x homelab-prod takeover=1') == '$i2' ]]"
+
+# Policy override off: migrate sets it, restarts the applicationset controller and
+# re-reads; a cluster where the flag does not take (the argocd Application
+# reverted it) is refused before anything else runs.
+check "an on policy override is not patched" "STUB_OVERRIDE=true run realm-x homelab-prod; ! grep -q 'patch configmap -n argo argocd-cmd-params-cm' \"\$work/kube.log\""
+STUB_OVERRIDE=false STUB_OVERRIDE_FLIP=1 run realm-x homelab-prod; rc=$?
+check "an off policy override is set and the controller restarted" "[[ $rc -eq 0 ]] && grep -q 'KUBECTL patch configmap -n argo argocd-cmd-params-cm --type merge' \"\$work/kube.log\" && grep -q 'KUBECTL rollout restart deployment -n argo argocd-applicationset-controller' \"\$work/kube.log\""
+check "the restart is waited for before the re-read" "[[ \$(grep -n -m1 'rollout status deployment -n argo argocd-applicationset-controller' \"\$work/kube.log\" | cut -d: -f1) -lt \$(grep -n 'get configmap -n argo argocd-cmd-params-cm' \"\$work/kube.log\" | tail -n 1 | cut -d: -f1) ]]"
+check "the patch precedes every other step" "[[ \$(first 'setting the flag') -lt \$(first 'CALL identity.sh') ]]"
+STUB_OVERRIDE=false run realm-x homelab-prod; rc=$?
+check "a policy override that does not take is refused" "[[ $rc -eq 1 ]]"
+check "the refusal names argocd-cmd-params-cm" "grep -q 'argocd-cmd-params-cm' \"\$work/out\""
+check "nothing else runs after the refusal" "! grep -q 'CALL identity.sh' \"\$work/out\""
+
+# Refusal: the live identity names another cluster
+STUB_OVERRIDE=true STUB_LIVE_CLUSTER=homelab-test run realm-x homelab-prod; rc=$?
+check "a live identity naming another cluster is refused" "[[ $rc -eq 1 ]]"
+check "the refusal names both clusters" "grep -q 'homelab-test' \"\$work/out\" && grep -q 'homelab-prod' \"\$work/out\""
+check "nothing runs after the mismatch" "! grep -q 'CALL identity.sh' \"\$work/out\" && ! grep -q 'CALL argo' \"\$work/out\""
+
+# Refusal: no realm cluster file, but the live identity is not a lab's. The lab
+# defaults would otherwise be written over a test or prod cluster in step 2.
+STUB_OVERRIDE=true STUB_LIVE_CLUSTER=homelab-prod STUB_LIVE_ROLE=prod STUB_LIVE_ENV=homelab run realm-x homelab-prod; rc=$?
+check "an undeclared cluster whose live identity is prod is refused" "[[ $rc -eq 1 ]] && grep -q 'lab defaults' \"\$work/out\""
+check "nothing runs after the lab-defaults refusal" "! grep -q 'CALL identity.sh' \"\$work/out\" && ! grep -q 'CALL argo' \"\$work/out\""
+STUB_OVERRIDE=true STUB_LIVE_CLUSTER=homelab-lab STUB_LIVE_ROLE=lab STUB_LIVE_ENV=homelab run realm-x homelab-lab; rc=$?
+check "an undeclared cluster whose live identity is a lab migrates" "[[ $rc -eq 0 ]]"
+mkdir -p "$work/realm/clusters"; printf 'environment: homelab\nrole: prod\nmaturity: durable\n' > "$work/realm/clusters/homelab-prod.yaml"
+STUB_OVERRIDE=true STUB_LIVE_CLUSTER=homelab-prod STUB_LIVE_ROLE=prod STUB_LIVE_ENV=homelab run realm-x homelab-prod; rc=$?
+check "a declared prod cluster migrates" "[[ $rc -eq 0 ]]"
+rm -f "$work/realm/clusters/homelab-prod.yaml"
+
+# gke: the Velero root backups must already sit under the cluster prefix, or the
+# ApplicationSet's prefix would hide them from every restore.
+STUB_ENV=gke STUB_GCS_ROOT=backup-1/ STUB_GCS_PREFIX='' run realm-x gke-prod; rc=$?
+check "gke with uncopied root backups is refused" "[[ $rc -eq 1 ]] && grep -q 'docs/velero-gke.md' \"\$work/out\""
+check "the refusal names both locations" "grep -q 'gs://example-project-velero/backups/' \"\$work/out\" && grep -q 'gs://example-project-velero/gke-prod/backups/' \"\$work/out\""
+check "nothing runs after the velero refusal" "! grep -q 'CALL identity.sh' \"\$work/out\" && ! grep -q 'CALL argo' \"\$work/out\""
+STUB_ENV=gke STUB_GCS_ROOT=backup-1/ STUB_GCS_PREFIX=backup-1/ run realm-x gke-prod; rc=$?
+check "gke with the copy in place migrates" "[[ $rc -eq 0 ]] && grep -q 'present under' \"\$work/out\""
+# Name for name: a partial copy is refused, naming what is missing.
+STUB_ENV=gke STUB_GCS_ROOT='backup-1/backup-1.tar.gz backup-2/backup-2.tar.gz' STUB_GCS_PREFIX='backup-1/backup-1.tar.gz' run realm-x gke-prod; rc=$?
+check "gke with a partial copy is refused" "[[ $rc -eq 1 ]] && grep -q 'backups/backup-2/backup-2.tar.gz' \"\$work/out\" && ! grep -q 'CALL identity.sh' \"\$work/out\""
+# restores/ is checked the same way (Velero lists it under the prefix too).
+STUB_ENV=gke STUB_GCS_ROOT=backup-1/ STUB_GCS_PREFIX=backup-1/ STUB_GCS_ROOT_RESTORES=restore-1/results.gz STUB_GCS_PREFIX_RESTORES='' run realm-x gke-prod; rc=$?
+check "gke with uncopied root restores is refused" "[[ $rc -eq 1 ]] && grep -q 'gs://example-project-velero/restores/' \"\$work/out\" && grep -q 'gs://example-project-velero/gke-prod/restores/' \"\$work/out\""
+STUB_ENV=gke STUB_GCS_ROOT=backup-1/ STUB_GCS_PREFIX=backup-1/ STUB_GCS_ROOT_RESTORES=restore-1/results.gz STUB_GCS_PREFIX_RESTORES=restore-1/results.gz run realm-x gke-prod; rc=$?
+check "gke with both copies in place migrates" "[[ $rc -eq 0 ]]"
+STUB_ENV=gke STUB_GCS_FAIL=1 run realm-x gke-prod; rc=$?
+check "a failing gcloud is refused, never read as an empty bucket" "[[ $rc -eq 1 ]] && grep -q 'gcloud storage ls' \"\$work/out\" && ! grep -q 'CALL identity.sh' \"\$work/out\""
+check "homelab never calls gcloud" "STUB_ENV=homelab run realm-x homelab-prod; ! grep -q GCLOUD \"\$work/kube.log\""
+
+# Important 5: a realm whose org the manifests do not read is refused before step 1
+STUB_FOREIGN_ORG=1 run realm-x homelab-prod; rc=$?
+check "a realm the manifests do not read is refused" "[[ $rc -eq 1 ]] && grep -q 'CALL gitops_require_manifest_org realm-x' \"\$work/out\""
+check "nothing changes after the org refusal" "! grep -q 'CALL identity.sh' \"\$work/out\" && ! grep -q 'CALL argo' \"\$work/out\" && ! grep -q 'argocd-cmd-params-cm' \"\$work/kube.log\""
+
+# A failed finalizer removal stops the migration before anything after step 3
+STUB_FAIL_FINALIZER=vegvisir run realm-x homelab-prod; rc=$?
+check "a failed finalizer removal exits non-zero" "[[ $rc -ne 0 ]]"
+check "the failing app was attempted" "grep -q 'CALL argo_remove_finalizer vegvisir' \"\$work/out\""
+check "velero's finalizer is not attempted after the failure" "! grep -q 'CALL argo_remove_finalizer velero' \"\$work/out\""
+check "nothing after the finalizer step runs" "! grep -q 'CALL seed_access_open' \"\$work/out\" && ! grep -qE 'CALL gitops_(ensure|apply)' \"\$work/out\" && ! grep -q 'CALL argo_hard_refresh_all' \"\$work/out\""
+check "the identity step before it did run" "grep -q 'CALL identity.sh apply' \"\$work/out\""
+
+# A failed Prune=false hold stops the migration before the finalizer goes
+STUB_FAIL_HOLD=vegvisir run realm-x homelab-prod; rc=$?
+check "a failed Prune=false hold exits non-zero" "[[ $rc -ne 0 ]]"
+check "vegvisir's finalizer is not touched after its hold failed" "! grep -q 'CALL argo_remove_finalizer vegvisir' \"\$work/out\""
+check "nothing after step 3 runs after a failed hold" "! grep -q 'CALL seed_access_open' \"\$work/out\" && ! grep -qE 'CALL gitops_(ensure|apply)' \"\$work/out\""
+
+# A failed second finalizer pass stops the migration before the take-over.
+# (The stub fails every call for the app, so the first pass fails too; that
+# case is above. Here a counter lets the first pass through.)
+stub lib/argo.sh 'argo_wait_operations_done() { echo "CALL argo_wait_operations_done $1"; }
+argo_wait_synced_healthy() { echo "CALL argo_wait_synced_healthy $1"; }
+argo_hard_refresh_all() { echo "CALL argo_hard_refresh_all"; }
+argo_wait_refresh_consumed() { echo "CALL argo_wait_refresh_consumed $1"; }
+argo_hold_prune() { echo "CALL argo_hold_prune $1"; }
+argo_release_prune() { echo "CALL argo_release_prune $1"; }
+argo_remove_finalizer() { echo "CALL argo_remove_finalizer $1"; if [[ "$1" == vegvisir ]]; then n=$(( ${n:-0} + 1 )); [[ $n -lt 2 ]]; fi; }'
+run realm-x homelab-prod; rc=$?
+check "a failed second finalizer pass exits non-zero" "[[ $rc -ne 0 ]]"
+check "the second pass was attempted" "[[ \$(grep -c 'CALL argo_remove_finalizer vegvisir' \"\$work/out\") -eq 2 ]]"
+check "no take-over after a failed second pass" "[[ \$(grep -c 'CALL identity.sh apply' \"\$work/out\") -eq 1 ]]"
+
+# Re-review: the lists follow the identity. What the new Git adopts differs per
+# cluster, so a fixed list held and cleared Applications that are never adopted
+# (the parent then stays OutOfSync on a prune it must skip) or stripped a
+# finalizer Git still declares (velero on homelab).
+stub lib/argo.sh 'argo_wait_operations_done() { echo "CALL argo_wait_operations_done $1"; }
+argo_wait_synced_healthy() { echo "CALL argo_wait_synced_healthy $1"; }
+argo_hard_refresh_all() { echo "CALL argo_hard_refresh_all"; }
+argo_wait_refresh_consumed() { echo "CALL argo_wait_refresh_consumed $1"; }
+argo_hold_prune() { echo "CALL argo_hold_prune $1"; }
+argo_release_prune() { echo "CALL argo_release_prune $1"; [[ "${STUB_FAIL_RELEASE:-}" != "$1" ]]; }
+argo_remove_finalizer() { echo "CALL argo_remove_finalizer $1"; }'
+count() { grep -c -F -- "$1" "$work/out"; }
+
+# (a) homelab, no tailnet node: vegvisir adopted; tailscale-operator orphaned; velero untouched
+STUB_ENV=homelab STUB_TAILNET='' run realm-x homelab-prod; rc=$?
+check "homelab without a tailnet node migrates" "[[ $rc -eq 0 ]]"
+check "the decision is printed (adopted)" "grep -q 'adopted (held + finalizer cleared): vegvisir\$' \"\$work/out\""
+check "the decision is printed (orphaned)" "grep -q 'orphaned (held, cleared, released after the switch):  tailscale-operator\$' \"\$work/out\""
+check "vegvisir is held" "[[ \$(count 'CALL argo_hold_prune vegvisir') -eq 1 ]]"
+check "vegvisir is cleared twice (step 3 and the second pass)" "[[ \$(count 'CALL argo_remove_finalizer vegvisir') -eq 2 ]]"
+check "vegvisir is never released (the ApplicationSet strips its hold)" "! grep -q 'argo_release_prune vegvisir' \"\$work/out\""
+check "tailscale-operator is held once (step 3)" "[[ \$(count 'CALL argo_hold_prune tailscale-operator') -eq 1 ]]"
+check "tailscale-operator is cleared twice (step 3 and the second pass)" "[[ \$(count 'CALL argo_remove_finalizer tailscale-operator') -eq 2 ]]"
+check "tailscale-operator is released once" "[[ \$(count 'CALL argo_release_prune tailscale-operator') -eq 1 ]]"
+ts_h=$(first 'CALL argo_hold_prune tailscale-operator'); ts_f1=$(first 'CALL argo_remove_finalizer tailscale-operator'); ts_f2=$(last 'CALL argo_remove_finalizer tailscale-operator')
+ts_r=$(first 'CALL argo_release_prune tailscale-operator'); a_ops=$(first 'CALL argo_wait_operations_done'); a_i2=$(last 'CALL identity.sh apply realm-x homelab-prod'); a_seed=$(first 'CALL seed_access_open')
+check "tailscale-operator: hold, then clear, both before the seed" "[[ -n '$ts_h' && '$ts_h' -lt '$ts_f1' && '$ts_f1' -lt '$a_seed' ]]"
+check "tailscale-operator: the second clear follows the operations wait" "[[ -n '$ts_f2' && '$a_ops' -lt '$ts_f2' ]]"
+check "tailscale-operator: the release follows the second clear and precedes the identity take-over" "[[ -n '$ts_r' && '$ts_f2' -lt '$ts_r' && '$ts_r' -lt '$a_i2' ]]"
+check "velero is neither held, cleared nor released" "! grep -q 'argo_hold_prune velero' \"\$work/out\" && ! grep -q 'argo_remove_finalizer velero' \"\$work/out\" && ! grep -q 'argo_release_prune velero' \"\$work/out\""
+
+# A failing release stops the migration before the identity take-over
+STUB_FAIL_RELEASE=tailscale-operator STUB_ENV=homelab STUB_TAILNET='' run realm-x homelab-prod; rc=$?
+check "a failed release exits non-zero" "[[ $rc -ne 0 ]] && grep -q 'CALL argo_release_prune tailscale-operator' \"\$work/out\""
+check "no take-over after a failed release" "[[ \$(grep -c 'CALL identity.sh apply' \"\$work/out\") -eq 1 ]] && ! grep -q 'CALL argo_wait_synced_healthy' \"\$work/out\""
+
+# (c) homelab WITH a tailnet node: tailscale-operator adopted, nothing orphaned
+STUB_ENV=homelab STUB_TAILNET=homelab-prod run realm-x homelab-prod; rc=$?
+check "homelab with a tailnet node migrates" "[[ $rc -eq 0 ]]"
+check "the decision is printed for homelab with a tailnet node" "grep -q 'adopted (held + finalizer cleared): vegvisir tailscale-operator\$' \"\$work/out\" && grep -q 'orphaned (held, cleared, released after the switch):  none' \"\$work/out\""
+for app in vegvisir tailscale-operator; do
+    check "homelab+tailnet: $app is held once, cleared twice, never released" "[[ \$(count 'CALL argo_hold_prune $app') -eq 1 && \$(count 'CALL argo_remove_finalizer $app') -eq 2 && \$(count 'CALL argo_release_prune $app') -eq 0 ]]"
+done
+check "homelab+tailnet: nothing is released at all" "! grep -q 'CALL argo_release_prune' \"\$work/out\""
+check "homelab+tailnet: velero is untouched" "! grep -qE 'CALL argo_(hold_prune|remove_finalizer|release_prune) velero' \"\$work/out\""
+
+# (b) gke with a tailnet node: all three adopted
+STUB_ENV=gke STUB_TAILNET=node-1 run realm-x gke-prod; rc=$?
+check "gke with a tailnet node migrates" "[[ $rc -eq 0 ]]"
+check "the decision is printed for gke" "grep -q 'adopted (held + finalizer cleared): vegvisir tailscale-operator velero\$' \"\$work/out\" && grep -q 'orphaned (held, cleared, released after the switch):  none' \"\$work/out\""
+for app in vegvisir tailscale-operator velero; do
+    check "gke: $app is held once and cleared twice" "[[ \$(count 'CALL argo_hold_prune $app') -eq 1 && \$(count 'CALL argo_remove_finalizer $app') -eq 2 ]]"
+done
+
+# Important 4: hydration failures stop the migration. The REAL lib/hydrate.sh,
+# against a stubbed seed: migrate.sh runs without -e, so only explicit returns
+# can stop it.
+cp "$root/lib/hydrate.sh" "$work/nordri/lib/hydrate.sh"
+mkdir -p "$work/nidavellir" "$work/mimir" "$work/heimdall" "$work/remote/x"
+runh() { : > "$work/kube.log"; export STUB_KUBE_LOG="$work/kube.log"; REALM_DIR="$work/realm" NIDAVELLIR_DIR="${H_NID:-$work/nidavellir}" MIMIR_DIR="$work/mimir" HEIMDALL_DIR="$work/heimdall" VENDOR_MIRRORS="" bash "$work/nordri/scripts/migrate.sh" realm-x homelab-prod > "$work/out" 2>&1; }
+stub lib/gitea.sh "GITEA_GIT_BASE='$work/remote'
+gitea_ensure_repo() { echo \"CALL gitea_ensure_repo \$*\"; [[ -z \"\${STUB_FAIL_ENSURE:-}\" ]]; }"
+
+STUB_FAIL_ENSURE=1 runh; rc=$?
+check "a failed repo ensure stops the migration" "[[ $rc -ne 0 ]] && grep -q 'CALL gitea_ensure_repo' \"\$work/out\""
+check "a failed repo ensure is not reported as hydrated" "! grep -q \"'nordri' hydrated\" \"\$work/out\""
+check "no root Applications after a failed repo ensure" "! grep -q 'CALL gitops_apply_root_apps' \"\$work/out\""
+
+runh; rc=$?
+check "a failed push stops the migration" "[[ $rc -ne 0 ]] && ! grep -q \"'nordri' hydrated\" \"\$work/out\""
+check "no root Applications after a failed push" "! grep -q 'CALL gitops_apply_root_apps' \"\$work/out\""
+
+git init -q --bare "$work/remote/x/nordri.git"
+H_NID="$work/no-such-nidavellir" runh; rc=$?
+check "the nordri push itself succeeded" "grep -q \"'nordri' hydrated\" \"\$work/out\""
+check "an absent source checkout is fatal for migrate" "[[ $rc -ne 0 ]] && grep -q 'no-such-nidavellir' \"\$work/out\""
+check "no root Applications after an absent source" "! grep -q 'CALL gitops_apply_root_apps' \"\$work/out\""
+
+# Usage
+run realm-x; rc=$?
+check "a missing cluster is a usage error" "[[ $rc -eq 1 ]] && grep -q Usage \"\$work/out\""
+
+echo "---"; [ "$fails" -eq 0 ] && echo "ALL PASS" || { echo "$fails FAILED"; exit 1; }

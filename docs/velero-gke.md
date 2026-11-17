@@ -162,19 +162,30 @@ advisory. If the condition is ever fixed and the unconditioned binding dropped, 
 check should be re-pointed at `velero-server`.
 
 The service account is still not deleted on teardown: several clusters may hold
-separate conditional bindings on it. If a second cluster ever backs up into this
-bucket, give each a distinct `BackupStorageLocation` `prefix` so their backups do
-not interleave in one path.
+separate conditional bindings on it.
 
-`bootstrap.sh gke` then substitutes `$GCP_PROJECT` into the Application at hydration
-time and fails closed if it is unset or if any placeholder survives.
+The `velero` ApplicationSet reads the project (the `gcp-project` annotation) and
+the per-cluster prefix (the cluster name) from the cluster identity, and fails closed
+if either is missing; nothing is stamped into Git. Every cluster therefore writes
+under its own prefix (`gke-prod/` for gke-prod), so two clusters never interleave
+in one path.
+
+**Before GKE migrates onto this ApplicationSet, copy the existing backups under
+`gke-prod/`.** The backups taken so far sit at the bucket root
+(`gs://<project>-velero/backups/...`). Once the BackupStorageLocation carries
+`prefix: gke-prod`, Velero lists only `gke-prod/backups/`, so without the copy
+it sees none of them and a restore has nothing to restore from. Copy, do not
+move (for example `gcloud storage cp -r gs://<project>-velero/backups gs://<project>-velero/gke-prod/`,
+and the same for `restores/` and any other top-level Velero prefix), and check
+`velero backup get` lists them after the switch before anything at the root is
+removed.
 
 ## Rehydrating an existing cluster
 
-`./update-embedded-git.sh gke` is the day-2 path and is the one to use for a
-config change; `bootstrap.sh` is for a cluster that does not have Gitea/ArgoCD yet.
-Both stamp the project through the same `lib/patch-velero.sh`, so neither can push
-an unsubstituted manifest.
+`./update-embedded-git.sh <realm>` (for example `realm-siliconsaga`) is the day-2 path
+and is the one to use for a config change; `bootstrap.sh` is for a cluster that does
+not have Gitea/ArgoCD yet. Neither stamps anything: the identity applied by
+`scripts/identity.sh` supplies the project and the prefix on every sync.
 
 Three things worth knowing before running it:
 

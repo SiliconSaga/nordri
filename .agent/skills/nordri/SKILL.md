@@ -5,7 +5,7 @@ description: "Use when bootstrapping Nordri on a fresh cluster, debugging the la
 
 # nordri
 
-Bootstrap is `bootstrap.sh [gke|homelab]`. The script has thorough inline comments explaining each numbered layer; this skill captures the *judgment* behind the layering and the gotchas that aren't documented inline.
+Bootstrap is `bootstrap.sh <realm> <cluster>` (the cluster's identity is written to `nordri/cluster-identity` first; day-2 pushes are `update-embedded-git.sh <realm>`). The script has thorough inline comments explaining each numbered layer; this skill captures the *judgment* behind the layering and the gotchas that aren't documented inline.
 
 ## When to Use
 

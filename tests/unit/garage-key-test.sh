@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2015
 # Unit test for lib/garage.sh with a kubectl stub standing in for
 # `kubectl exec ... /garage`. STUB_KEYS is the `key list` table body, one
 # "<id> <created> <name> never" row per line; every create is logged so the

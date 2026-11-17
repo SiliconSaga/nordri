@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2015
 # Unit test for lib/kube-context.sh with a kubectl stub whose current context
 # is whatever STUB_CTX says. Covers the shape check per target, the explicit
 # KUBE_CONTEXT match, and the no-context case.

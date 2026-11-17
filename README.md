@@ -16,12 +16,12 @@ k3d cluster create refr-k8s \
 
 **Run the bootstrap** from within a compatible bash shell:
 
-* Mac/Linux bash: `./bootstrap.sh homelab`
+* Mac/Linux bash: `./bootstrap.sh <realm> <cluster>` (e.g. `./bootstrap.sh realm-siliconsaga homelab-nano76win11`)
 * Windows: 
   * `cd "C:\Program Files\Git\bin"` or wherever Git Bash is installed
   * Run `bash` or `./bash.exe` if using a PowerShell terminal
   * `cd /d/Dev/GitWS/nordri` or wherever you cloned the repo
-  * Run `./bootstrap.sh`
+  * Run `./bootstrap.sh <realm> <cluster>`
 
 ### Accessing the Cluster
 
@@ -30,10 +30,10 @@ After bootstrapping, you can access the services:
 #### Credentials
 
 *   **Gitea**:
-    *   User: `nordri-admin`. Not currently a runtime knob — downstream
-        ArgoCD Application repoURLs hardcode this, so changing it would
-        also require a hydration-time substitution pass that the script
-        doesn't do today. Track via the OpenBAO migration.
+    *   User: `nordri-admin`. Not a runtime knob: the seed's admin is
+        created under that name and every script that pushes to the seed
+        uses the same literal (the repoURLs name the org, not the user).
+        Track via the OpenBAO migration.
     *   Password: stored in the Kubernetes Secret
         `gitea/gitea-admin-credentials`. Retrieve with:
 
@@ -45,29 +45,29 @@ After bootstrapping, you can access the services:
         On a **fresh cluster**, `bootstrap.sh` generates a strong random
         password, installs Gitea with it, and writes it to the Secret.
 
-        On an **existing cluster** (where Gitea already has an admin user
-        with a known password — e.g. clusters bootstrapped before this
-        Secret-backed flow landed, or any cluster where you've rotated
-        the password manually), pass the live password explicitly:
-
-        ```bash
-        GITEA_PASS=<live-password> ./bootstrap.sh <target>
-        ```
-
-        The script trusts the override, writes it to the Secret, and uses
-        it for the rest of the run. If the value is wrong, two things
-        happen: the in-script Gitea API calls (and any subsequent
-        `update-embedded-git.sh` invocation) fail with 401, *and* the
-        Secret has been poisoned with the wrong value. Recover by
-        running with the correct password — `GITEA_PASS=<correct> ./bootstrap.sh
-        <target>` rewrites the Secret — or delete the Secret manually
-        (`kubectl delete secret -n gitea gitea-admin-credentials`) and
-        run bootstrap.sh again with the right value. The fail-loud-and-
-        recoverable trade-off is intentional vs. a silent fallback.
+        An **existing cluster** is not a job for `bootstrap.sh`. One
+        bootstrapped by the pre-Phase-3 code (its `nordri-root`
+        Application reads the old `nordri-admin` repositories) is
+        refused outright: a re-run would switch it to the new Git with no
+        finalizer step, and the prune would delete what the old
+        Applications deployed. Move it with
+        `scripts/migrate.sh <realm> <cluster>` instead. Its first step
+        sets ArgoCD's ApplicationSet policy-override flag on
+        `argo/argocd-cmd-params-cm` itself (and restarts the
+        applicationset controller) when the cluster lacks it: nothing
+        else can deliver that flag to an old cluster before the Git
+        switch, and the ApplicationSets' never-delete policy depends on
+        it. If the cluster
+        has no `gitea/gitea-admin-credentials` Secret yet (it predates
+        the Secret-backed flow, or you rotated the password by hand),
+        write the Secret with the live password first, as below; migrate
+        and `update-embedded-git.sh` read it from there (or take a
+        one-shot `GITEA_PASS=<live-password>`, which is not persisted).
+        A wrong value fails loud with 401 rather than silently: rewrite
+        the Secret with the right one and re-run.
 
         To **rotate** the password, change it in Gitea (UI or API), then
-        update the Secret to match — either pass `GITEA_PASS=<new>` to
-        the next bootstrap re-run, or write the Secret directly:
+        write the Secret to match:
 
         ```bash
         kubectl create secret generic gitea-admin-credentials -n gitea \
@@ -153,26 +153,26 @@ Nordri exposes substrate patterns that downstream components (Heimdall, Mimir,
 *   **In-cluster `keycloak.localhost`**: On homelab a CoreDNS rewrite lets *pods* resolve `keycloak.localhost` to Traefik, so server-side OIDC flows (e.g. OpenBao's token exchange) can reach Keycloak at its homelab issuer. See **[Resolving keycloak.localhost inside the cluster](docs/keycloak-localhost-coredns.md)**.
 *   **Argonception**: Most YAML files in `apps/` are `kind: Application`. They tell Argo to sync *another* Helm chart (e.g., the official Traefik chart).
 *   **Namespaces**: Any "loose" manifest (like `ClusterIssuer`) applied by the App-of-Apps will default to the `argo` namespace unless explicitly namespaced in the file.
-*   **Values**: Environment-specific values (e.g., LoadBalancer vs NodePort) are injected via the `envs/` directory, which the App-of-Apps or individual Applications reference.
+*   **Values**: Per-cluster values (environment, storage class, domain, GCP project...) live in the cluster-local `nordri/cluster-identity` ConfigMap, written by `bootstrap.sh` from the realm's cluster declaration. Nothing is stamped into the manifests that are hydrated to Git.
 
 ## Operation & Maintenance
 
 ### 1. Fast Iteration (`update-embedded-git.sh`)
 To push changes to the cluster without re-running the full bootstrap (which can be slow), switch kubectl to the target cluster and run:
 ```bash
-./update-embedded-git.sh homelab realm-siliconsaga
+./update-embedded-git.sh realm-siliconsaga
 ```
-It hydrates the component working trees (and the realm's `cluster/`), pushes them to the seed Gitea, recreating any repository the seed lost, and hard-refreshes every ArgoCD Application. On GKE, push over the seed's public route and name the context, so a mismatched current context is refused:
+It hydrates the component working trees (and the whole realm checkout), pushes them to the seed Gitea, recreating any repository the seed lost, and hard-refreshes every ArgoCD Application. On GKE, push over the seed's public route and name the context, so a mismatched current context is refused:
 ```bash
 KUBE_CONTEXT=gke_<project>_<zone>_<cluster> GITEA_HOST=gitea.cmdbee.org GITEA_SCHEME=https \
-  ./update-embedded-git.sh gke realm-siliconsaga
+  ./update-embedded-git.sh realm-siliconsaga
 ```
 Then wait for the Applications to re-resolve their repositories (read-only; exits 1 on timeout):
 ```bash
 scripts/argo-settle.sh
 ```
 
-The seed's storage is ephemeral by design, so a seed that lost its repositories only needs the re-hydrate above. A seed whose Helm release is broken or in an older shape is reinstalled in bootstrap's exact shape, keeping its admin password, with `scripts/reseed-gitea.sh <gke|homelab>`, then re-hydrated.
+The seed's storage is ephemeral by design, so a seed that lost its repositories only needs the re-hydrate above. A seed whose Helm release is broken or in an older shape is reinstalled in bootstrap's exact shape, keeping its admin password, with `scripts/reseed-gitea.sh <realm> <cluster>`, then re-hydrated.
 
 ### 2. Validation (`validate.py`)
 To verify the health of all platform components (Pods, Ingress, Storage):
@@ -203,6 +203,6 @@ For testing Crossplane Compositions (Infrastructure Logic), we recommend **KUTTL
 
 ## TODOs
 
-* The Issuer uses a hardcoded email admin@yggdrasil.cloud and Gateway name traefik-gateway. You may want to templated these using Kustomize overlays in envs/ later if they vary significantly.
+* The Issuer uses a hardcoded email admin@yggdrasil.cloud and Gateway name traefik-gateway. You may want to templated these using the cluster identity later if they vary significantly.
 * Need to compare Crossplane versions with what worked in Mimir.
 * Need to cover Velero in a later Day 2 step. Can fetch original details from outdated/setup.md

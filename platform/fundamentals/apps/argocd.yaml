@@ -43,6 +43,11 @@ spec:
         configs:
           cm:
             kustomize.buildOptions: --load-restrictor LoadRestrictionsNone --enable-helm
+          params:
+            # ApplicationSets set applicationsSync: create-update so a generator
+            # that matches nothing cannot delete an Application (Phase 3 design,
+            # Decision 4). The controller ignores that field unless this is on.
+            applicationsetcontroller.enable.policy.override: "true"
         controller:
           metrics:
             enabled: true

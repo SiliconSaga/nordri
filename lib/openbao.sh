@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # components/nordri/lib/openbao.sh
 # Bring a freshly deployed OpenBao from "pod Running" to "usable by the stack"
 # without a human in the loop: init, unseal, the one-time mount/auth/policy
@@ -190,7 +191,8 @@ openbao_ensure_initialized() {
         return 0
     fi
     if kubectl get secret -n "$OPENBAO_NS" "$OPENBAO_INIT_SECRET" >/dev/null 2>&1; then
-        local stale="${OPENBAO_INIT_SECRET}-stale-$(date +%Y%m%d%H%M%S)"
+        local stale
+        stale="${OPENBAO_INIT_SECRET}-stale-$(date +%Y%m%d%H%M%S)" || return 1
         echo "   ⚠️  $OPENBAO_INIT_SECRET exists but the instance is uninitialized (wiped storage?) — keeping it as $stale."
         kubectl get secret -n "$OPENBAO_NS" "$OPENBAO_INIT_SECRET" -o json \
             | jq --arg n "$stale" '{apiVersion, kind, type, data, metadata: {name: $n, namespace: .metadata.namespace}}' \
@@ -334,6 +336,8 @@ openbao_configure() {
     esac
     echo "   • Kubernetes auth"
     openbao_run_with_token 'bao auth list -format=json | grep -q "\"kubernetes/\"" || bao auth enable kubernetes >/dev/null' </dev/null || return 1
+    # Single quotes on purpose: the variable expands inside the pod, from its env.
+    # shellcheck disable=SC2016
     openbao_run_with_token 'bao write auth/kubernetes/config kubernetes_host="https://${KUBERNETES_PORT_443_TCP_ADDR}:443" >/dev/null' </dev/null || return 1
     echo "   • eso-read policy and eso-role"
     openbao_run_with_token 'bao policy write eso-read - >/dev/null' <<'EOF' || return 1
